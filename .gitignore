@@ -1,9 +1,11 @@
-# Build
-build/
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
 
-# IDE
-.vscode/
-.idea/
+# Env
+.env
 
 # Logs
 *.log
@@ -11,3 +13,6 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Build output
+build/
