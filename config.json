@@ -1,0 +1,13 @@
+{
+    "symbol": "BTCUSDT",
+    "interval": "15m",
+    "tradeQuantity": 0.001,
+    "stopLossPercent": 2.0,
+    "takeProfitPercent": 4.0,
+    "rsiPeriod": 14,
+    "rsiOversold": 30.0,
+    "rsiOverbought": 70.0,
+    "smaShortPeriod": 9,
+    "smaLongPeriod": 21,
+    "pollIntervalMs": 60000
+}
