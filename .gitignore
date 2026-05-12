@@ -16,3 +16,6 @@ Thumbs.db
 
 # Build output
 build/
+
+# Local assistant worktrees
+.claude/worktrees/
