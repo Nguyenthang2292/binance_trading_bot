@@ -1,0 +1,49 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "GUI Dashboard",
+      "runtimeExecutable": ".venv/Scripts/python",
+      "runtimeArgs": ["main.py"],
+      "port": 0,
+      "autoPort": true
+    },
+    {
+      "name": "GUI Dashboard (Mock Mode)",
+      "runtimeExecutable": ".venv/Scripts/python",
+      "runtimeArgs": ["main.py"],
+      "env": {
+        "POLYMARKET_GUI_MOCK": "1"
+      },
+      "port": 0,
+      "autoPort": true
+    },
+    {
+      "name": "LocalStack",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "up", "localstack"],
+      "port": 4566
+    },
+    {
+      "name": "Ingestion Worker",
+      "runtimeExecutable": ".venv/Scripts/python",
+      "runtimeArgs": ["-m", "src.ingestion.worker"],
+      "port": 0,
+      "autoPort": true
+    },
+    {
+      "name": "Enrichment Worker",
+      "runtimeExecutable": ".venv/Scripts/python",
+      "runtimeArgs": ["-m", "src.enrichment.worker"],
+      "port": 0,
+      "autoPort": true
+    },
+    {
+      "name": "Execution Worker",
+      "runtimeExecutable": ".venv/Scripts/python",
+      "runtimeArgs": ["-m", "src.execution.worker"],
+      "port": 0,
+      "autoPort": true
+    }
+  ]
+}

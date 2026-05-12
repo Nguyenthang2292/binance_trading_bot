@@ -24,14 +24,17 @@ void onSignal(const Signal& signal) {
         "Signal received: " + action + " (confidence: " + std::to_string(signal.confidence) + ")");
 }
 
-void onTrade(const OrderResult& order) {
+void onTrade(const NormalPlacementResult& order) {
+    const auto state =
+        order.state == PlacementState::Accepted
+            ? "ACCEPTED"
+            : (order.state == PlacementState::Rejected ? "REJECTED" : "UNKNOWN_PENDING_RECONCILE");
     Logger::instance().log(LogLevel::TRADE,
-        "Trade executed: " + order.symbol + " " + order.side +
-        " id=" + std::to_string(order.orderId) +
-        " status=" + order.status +
-        " qty=" + std::to_string(order.origQty) +
-        " executed=" + std::to_string(order.executedQty) +
-        " price=" + std::to_string(order.price));
+        "Trade executed: " + order.symbol +
+        " state=" + state +
+        " clientOrderId=" + order.clientOrderId +
+        " orderId=" + std::to_string(order.orderId.value_or(0)) +
+        " status=" + order.orderStatus.value_or("N/A"));
 }
 
 int main(int argc, char* argv[]) {

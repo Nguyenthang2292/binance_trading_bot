@@ -47,7 +47,7 @@ public:
     Signal analyzeMarket(const std::vector<Kline>& klines);
 
     void setOnSignal(std::function<void(const Signal&)> callback);
-    void setOnTrade(std::function<void(const OrderResult&)> callback);
+    void setOnTrade(std::function<void(const NormalPlacementResult&)> callback);
 
 private:
     BinanceAPI& m_api;
@@ -56,7 +56,7 @@ private:
     std::thread m_workerThread;
 
     std::function<void(const Signal&)> m_onSignal;
-    std::function<void(const OrderResult&)> m_onTrade;
+    std::function<void(const NormalPlacementResult&)> m_onTrade;
 
     void tradingLoop();
     void executeSignal(const Signal& signal);

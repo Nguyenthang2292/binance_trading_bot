@@ -3,6 +3,22 @@
 #include <numeric>
 #include <cmath>
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
+
+namespace {
+
+std::optional<Quantity> toQuantity(double value) {
+    std::ostringstream out;
+    out << std::setprecision(16) << value;
+    auto parsed = Quantity::parse(out.str());
+    if (!parsed) {
+        return std::nullopt;
+    }
+    return *parsed;
+}
+
+}
 
 TradingEngine::TradingEngine(BinanceAPI& api, const TradingConfig& config)
     : m_api(api), m_config(config)
@@ -164,16 +180,31 @@ void TradingEngine::executeSignal(const Signal& signal) {
             "Executing BUY: " + m_config.symbol + " qty=" + std::to_string(m_config.tradeQuantity) +
             " confidence=" + std::to_string(signal.confidence));
 
-        OrderResult order = m_api.createOrder(m_config.symbol, "BUY", "MARKET",
-                                               m_config.tradeQuantity);
+        auto quantity = toQuantity(m_config.tradeQuantity);
+        if (!quantity) {
+            Logger::instance().log(LogLevel::ERROR, "Invalid trade quantity for BUY placement");
+            return;
+        }
+
+        MarketOrderDraft draft{
+            .symbol = m_config.symbol,
+            .side = OrderSide::Buy,
+            .quantity = *quantity,
+            .positionSide = PositionSide::Both,
+        };
+        auto placement = m_api.marketOrder(std::move(draft));
+        if (!placement) {
+            Logger::instance().log(LogLevel::ERROR,
+                "BUY order failed: " + placement.error().toString());
+            return;
+        }
 
         Logger::instance().log(LogLevel::TRADE,
-            "BUY order: id=" + std::to_string(order.orderId) +
-            " status=" + order.status +
-            " executed=" + std::to_string(order.executedQty));
+            "BUY order: id=" + std::to_string(placement->orderId.value_or(0)) +
+            " status=" + placement->orderStatus.value_or("N/A"));
 
         if (m_onTrade) {
-            m_onTrade(order);
+            m_onTrade(*placement);
         }
     } else if (signal.action == Signal::Action::SELL) {
         if (!hasOpenPosition(m_config.symbol)) {
@@ -184,16 +215,31 @@ void TradingEngine::executeSignal(const Signal& signal) {
         Logger::instance().log(LogLevel::TRADE,
             "Executing SELL: " + m_config.symbol + " qty=" + std::to_string(m_config.tradeQuantity));
 
-        OrderResult order = m_api.createOrder(m_config.symbol, "SELL", "MARKET",
-                                               m_config.tradeQuantity);
+        auto quantity = toQuantity(m_config.tradeQuantity);
+        if (!quantity) {
+            Logger::instance().log(LogLevel::ERROR, "Invalid trade quantity for SELL placement");
+            return;
+        }
+
+        MarketOrderDraft draft{
+            .symbol = m_config.symbol,
+            .side = OrderSide::Sell,
+            .quantity = *quantity,
+            .positionSide = PositionSide::Both,
+        };
+        auto placement = m_api.marketOrder(std::move(draft));
+        if (!placement) {
+            Logger::instance().log(LogLevel::ERROR,
+                "SELL order failed: " + placement.error().toString());
+            return;
+        }
 
         Logger::instance().log(LogLevel::TRADE,
-            "SELL order: id=" + std::to_string(order.orderId) +
-            " status=" + order.status +
-            " executed=" + std::to_string(order.executedQty));
+            "SELL order: id=" + std::to_string(placement->orderId.value_or(0)) +
+            " status=" + placement->orderStatus.value_or("N/A"));
 
         if (m_onTrade) {
-            m_onTrade(order);
+            m_onTrade(*placement);
         }
     }
 }
@@ -255,6 +301,6 @@ void TradingEngine::setOnSignal(std::function<void(const Signal&)> callback) {
     m_onSignal = std::move(callback);
 }
 
-void TradingEngine::setOnTrade(std::function<void(const OrderResult&)> callback) {
+void TradingEngine::setOnTrade(std::function<void(const NormalPlacementResult&)> callback) {
     m_onTrade = std::move(callback);
 }
