@@ -39,6 +39,8 @@ struct OrderRequest {
     std::optional<bool> closePosition;
     std::optional<WorkingType> workingType;
     std::optional<std::string> newClientOrderId;
+    std::optional<std::string> origClientOrderId;
+    int64_t orderId{0};
     std::optional<std::string> newOrderRespType;
     std::optional<int64_t> recvWindow;
     std::vector<std::pair<std::string, std::string>> extraParams;
@@ -70,4 +72,22 @@ struct Order {
 
 struct BatchOrderResult {
     std::vector<std::expected<Order, BinanceError>> results;
+};
+
+struct UserTrade {
+    std::string symbol;
+    int64_t id{0};
+    int64_t orderId{0};
+    OrderSide side{OrderSide::Buy};
+    std::string price;
+    std::string qty;
+    std::string realizedPnl;
+    std::string marginAsset;
+    std::string quoteQty;
+    std::string commission;
+    std::string commissionAsset;
+    int64_t time{0};
+    PositionSide positionSide{PositionSide::Both};
+    bool maker{false};
+    bool buyer{false};
 };

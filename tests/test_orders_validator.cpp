@@ -111,3 +111,92 @@ TEST(OrderValidatorTest, BatchValidatesEachDraftContent) {
     auto report = validator.validateBatch(drafts);
     EXPECT_TRUE(report.hasErrors());
 }
+
+TEST(OrderValidatorTest, RawTimestampAndSignatureAllowedWhenOverrideEnabled) {
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.positionMode = PositionMode::OneWay;
+    cfg.allowRawTimestampOverride = true;
+    OrderValidator validator(cfg);
+
+    MarketOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .side = OrderSide::Buy,
+        .quantity = qty("0.01"),
+        .raw = {
+            {"timestamp", "1700000000000"},
+            {"signature", "abc"},
+            {"recvWindow", "3000"},
+        },
+    };
+
+    auto report = validator.validateMarket(draft);
+    EXPECT_FALSE(report.hasErrors());
+}
+
+TEST(OrderValidatorTest, RawParamKeyMustBeConservativeAscii) {
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.positionMode = PositionMode::OneWay;
+    OrderValidator validator(cfg);
+
+    MarketOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .side = OrderSide::Buy,
+        .quantity = qty("0.01"),
+        .raw = {
+            {"bad&key", "1"},
+        },
+    };
+
+    auto report = validator.validateMarket(draft);
+    EXPECT_TRUE(report.hasErrors());
+}
+
+TEST(OrderValidatorTest, RawModeledResponseTypeIsBlocked) {
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.positionMode = PositionMode::OneWay;
+    OrderValidator validator(cfg);
+
+    MarketOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .side = OrderSide::Buy,
+        .quantity = qty("0.01"),
+        .raw = {
+            {"newOrderRespType", "RESULT"},
+        },
+    };
+
+    auto report = validator.validateMarket(draft);
+    EXPECT_TRUE(report.hasErrors());
+}
+
+TEST(OrderValidatorTest, ValidatorAddsWarningAndSkippedAdvisories) {
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.positionMode = PositionMode::Unknown;
+    OrderValidator validator(cfg);
+
+    MarketOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .side = OrderSide::Buy,
+        .quantity = qty("0.01"),
+    };
+
+    auto report = validator.validateMarket(draft);
+    bool foundWarning = false;
+    bool foundSkipped = false;
+    for (const auto& issue : report.issues) {
+        if (issue.severity == ValidationIssue::Severity::Warning) {
+            foundWarning = true;
+        }
+        if (issue.severity == ValidationIssue::Severity::Skipped) {
+            foundSkipped = true;
+        }
+    }
+
+    EXPECT_TRUE(foundWarning);
+    EXPECT_TRUE(foundSkipped);
+    EXPECT_FALSE(report.hasErrors());
+}

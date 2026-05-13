@@ -1,0 +1,18 @@
+{
+  "cmake.configurePreset": "windows-msvc-debug",
+  "cmake.buildPreset": "windows-msvc-debug",
+  "cmake.ctestPreset": "windows-msvc-debug",
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": true,
+  "cmake.ctestArgs": [
+    "--output-on-failure"
+  ],
+  "cmake.preferredGenerators": [
+    "Visual Studio 17 2022",
+    "Ninja"
+  ],
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "files.associations": {
+    "*.inl": "cpp"
+  }
+}

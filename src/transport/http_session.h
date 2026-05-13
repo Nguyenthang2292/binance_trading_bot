@@ -36,6 +36,7 @@ public:
 
     int lastUsedWeight() const { return m_lastUsedWeight.load(); }
     int lastUsedOrders() const { return m_lastUsedOrders.load(); }
+    int lastUsedOrders10s() const { return m_lastUsedOrders10s.load(); }
 
 private:
     using Stream = boost::beast::ssl_stream<boost::beast::tcp_stream>;
@@ -51,4 +52,5 @@ private:
     bool m_connected{false};
     std::atomic<int> m_lastUsedWeight{0};
     std::atomic<int> m_lastUsedOrders{0};
+    std::atomic<int> m_lastUsedOrders10s{0};
 };

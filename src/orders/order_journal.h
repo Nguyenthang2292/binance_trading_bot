@@ -23,6 +23,7 @@ struct JournalEntry {
     std::optional<int64_t> responseTimestampMs;
     PlacementState state{PlacementState::UnknownPendingReconcile};
     std::optional<int64_t> binanceOrderId;
+    std::optional<OrderMetadata> metadata;
 };
 
 class OrderJournal {
@@ -52,4 +53,30 @@ private:
     std::mutex m_mutex;
     std::unordered_map<CorrelationId, JournalEntry> m_entriesByCorrelationId;
     std::unordered_map<ClientOrderId, CorrelationId> m_correlationByClientId;
+};
+
+class DurableOrderJournal final : public OrderJournal {
+public:
+    explicit DurableOrderJournal(std::string path);
+
+    std::expected<void, BinanceError> recordIntent(JournalEntry entry) override;
+    std::expected<void, BinanceError> updateState(CorrelationId id,
+                                                  PlacementState state,
+                                                  std::optional<int64_t> binanceOrderId) override;
+    std::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override;
+    std::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(
+        const ClientOrderId& clientOrderId) override;
+
+private:
+    std::mutex m_mutex;
+    std::string m_path;
+    std::unordered_map<CorrelationId, JournalEntry> m_entriesByCorrelationId;
+    std::unordered_map<ClientOrderId, CorrelationId> m_correlationByClientId;
+
+    std::expected<void, BinanceError> appendRecord(const std::string& op,
+                                                   const CorrelationId& correlationId,
+                                                   PlacementState state,
+                                                   std::optional<int64_t> binanceOrderId,
+                                                   const JournalEntry* entry);
+    std::expected<void, BinanceError> loadFromFile();
 };

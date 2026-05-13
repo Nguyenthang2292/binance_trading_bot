@@ -19,3 +19,9 @@ build/
 
 # Local assistant worktrees
 .claude/worktrees/
+
+# EC2 infrastructure state (contains instance IDs and IPs)
+infra/.ec2-state
+
+# SSH private keys
+*.pem

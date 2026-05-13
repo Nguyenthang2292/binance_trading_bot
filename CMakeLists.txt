@@ -6,6 +6,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+if(MSVC)
+    # Avoid C1041 when parallel compilation writes to the same PDB file.
+    add_compile_options(
+        $<$<AND:$<C_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:C>>:/FS>
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:CXX>>:/FS>
+        $<$<AND:$<C_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:CXX>>:/await:strict>
+    )
+endif()
+
 include(FetchContent)
 
 set(BOOST_INCLUDE_LIBRARIES beast asio system)
@@ -29,6 +38,7 @@ set(LIB_SOURCES
     src/context.cpp
     src/types/error.cpp
     src/transport/http_session.cpp
+    src/transport/rate_limit_headers.cpp
     src/transport/ws_session.cpp
     src/rest/rest_client.cpp
     src/rest/signer.cpp
@@ -38,6 +48,10 @@ set(LIB_SOURCES
     src/orders/order_journal.cpp
     src/orders/order_mapper.cpp
     src/orders/order_validator.cpp
+    src/orders/order_result.cpp
+    src/orders/normal_order_service.cpp
+    src/orders/algo_order_service.cpp
+    src/orders/mql4_adapter.cpp
     src/orders/orders.cpp
     src/orders/rest_client_adapter.cpp
     src/ws/ws_client.cpp
@@ -56,16 +70,23 @@ set(LIB_HEADERS
     src/types/account.h
     src/types/events.h
     src/transport/http_session.h
+    src/transport/rate_limit_headers.h
     src/transport/ws_session.h
     src/rest/rest_client.h
     src/rest/signer.h
     src/rest/rate_limiter.h
     src/orders/decimal_string.h
+    src/orders/order_common.h
+    src/orders/order_drafts.h
+    src/orders/order_result.h
     src/orders/order_types.h
     src/orders/order_id_generator.h
     src/orders/order_journal.h
     src/orders/order_mapper.h
     src/orders/order_validator.h
+    src/orders/normal_order_service.h
+    src/orders/algo_order_service.h
+    src/orders/mql4_adapter.h
     src/orders/irest_client.h
     src/orders/rest_client_adapter.h
     src/orders/orders.h
@@ -87,9 +108,13 @@ target_link_libraries(bot_lib PUBLIC
     simdjson::simdjson
     OpenSSL::SSL
     OpenSSL::Crypto
-    pthread
 )
+if(NOT WIN32)
+    target_link_libraries(bot_lib PUBLIC pthread)
+endif()
 target_compile_features(bot_lib PUBLIC cxx_std_23)
+target_compile_options(bot_lib PUBLIC $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+target_compile_definitions(bot_lib PUBLIC $<$<CXX_COMPILER_ID:MSVC>:_WIN32_WINNT=0x0A00>)
 
 add_executable(${PROJECT_NAME} src/main.cpp)
 target_link_libraries(${PROJECT_NAME} PRIVATE bot_lib)

@@ -26,11 +26,11 @@ void Logger::setMinLevel(LogLevel level) {
 
 std::string Logger::levelToString(LogLevel level) const {
     switch (level) {
-        case LogLevel::DEBUG:   return "DEBUG  ";
-        case LogLevel::INFO:    return "INFO   ";
-        case LogLevel::WARNING: return "WARNING";
-        case LogLevel::ERROR:   return "ERROR  ";
-        case LogLevel::TRADE:   return "TRADE  ";
+        case LogLevel::Debug:   return "DEBUG  ";
+        case LogLevel::Info:    return "INFO   ";
+        case LogLevel::Warning: return "WARNING";
+        case LogLevel::Error:   return "ERROR  ";
+        case LogLevel::Trade:   return "TRADE  ";
         default:                return "UNKNOWN";
     }
 }
@@ -49,11 +49,11 @@ std::string Logger::getTimestamp() const {
 
 std::string Logger::getColor(LogLevel level) const {
     switch (level) {
-        case LogLevel::DEBUG:   return "\033[36m";
-        case LogLevel::INFO:    return "\033[32m";
-        case LogLevel::WARNING: return "\033[33m";
-        case LogLevel::ERROR:   return "\033[31m";
-        case LogLevel::TRADE:   return "\033[35m";
+        case LogLevel::Debug:   return "\033[36m";
+        case LogLevel::Info:    return "\033[32m";
+        case LogLevel::Warning: return "\033[33m";
+        case LogLevel::Error:   return "\033[31m";
+        case LogLevel::Trade:   return "\033[35m";
         default:                return "\033[0m";
     }
 }

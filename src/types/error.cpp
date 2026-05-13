@@ -1,5 +1,6 @@
 #include "types/error.h"
 
+#include <boost/asio/error.hpp>
 #include <simdjson.h>
 
 #include <sstream>
@@ -25,6 +26,13 @@ std::string BinanceError::toString() const {
     return out.str();
 }
 
+bool BinanceError::isOperationAbortedBeforeSend() const {
+    return category == ErrorCategory::Network
+        && networkPhase == NetworkErrorPhase::BeforeSend
+        && systemError.has_value()
+        && *systemError == boost::asio::error::operation_aborted;
+}
+
 BinanceError BinanceError::fromApiResponse(int code, std::string_view msg) {
     ErrorCategory category = ErrorCategory::Api;
     if (code == -2014 || code == -2015 || code == -1022) {
@@ -33,8 +41,14 @@ BinanceError BinanceError::fromApiResponse(int code, std::string_view msg) {
     return {category, code, std::string(msg)};
 }
 
-BinanceError BinanceError::fromNetwork(boost::system::error_code ec) {
-    return {ErrorCategory::Network, ec.value(), ec.message()};
+BinanceError BinanceError::fromNetwork(boost::system::error_code ec, NetworkErrorPhase phase) {
+    return {
+        .category = ErrorCategory::Network,
+        .code = ec.value(),
+        .message = ec.message(),
+        .systemError = ec,
+        .networkPhase = phase,
+    };
 }
 
 BinanceError BinanceError::fromHttp(int httpStatus, std::string_view body) {

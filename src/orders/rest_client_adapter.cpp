@@ -4,6 +4,10 @@ boost::asio::awaitable<RestResult<Order>> RestClientAdapter::newOrder(OrderReque
     co_return co_await m_client.newOrder(std::move(req));
 }
 
+boost::asio::awaitable<RestResult<Order>> RestClientAdapter::modifyOrder(OrderRequest req) {
+    co_return co_await m_client.modifyOrder(std::move(req));
+}
+
 boost::asio::awaitable<RestResult<Order>> RestClientAdapter::cancelOrder(std::string symbol, int64_t orderId) {
     co_return co_await m_client.cancelOrder(std::move(symbol), orderId);
 }
@@ -38,6 +42,15 @@ boost::asio::awaitable<RestResult<std::vector<Order>>> RestClientAdapter::allOrd
     std::optional<int64_t> endTime,
     int limit) {
     co_return co_await m_client.allOrders(std::move(symbol), startTime, endTime, limit);
+}
+
+boost::asio::awaitable<RestResult<std::vector<UserTrade>>> RestClientAdapter::userTrades(
+    std::string symbol,
+    std::optional<int64_t> orderId,
+    std::optional<int64_t> startTime,
+    std::optional<int64_t> endTime,
+    int limit) {
+    co_return co_await m_client.userTrades(std::move(symbol), orderId, startTime, endTime, limit);
 }
 
 boost::asio::awaitable<RestResult<BatchOrderResult>> RestClientAdapter::batchOrders(std::vector<OrderRequest> reqs) {

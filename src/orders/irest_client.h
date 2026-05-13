@@ -18,6 +18,7 @@ public:
     virtual ~IRestClient() = default;
 
     virtual boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest req) = 0;
+    virtual boost::asio::awaitable<RestResult<Order>> modifyOrder(OrderRequest req) = 0;
     virtual boost::asio::awaitable<RestResult<Order>> cancelOrder(std::string symbol, int64_t orderId) = 0;
     virtual boost::asio::awaitable<RestResult<Order>> cancelOrderByClientOrderId(
         std::string symbol, std::string clientOrderId) = 0;
@@ -29,6 +30,12 @@ public:
         std::optional<std::string> symbol = {}) = 0;
     virtual boost::asio::awaitable<RestResult<std::vector<Order>>> allOrders(
         std::string symbol,
+        std::optional<int64_t> startTime = {},
+        std::optional<int64_t> endTime = {},
+        int limit = 500) = 0;
+    virtual boost::asio::awaitable<RestResult<std::vector<UserTrade>>> userTrades(
+        std::string symbol,
+        std::optional<int64_t> orderId = {},
         std::optional<int64_t> startTime = {},
         std::optional<int64_t> endTime = {},
         int limit = 500) = 0;

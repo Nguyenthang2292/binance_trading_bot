@@ -9,7 +9,7 @@
 std::atomic<bool> g_running{true};
 
 void signalHandler(int signum) {
-    Logger::instance().log(LogLevel::INFO, "Received signal " + std::to_string(signum) + ", shutting down...");
+    Logger::instance().log(LogLevel::Info, "Received signal " + std::to_string(signum) + ", shutting down...");
     g_running = false;
 }
 
@@ -20,7 +20,7 @@ void onSignal(const Signal& signal) {
         case Signal::Action::SELL: action = "SELL"; break;
         case Signal::Action::HOLD: action = "HOLD"; break;
     }
-    Logger::instance().log(LogLevel::TRADE,
+    Logger::instance().log(LogLevel::Trade,
         "Signal received: " + action + " (confidence: " + std::to_string(signal.confidence) + ")");
 }
 
@@ -29,7 +29,7 @@ void onTrade(const NormalPlacementResult& order) {
         order.state == PlacementState::Accepted
             ? "ACCEPTED"
             : (order.state == PlacementState::Rejected ? "REJECTED" : "UNKNOWN_PENDING_RECONCILE");
-    Logger::instance().log(LogLevel::TRADE,
+    Logger::instance().log(LogLevel::Trade,
         "Trade executed: " + order.symbol +
         " state=" + state +
         " clientOrderId=" + order.clientOrderId +
@@ -47,8 +47,8 @@ int main(int argc, char* argv[]) {
 )" << std::endl;
 
     Logger::instance().setLogFile("trading_bot.log");
-    Logger::instance().setMinLevel(LogLevel::DEBUG);
-    Logger::instance().log(LogLevel::INFO, "Binance Trading Bot v1.0.0 started");
+    Logger::instance().setMinLevel(LogLevel::Debug);
+    Logger::instance().log(LogLevel::Info, "Binance Trading Bot v1.0.0 started");
 
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
@@ -57,23 +57,23 @@ int main(int argc, char* argv[]) {
     const char* secretKey = std::getenv("BINANCE_SECRET_KEY");
 
     if (!apiKey || !secretKey) {
-        Logger::instance().log(LogLevel::ERROR,
+        Logger::instance().log(LogLevel::Error,
             "Please set BINANCE_API_KEY and BINANCE_SECRET_KEY environment variables");
         return 1;
     }
 
     BinanceAPI api(apiKey, secretKey);
 
-    Logger::instance().log(LogLevel::INFO, "Testing Binance connectivity...");
+    Logger::instance().log(LogLevel::Info, "Testing Binance connectivity...");
     if (!api.testConnectivity()) {
-        Logger::instance().log(LogLevel::ERROR, "Failed to connect to Binance API");
+        Logger::instance().log(LogLevel::Error, "Failed to connect to Binance API");
         return 1;
     }
-    Logger::instance().log(LogLevel::INFO, "Connected to Binance API successfully");
+    Logger::instance().log(LogLevel::Info, "Connected to Binance API successfully");
 
     auto btcPrice = api.getPrice("BTCUSDT");
     if (btcPrice.has_value()) {
-        Logger::instance().log(LogLevel::INFO,
+        Logger::instance().log(LogLevel::Info,
             "BTC/USDT Current Price: $" + std::to_string(btcPrice.value()));
     }
 
@@ -94,9 +94,9 @@ int main(int argc, char* argv[]) {
     engine.setOnSignal(onSignal);
     engine.setOnTrade(onTrade);
 
-    Logger::instance().log(LogLevel::INFO, "Starting trading engine (DRY RUN - no real trades)");
-    Logger::instance().log(LogLevel::INFO, "Symbol: " + config.symbol + " Interval: " + config.interval);
-    Logger::instance().log(LogLevel::INFO, "Press Ctrl+C to stop");
+    Logger::instance().log(LogLevel::Info, "Starting trading engine (DRY RUN - no real trades)");
+    Logger::instance().log(LogLevel::Info, "Symbol: " + config.symbol + " Interval: " + config.interval);
+    Logger::instance().log(LogLevel::Info, "Press Ctrl+C to stop");
 
     engine.start();
 
@@ -104,9 +104,9 @@ int main(int argc, char* argv[]) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
-    Logger::instance().log(LogLevel::INFO, "Stopping trading engine...");
+    Logger::instance().log(LogLevel::Info, "Stopping trading engine...");
     engine.stop();
-    Logger::instance().log(LogLevel::INFO, "Binance Trading Bot stopped");
+    Logger::instance().log(LogLevel::Info, "Binance Trading Bot stopped");
 
     return 0;
 }

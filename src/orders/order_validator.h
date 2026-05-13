@@ -9,6 +9,8 @@ public:
     ValidationReport validateMarket(const MarketOrderDraft& draft) const;
     ValidationReport validateLimit(const LimitOrderDraft& draft) const;
     ValidationReport validateCloseByMarket(const CloseByMarketDraft& draft) const;
+    ValidationReport validateStopEntry(const StopEntryDraft& draft) const;
+    ValidationReport validateProtection(const ProtectionOrderDraft& draft) const;
     ValidationReport validateBatch(const std::vector<NormalOrderDraft>& drafts) const;
 
 private:
@@ -17,4 +19,5 @@ private:
     void validateClientOrderId(const std::optional<ClientOrderId>& clientOrderId, ValidationReport& report) const;
     void validateCommon(const Symbol& symbol, const Quantity& quantity, ValidationReport& report) const;
     void validateRawParams(const RawOrderParams& raw, ValidationReport& report) const;
+    void addAdvisoryIssues(const Symbol& symbol, ValidationReport& report) const;
 };

@@ -1,12 +1,12 @@
 #include "transport/http_session.h"
 
+#include "transport/rate_limit_headers.h"
+
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/version.hpp>
 #include <openssl/ssl.h>
-
-#include <charconv>
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -45,7 +45,7 @@ asio::awaitable<std::expected<void, BinanceError>> HttpSession::ensureConnected(
         co_return std::expected<void, BinanceError>{};
     } catch (const boost::system::system_error& e) {
         resetStream();
-        co_return std::unexpected(BinanceError::fromNetwork(e.code()));
+            co_return std::unexpected(BinanceError::fromNetwork(e.code(), NetworkErrorPhase::BeforeSend));
     } catch (const std::exception& e) {
         resetStream();
         co_return std::unexpected(BinanceError{ErrorCategory::Network, 0, e.what()});
@@ -123,19 +123,18 @@ asio::awaitable<HttpSession::Result> HttpSession::execute(http::request<http::st
         co_await http::async_write(*m_stream, req, asio::use_awaitable);
         co_await http::async_read(*m_stream, buffer, res, asio::use_awaitable);
 
-        if (auto it = res.find("X-MBX-USED-WEIGHT-1M"); it != res.end()) {
-            int parsed = 0;
-            std::string value(it->value());
-            if (std::from_chars(value.data(), value.data() + value.size(), parsed).ec == std::errc{}) {
-                m_lastUsedWeight = parsed;
-            }
+        RateLimitHeaderUsage usage;
+        for (const auto& field : res) {
+            applyRateLimitHeader(usage, field.name_string(), field.value());
         }
-        if (auto it = res.find("X-MBX-ORDER-COUNT-1M"); it != res.end()) {
-            int parsed = 0;
-            std::string value(it->value());
-            if (std::from_chars(value.data(), value.data() + value.size(), parsed).ec == std::errc{}) {
-                m_lastUsedOrders = parsed;
-            }
+        if (usage.usedWeight1m >= 0) {
+            m_lastUsedWeight = usage.usedWeight1m;
+        }
+        if (usage.usedOrders1m >= 0) {
+            m_lastUsedOrders = usage.usedOrders1m;
+        }
+        if (usage.usedOrders10s >= 0) {
+            m_lastUsedOrders10s = usage.usedOrders10s;
         }
 
         if (!res.keep_alive()) {
@@ -149,7 +148,7 @@ asio::awaitable<HttpSession::Result> HttpSession::execute(http::request<http::st
         co_return res.body();
     } catch (const boost::system::system_error& e) {
         resetStream();
-        co_return std::unexpected(BinanceError::fromNetwork(e.code()));
+        co_return std::unexpected(BinanceError::fromNetwork(e.code(), NetworkErrorPhase::AfterSend));
     } catch (const std::exception& e) {
         resetStream();
         co_return std::unexpected(BinanceError{ErrorCategory::Network, 0, e.what()});

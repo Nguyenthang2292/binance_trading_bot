@@ -99,6 +99,8 @@ WorkingType parseWorkingType(std::string_view value) {
     return value == "MARK_PRICE" ? WorkingType::MarkPrice : WorkingType::ContractPrice;
 }
 
+std::string urlEncode(std::string_view input);
+
 std::string query(std::initializer_list<std::pair<std::string, std::string>> params) {
     std::string out;
     for (const auto& [k, v] : params) {
@@ -108,23 +110,11 @@ std::string query(std::initializer_list<std::pair<std::string, std::string>> par
         if (!out.empty()) {
             out += '&';
         }
-        out += k;
+        out += urlEncode(k);
         out += '=';
-        out += v;
+        out += urlEncode(v);
     }
     return out;
-}
-
-void appendParam(std::string& out, std::string_view key, std::string_view value) {
-    if (value.empty()) {
-        return;
-    }
-    if (!out.empty()) {
-        out.push_back('&');
-    }
-    out.append(key);
-    out.push_back('=');
-    out.append(value);
 }
 
 std::string urlEncode(std::string_view input) {
@@ -139,6 +129,47 @@ std::string urlEncode(std::string_view input) {
         }
     }
     return out.str();
+}
+
+void appendParam(std::string& out, std::string_view key, std::string_view value) {
+    if (value.empty()) {
+        return;
+    }
+    if (!out.empty()) {
+        out.push_back('&');
+    }
+    out.append(urlEncode(key));
+    out.push_back('=');
+    out.append(urlEncode(value));
+}
+
+std::string jsonEscape(std::string_view input) {
+    std::ostringstream out;
+    for (unsigned char c : input) {
+        switch (c) {
+            case '\\': out << "\\\\"; break;
+            case '"': out << "\\\""; break;
+            case '\b': out << "\\b"; break;
+            case '\f': out << "\\f"; break;
+            case '\n': out << "\\n"; break;
+            case '\r': out << "\\r"; break;
+            case '\t': out << "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    out << "\\u"
+                        << std::hex << std::uppercase << std::setw(4) << std::setfill('0')
+                        << static_cast<int>(c)
+                        << std::dec << std::setfill(' ');
+                } else {
+                    out << static_cast<char>(c);
+                }
+        }
+    }
+    return out.str();
+}
+
+void appendJsonStringField(std::ostringstream& json, std::string_view key, std::string_view value) {
+    json << ",\"" << jsonEscape(key) << "\":\"" << jsonEscape(value) << "\"";
 }
 
 std::string_view asString(simdjson::ondemand::value value) {
@@ -382,35 +413,35 @@ RestClient::RawParseResult RestClient::rawParse(std::string_view body) {
 asio::awaitable<HttpSession::Result> RestClient::publicGet(std::string_view path, std::string q) {
     co_await m_rateLimiter.waitIfNeeded();
     auto result = co_await m_session->get(path, q);
-    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders());
+    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders(), m_session->lastUsedOrders10s());
     co_return result;
 }
 
 asio::awaitable<HttpSession::Result> RestClient::signedGet(std::string_view path, std::string params) {
     co_await m_rateLimiter.waitIfNeeded();
     auto result = co_await m_session->get(path, m_signer.addSignature(params), m_cfg.apiKey);
-    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders());
+    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders(), m_session->lastUsedOrders10s());
     co_return result;
 }
 
 asio::awaitable<HttpSession::Result> RestClient::signedPost(std::string_view path, std::string params) {
     co_await m_rateLimiter.waitIfNeeded();
     auto result = co_await m_session->post(path, m_signer.addSignature(params), m_cfg.apiKey);
-    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders());
+    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders(), m_session->lastUsedOrders10s());
     co_return result;
 }
 
 asio::awaitable<HttpSession::Result> RestClient::signedPut(std::string_view path, std::string params) {
     co_await m_rateLimiter.waitIfNeeded();
     auto result = co_await m_session->put(path, m_signer.addSignature(params), m_cfg.apiKey);
-    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders());
+    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders(), m_session->lastUsedOrders10s());
     co_return result;
 }
 
 asio::awaitable<HttpSession::Result> RestClient::signedDelete(std::string_view path, std::string params) {
     co_await m_rateLimiter.waitIfNeeded();
     auto result = co_await m_session->del(path, m_signer.addSignature(params), m_cfg.apiKey);
-    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders());
+    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders(), m_session->lastUsedOrders10s());
     co_return result;
 }
 
@@ -717,6 +748,30 @@ asio::awaitable<Result<Order>> RestClient::newOrder(OrderRequest req) {
     });
 }
 
+asio::awaitable<Result<Order>> RestClient::modifyOrder(OrderRequest req) {
+    std::string params;
+    appendParam(params, "symbol", upper(req.symbol));
+    appendParam(params, "side", sideToString(req.side));
+    appendParam(params, "quantity", req.quantity);
+    appendParam(params, "price", req.price.value_or(""));
+    if (req.orderId != 0) {
+        appendParam(params, "orderId", std::to_string(req.orderId));
+    }
+    if (req.origClientOrderId) {
+        appendParam(params, "origClientOrderId", *req.origClientOrderId);
+    }
+    appendParam(params, "recvWindow", req.recvWindow ? std::to_string(*req.recvWindow) : "");
+    for (const auto& [k, v] : req.extraParams) {
+        appendParam(params, k, v);
+    }
+    auto body = co_await signedPut("/fapi/v1/order", params);
+    if (!body) co_return std::unexpected(body.error());
+    co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
+        auto object = doc.get_object().value();
+        return parseOrder(object);
+    });
+}
+
 asio::awaitable<Result<Order>> RestClient::cancelOrder(std::string symbol, int64_t orderId) {
     auto body = co_await signedDelete("/fapi/v1/order", query({{"symbol", upper(symbol)}, {"orderId", std::to_string(orderId)}}));
     if (!body) co_return std::unexpected(body.error());
@@ -800,6 +855,47 @@ asio::awaitable<Result<std::vector<Order>>> RestClient::allOrders(std::string sy
     });
 }
 
+asio::awaitable<Result<std::vector<UserTrade>>> RestClient::userTrades(std::string symbol,
+                                                                   std::optional<int64_t> orderId,
+                                                                   std::optional<int64_t> startTime,
+                                                                   std::optional<int64_t> endTime,
+                                                                   int limit) {
+    auto params = query({
+        {"symbol", upper(symbol)},
+        {"orderId", orderId ? std::to_string(*orderId) : ""},
+        {"startTime", startTime ? std::to_string(*startTime) : ""},
+        {"endTime", endTime ? std::to_string(*endTime) : ""},
+        {"limit", std::to_string(limit)},
+    });
+    auto body = co_await signedGet("/fapi/v1/userTrades", params);
+    if (!body) co_return std::unexpected(body.error());
+    co_return parseResponse<std::vector<UserTrade>>(*body, [](simdjson::ondemand::document& doc) {
+        std::vector<UserTrade> out;
+        auto array = doc.get_array().value();
+        for (auto itemValue : array) {
+            auto item = itemValue.get_object().value();
+            UserTrade t;
+            t.symbol = stringField(item, "symbol");
+            t.id = intField(item, "id");
+            t.orderId = intField(item, "orderId");
+            t.side = parseSide(stringField(item, "side"));
+            t.price = decimalField(item, "price");
+            t.qty = decimalField(item, "qty");
+            t.realizedPnl = decimalField(item, "realizedPnl");
+            t.marginAsset = stringField(item, "marginAsset");
+            t.quoteQty = decimalField(item, "quoteQty");
+            t.commission = decimalField(item, "commission");
+            t.commissionAsset = stringField(item, "commissionAsset");
+            t.time = intField(item, "time");
+            t.positionSide = parsePositionSide(stringField(item, "positionSide"));
+            t.maker = boolField(item, "maker");
+            t.buyer = boolField(item, "buyer");
+            out.push_back(std::move(t));
+        }
+        return out;
+    });
+}
+
 asio::awaitable<Result<BatchOrderResult>> RestClient::batchOrders(std::vector<OrderRequest> reqs) {
     std::vector<OrderRequest> limited;
     const size_t maxBatch = std::min<size_t>(5, reqs.size());
@@ -810,29 +906,58 @@ asio::awaitable<Result<BatchOrderResult>> RestClient::batchOrders(std::vector<Or
 
     std::ostringstream json;
     json << "[";
+    std::optional<int64_t> recvWindow;
+    std::vector<std::pair<std::string, std::string>> outerParams;
     for (size_t i = 0; i < limited.size(); ++i) {
         const auto& req = limited[i];
+        if (!recvWindow && req.recvWindow) {
+            recvWindow = req.recvWindow;
+        }
         if (i > 0) json << ",";
         json << "{";
-        json << "\"symbol\":\"" << upper(req.symbol) << "\",";
+        json << "\"symbol\":\"" << jsonEscape(upper(req.symbol)) << "\",";
         json << "\"side\":\"" << sideToString(req.side) << "\",";
         json << "\"type\":\"" << typeToString(req.type) << "\",";
         json << "\"positionSide\":\"" << positionSideToString(req.positionSide) << "\",";
-        json << "\"quantity\":\"" << req.quantity << "\"";
-        if (req.price) json << ",\"price\":\"" << *req.price << "\"";
-        if (req.stopPrice) json << ",\"stopPrice\":\"" << *req.stopPrice << "\"";
-        if (req.activationPrice) json << ",\"activationPrice\":\"" << *req.activationPrice << "\"";
-        if (req.callbackRate) json << ",\"callbackRate\":\"" << *req.callbackRate << "\"";
-        if (req.timeInForce) json << ",\"timeInForce\":\"" << tifToString(*req.timeInForce) << "\"";
-        if (req.reduceOnly) json << ",\"reduceOnly\":\"" << boolParam(*req.reduceOnly) << "\"";
-        if (req.closePosition) json << ",\"closePosition\":\"" << boolParam(*req.closePosition) << "\"";
-        if (req.workingType) json << ",\"workingType\":\"" << workingTypeToString(*req.workingType) << "\"";
-        if (req.newClientOrderId) json << ",\"newClientOrderId\":\"" << *req.newClientOrderId << "\"";
+        json << "\"quantity\":\"" << jsonEscape(req.quantity) << "\"";
+        if (req.price) appendJsonStringField(json, "price", *req.price);
+        if (req.stopPrice) appendJsonStringField(json, "stopPrice", *req.stopPrice);
+        if (req.activationPrice) appendJsonStringField(json, "activationPrice", *req.activationPrice);
+        if (req.callbackRate) appendJsonStringField(json, "callbackRate", *req.callbackRate);
+        if (req.timeInForce) appendJsonStringField(json, "timeInForce", tifToString(*req.timeInForce));
+        if (req.reduceOnly) appendJsonStringField(json, "reduceOnly", boolParam(*req.reduceOnly));
+        if (req.closePosition) appendJsonStringField(json, "closePosition", boolParam(*req.closePosition));
+        if (req.workingType) appendJsonStringField(json, "workingType", workingTypeToString(*req.workingType));
+        if (req.newClientOrderId) appendJsonStringField(json, "newClientOrderId", *req.newClientOrderId);
+        if (req.newOrderRespType) appendJsonStringField(json, "newOrderRespType", *req.newOrderRespType);
+        for (const auto& [k, v] : req.extraParams) {
+            if (k == "recvWindow") {
+                if (!recvWindow) {
+                    try {
+                        recvWindow = std::stoll(v);
+                    } catch (const std::exception&) {
+                    }
+                }
+                continue;
+            }
+            if (k == "timestamp" || k == "signature") {
+                outerParams.emplace_back(k, v);
+                continue;
+            }
+            appendJsonStringField(json, k, v);
+        }
         json << "}";
     }
     json << "]";
 
-    const auto params = query({{"batchOrders", urlEncode(json.str())}});
+    std::string params;
+    appendParam(params, "batchOrders", json.str());
+    if (recvWindow) {
+        appendParam(params, "recvWindow", std::to_string(*recvWindow));
+    }
+    for (const auto& [k, v] : outerParams) {
+        appendParam(params, k, v);
+    }
     auto body = co_await signedPost("/fapi/v1/batchOrders", params);
     if (!body) co_return std::unexpected(body.error());
     co_return parseResponse<BatchOrderResult>(*body, [](simdjson::ondemand::document& doc) {

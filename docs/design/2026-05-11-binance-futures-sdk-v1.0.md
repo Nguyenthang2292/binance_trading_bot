@@ -1,4 +1,5 @@
 # Binance Futures C++ SDK — Design Document
+
 **Version:** 1.1  
 **Date:** 2026-05-12  
 **Status:** Draft
@@ -22,13 +23,13 @@ Xây dựng lại hoàn toàn module tương tác với Binance **USDⓈ-M Futur
 
 | Nguồn | URL |
 |---|---|
-| Binance USDⓈ-M Futures REST docs | https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info |
-| Binance WebSocket Market Streams | https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams |
+| Binance USDⓈ-M Futures REST docs | <https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info> |
+| Binance WebSocket Market Streams | <https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams> |
 | REST base URL (production) | `https://fapi.binance.com` |
 | WebSocket base URL (production) | `wss://fstream.binance.com` |
 | REST testnet | `https://demo-fapi.binance.com` |
 | WebSocket testnet | `wss://fstream.binancefuture.com` |
-| Tham khảo SDK | https://github.com/dgrr/binance-futures-sdk |
+| Tham khảo SDK | <https://github.com/dgrr/binance-futures-sdk> |
 
 ---
 
@@ -86,6 +87,13 @@ tests/
 
 ---
 
+Other implementation files currently in repository (integration/compat layer):
+- `src/binance_api.h` / `src/binance_api.cpp`
+- `src/logger.h` / `src/logger.cpp`
+- `src/trading_engine.h` / `src/trading_engine.cpp`
+- `src/common/expected_compat.h`
+- `src/ws/ws_parse_helpers.h`
+
 ## 5. Kiến Trúc Tổng Thể
 
 ```
@@ -134,6 +142,8 @@ public:
     UserDataStream makeUserDataStream();   // tự tạo RestClient nội bộ để quản lý listen key
 
     asio::io_context& ioc();
+    ssl::context& sslContext();              // advanced use only
+    const ContextConfig& config() const;
 
 private:
     ContextConfig                              m_cfg;
@@ -146,6 +156,8 @@ private:
 ```
 
 **Thread model:** `threadPoolSize = 2` là mặc định cho production (đủ cho HTTP + WS concurrent processing mà không quá nặng). Với multi-symbol hoặc throughput cao, tăng lên 3–4. Tất cả callback và coroutine đều chạy trên thread pool này — caller không cần mutex nếu chỉ dùng 1 thread. Với threadPoolSize=1, có thể xảy ra head-of-line blocking nếu một operation chờ lâu.
+
+**API caveat:** `sslContext()` expose mutable TLS context. Chỉ dùng cho advanced customization; tránh thay đổi settings runtime nếu nhiều component đang chia sẻ cùng context.
 
 ---
 
@@ -160,21 +172,33 @@ enum class ErrorCategory {
     Parse,      // simdjson parse failure hoặc unexpected schema
 };
 
+enum class NetworkErrorPhase {
+    Unknown,
+    BeforeSend,
+    AfterSend,
+};
+
 struct BinanceError {
     ErrorCategory category;
     int           code;       // Binance error code (e.g. -1121) hoặc HTTP status
     std::string   message;
+    std::optional<boost::system::error_code> systemError;
+    NetworkErrorPhase networkPhase{NetworkErrorPhase::Unknown};
 
     std::string toString() const;
+    bool isOperationAbortedBeforeSend() const;
 
     static BinanceError fromApiResponse(int code, std::string_view msg);
-    static BinanceError fromNetwork(boost::system::error_code ec);
+    static BinanceError fromNetwork(
+        boost::system::error_code ec,
+        NetworkErrorPhase phase = NetworkErrorPhase::Unknown);
     static BinanceError fromHttp(int httpStatus, std::string_view body);
     static BinanceError fromParse(std::string_view detail);
 };
 ```
 
 **Mapping HTTP status → category:**
+
 - `429` → `RateLimit` (tạm thời)
 - `418` → `RateLimit` (IP ban, không retry)
 - `401`, `403` → `Auth`
@@ -192,6 +216,10 @@ struct Kline {
     double  volume, quoteVolume;
     int32_t tradeCount;
     bool    isClosed;           // false khi đây là candle đang hình thành (từ WS)
+
+    // Backward-compatible aliases used by existing trading engine tests.
+    double quoteAssetVolume;
+    int32_t numberOfTrades;
 };
 
 struct OrderBook {
@@ -253,16 +281,19 @@ struct OrderRequest {
     OrderSide               side;
     OrderType               type;
     PositionSide            positionSide     = PositionSide::Both;
-    double                  quantity;
-    std::optional<double>   price;            // bắt buộc nếu type = Limit
-    std::optional<double>   stopPrice;        // bắt buộc nếu type = Stop/TakeProfit
-    std::optional<double>   activationPrice;  // dùng cho TrailingStopMarket
-    std::optional<double>   callbackRate;     // dùng cho TrailingStopMarket (%)
+    std::string             quantity;         // decimal string to preserve exact precision
+    std::optional<std::string>   price;            // bắt buộc nếu type = Limit
+    std::optional<std::string>   stopPrice;        // bắt buộc nếu type = Stop/TakeProfit
+    std::optional<std::string>   activationPrice;  // dùng cho TrailingStopMarket
+    std::optional<std::string>   callbackRate;     // dùng cho TrailingStopMarket (%)
     std::optional<TimeInForce> timeInForce;
     std::optional<bool>     reduceOnly;
     std::optional<bool>     closePosition;
     std::optional<WorkingType> workingType;
     std::optional<std::string> newClientOrderId;
+    std::optional<std::string> newOrderRespType;
+    std::optional<int64_t> recvWindow;
+    std::vector<std::pair<std::string, std::string>> extraParams;
 };
 
 struct Order {
@@ -273,9 +304,9 @@ struct Order {
     PositionSide positionSide;
     TimeInForce  timeInForce;
     std::string  status;         // NEW | PARTIALLY_FILLED | FILLED | CANCELED | EXPIRED
-    double       price, origQty, executedQty, avgPrice, cumQuote;
+    std::string  price, origQty, executedQty, avgPrice, cumQuote;
     bool         reduceOnly, closePosition;
-    double       stopPrice, activationPrice, priceRate;
+    std::string  stopPrice, activationPrice, priceRate;
     WorkingType  workingType;
     int64_t      time, updateTime;
 };
@@ -284,6 +315,8 @@ struct BatchOrderResult {
     std::vector<std::expected<Order, BinanceError>> results;
 };
 ```
+
+**Precision invariant:** Binance REST payloads represent order decimals as strings. Using `std::string` for order boundary fields avoids floating-point rounding/trailing-zero loss that can affect signature-stable serialization.
 
 ---
 
@@ -487,6 +520,8 @@ public:
 
     // Header X-MBX-USED-WEIGHT-1M từ response gần nhất
     int lastUsedWeight() const { return m_lastUsedWeight; }
+    int lastUsedOrders() const { return m_lastUsedOrders; }
+    int lastUsedOrders10s() const { return m_lastUsedOrders10s; }
 
 private:
     asio::awaitable<void>   ensureConnected();
@@ -498,6 +533,8 @@ private:
     beast::ssl_stream<beast::tcp_stream> m_stream;
     bool              m_connected{false};
     std::atomic<int>  m_lastUsedWeight{0};
+    std::atomic<int>  m_lastUsedOrders{0};
+    std::atomic<int>  m_lastUsedOrders10s{0};
 };
 ```
 
@@ -535,7 +572,6 @@ private:
     asio::awaitable<void> connectLoop();    // connect + read loop + reconnect
     asio::awaitable<void> doConnect();
     asio::awaitable<void> readLoop();
-    asio::awaitable<void> keepaliveLoop(); // pong + 24h TTL reconnect
 
     asio::io_context& m_ioc;
     ssl::context&     m_ssl;
@@ -552,10 +588,11 @@ private:
 ```
 
 **Keepalive & 24h reconnect logic:**
-1. Mỗi khi nhận ping frame từ server → trả pong ngay
-2. Sau 23h50m kể từ khi connect → chủ động disconnect + reconnect (tránh bị server cắt sau 24h)
-3. Khi reconnect: gọi `onDisconnect` → chờ backoff → kết nối lại → `onReconnect`
-4. Backoff: 1s → 2s → 4s → ... → tối đa 30s
+
+1. Ping/pong frame được xử lý bởi Beast websocket stack (auto pong cho control frame).
+2. Sau 23h50m kể từ khi connect, `readLoop()` chủ động đóng socket và trigger reconnect để tránh bị server cắt cứng sau 24h.
+3. Khi reconnect: gọi `onDisconnect` → chờ backoff → kết nối lại → `onReconnect`.
+4. Backoff: 1s → 2s → 4s → ... → tối đa 30s.
 
 ---
 
@@ -587,6 +624,7 @@ private:
 ```
 
 **Signing Methods:**
+
 - **HMAC-SHA256** (default): Sử dụng `HMAC(EVP_sha256(), ...)` từ OpenSSL. Kompatibel với tất cả Binance endpoints từ lâu.
 - **Ed25519**: Sử dụng `EVP_PKEY` và `EVP_DigestSign()` từ OpenSSL 1.1.1+. Bảo mật cao hơn, hỗ trợ từ Binance 2024. `secretKey` là private key hex (64 ký tự).
 
@@ -602,12 +640,14 @@ public:
     struct Limits {
         int requestWeightPerMinute = 2400;   // Binance Futures default
         int ordersPerMinute        = 1200;
+        int ordersPer10Seconds     = 300;
     };
 
     explicit RateLimiter(Limits limits = {});
 
     // Gọi sau mỗi HTTP response để cập nhật từ response headers
     void update(int usedWeight, int usedOrders);
+    void update(int usedWeight, int usedOrders, int usedOrders10s);
 
     // true nếu đang dùng >= 80% quota
     bool isNearLimit() const;
@@ -620,7 +660,9 @@ private:
     Limits           m_limits;
     std::atomic<int> m_usedWeight{0};
     std::atomic<int> m_usedOrders{0};
+    std::atomic<int> m_usedOrders10s{0};
     std::atomic<std::chrono::steady_clock::time_point> m_windowStart;
+    std::atomic<std::chrono::steady_clock::time_point> m_order10sWindowStart;
 };
 ```
 
@@ -667,6 +709,9 @@ public:
     asio::awaitable<Result<Ticker24h>>
         ticker24h(std::string symbol);
 
+    asio::awaitable<Result<std::vector<Ticker24h>>>
+        allTicker24h();
+
     asio::awaitable<Result<double>>
         bestBidPrice(std::string symbol);
 
@@ -694,11 +739,17 @@ public:
     asio::awaitable<Result<Order>>
         cancelOrder(std::string symbol, int64_t orderId);
 
+    asio::awaitable<Result<Order>>
+        cancelOrderByClientOrderId(std::string symbol, std::string clientOrderId);
+
     asio::awaitable<Result<void>>
         cancelAllOrders(std::string symbol);
 
     asio::awaitable<Result<Order>>
         queryOrder(std::string symbol, int64_t orderId);
+
+    asio::awaitable<Result<Order>>
+        queryOrderByClientOrderId(std::string symbol, std::string clientOrderId);
 
     asio::awaitable<Result<std::vector<Order>>>
         openOrders(std::optional<std::string> symbol = {});
@@ -816,13 +867,17 @@ private:
 ```
 
 **Combined stream format:** Binance hỗ trợ ghép tối đa 1024 streams trên 1 connection:
+
 ```
 wss://fstream.binance.com/stream?streams=btcusdt@aggTrade/btcusdt@kline_1m/btcusdt@markPrice
 ```
+
 Response từ combined stream được wrap:
+
 ```json
 { "stream": "btcusdt@aggTrade", "data": { ... } }
 ```
+
 `dispatchEvent` đọc `"stream"` field → tìm callback trong `m_subscriptions` → parse `"data"` thành typed event.
 
 **Sau reconnect:** `WsSession` gọi `onReconnect`, lúc đó `WsClient` gọi lại `connect()` với đúng danh sách stream tích luỹ trong `m_subscriptions`.
@@ -865,6 +920,7 @@ private:
 ```
 
 **Listen key lifecycle:**
+
 | Action | Endpoint | Thời điểm |
 |---|---|---|
 | Tạo | `POST /fapi/v1/listenKey` | Khi `start()` |
@@ -903,7 +959,7 @@ int main() {
             .symbol   = "BTCUSDT",
             .side     = OrderSide::Buy,
             .type     = OrderType::Market,
-            .quantity = 0.01,
+            .quantity = "0.01",
         });
 
         if (order) {
@@ -998,6 +1054,7 @@ uds.start([](auto ec, auto event) {
 | Parse error | custom error code |
 
 Trong callback, luôn kiểm tra `ec` trước khi truy cập `event`:
+
 ```cpp
 ws.subscribeAggTrade("btcusdt", [](auto ec, auto event) {
     if (ec) {

@@ -6,12 +6,12 @@
 class LoggerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        Logger::instance().setMinLevel(LogLevel::DEBUG);
+        Logger::instance().setMinLevel(LogLevel::Debug);
     }
 
     void TearDown() override {
         Logger::instance().setLogFile("");
-        Logger::instance().setMinLevel(LogLevel::DEBUG);
+        Logger::instance().setMinLevel(LogLevel::Debug);
     }
 };
 
@@ -22,20 +22,20 @@ TEST_F(LoggerTest, SingletonReturnsSameInstance) {
 }
 
 TEST_F(LoggerTest, AllLevelsOutputWithoutCrash) {
-    Logger::instance().log(LogLevel::DEBUG, "debug msg");
-    Logger::instance().log(LogLevel::INFO, "info msg");
-    Logger::instance().log(LogLevel::WARNING, "warn msg");
-    Logger::instance().log(LogLevel::ERROR, "error msg");
-    Logger::instance().log(LogLevel::TRADE, "trade msg");
+    Logger::instance().log(LogLevel::Debug, "debug msg");
+    Logger::instance().log(LogLevel::Info, "info msg");
+    Logger::instance().log(LogLevel::Warning, "warn msg");
+    Logger::instance().log(LogLevel::Error, "error msg");
+    Logger::instance().log(LogLevel::Trade, "trade msg");
     SUCCEED();
 }
 
 TEST_F(LoggerTest, MinLevelFiltersLowerMessages) {
-    Logger::instance().setMinLevel(LogLevel::WARNING);
+    Logger::instance().setMinLevel(LogLevel::Warning);
 
-    Logger::instance().log(LogLevel::DEBUG, "should be filtered");
-    Logger::instance().log(LogLevel::INFO, "should be filtered");
-    Logger::instance().log(LogLevel::WARNING, "should appear");
+    Logger::instance().log(LogLevel::Debug, "should be filtered");
+    Logger::instance().log(LogLevel::Info, "should be filtered");
+    Logger::instance().log(LogLevel::Warning, "should appear");
 
     SUCCEED();
 }
@@ -45,7 +45,7 @@ TEST_F(LoggerTest, WriteToLogFile) {
     std::remove(testFile);
 
     Logger::instance().setLogFile(testFile);
-    Logger::instance().log(LogLevel::INFO, "Test log message");
+    Logger::instance().log(LogLevel::Info, "Test log message");
     Logger::instance().setLogFile("");
 
     std::ifstream f(testFile);

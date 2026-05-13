@@ -58,3 +58,25 @@ TEST(OrderMapperTest, PreservesLimitPriceAndQuantityStrings) {
     ASSERT_TRUE(req.price.has_value());
     EXPECT_EQ(*req.price, "12345.6700");
 }
+
+TEST(OrderMapperTest, RawRecvWindowOverridesConfiguredRecvWindow) {
+    OrdersConfig cfg;
+    cfg.defaultResponseType = ResponseType::ACK;
+    cfg.recvWindow = std::chrono::milliseconds(5000);
+    OrderMapper mapper(cfg);
+
+    MarketOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .side = OrderSide::Buy,
+        .quantity = qty("0.001"),
+        .raw = {
+            {"recvWindow", "3000"},
+        },
+    };
+
+    auto req = mapper.toOrderRequest(draft, "cid-raw-rw");
+    EXPECT_FALSE(req.recvWindow.has_value());
+    ASSERT_EQ(req.extraParams.size(), 1);
+    EXPECT_EQ(req.extraParams[0].first, "recvWindow");
+    EXPECT_EQ(req.extraParams[0].second, "3000");
+}

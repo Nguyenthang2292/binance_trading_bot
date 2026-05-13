@@ -8,6 +8,7 @@ public:
     explicit RestClientAdapter(RestClient& client) : m_client(client) {}
 
     boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest req) override;
+    boost::asio::awaitable<RestResult<Order>> modifyOrder(OrderRequest req) override;
     boost::asio::awaitable<RestResult<Order>> cancelOrder(std::string symbol, int64_t orderId) override;
     boost::asio::awaitable<RestResult<Order>> cancelOrderByClientOrderId(
         std::string symbol, std::string clientOrderId) override;
@@ -22,6 +23,12 @@ public:
         std::optional<int64_t> startTime,
         std::optional<int64_t> endTime,
         int limit) override;
+    boost::asio::awaitable<RestResult<std::vector<UserTrade>>> userTrades(
+        std::string symbol,
+        std::optional<int64_t> orderId = {},
+        std::optional<int64_t> startTime = {},
+        std::optional<int64_t> endTime = {},
+        int limit = 500) override;
     boost::asio::awaitable<RestResult<BatchOrderResult>> batchOrders(std::vector<OrderRequest> reqs) override;
 
 private:

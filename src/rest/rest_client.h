@@ -52,6 +52,7 @@ public:
     boost::asio::awaitable<Result<void>> setMarginType(std::string symbol, std::string marginType);
 
     boost::asio::awaitable<Result<Order>> newOrder(OrderRequest req);
+    boost::asio::awaitable<Result<Order>> modifyOrder(OrderRequest req);
     boost::asio::awaitable<Result<Order>> cancelOrder(std::string symbol, int64_t orderId);
     boost::asio::awaitable<Result<Order>> cancelOrderByClientOrderId(std::string symbol, std::string clientOrderId);
     boost::asio::awaitable<Result<void>> cancelAllOrders(std::string symbol);
@@ -62,6 +63,11 @@ public:
                                                                  std::optional<int64_t> startTime = {},
                                                                  std::optional<int64_t> endTime = {},
                                                                  int limit = 500);
+    boost::asio::awaitable<Result<std::vector<UserTrade>>> userTrades(std::string symbol,
+                                                                  std::optional<int64_t> orderId = {},
+                                                                  std::optional<int64_t> startTime = {},
+                                                                  std::optional<int64_t> endTime = {},
+                                                                  int limit = 500);
     boost::asio::awaitable<Result<BatchOrderResult>> batchOrders(std::vector<OrderRequest> reqs);
 
     boost::asio::awaitable<Result<std::string>> createListenKey();

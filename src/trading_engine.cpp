@@ -33,7 +33,7 @@ void TradingEngine::start() {
     if (m_running) return;
     m_running = true;
     m_workerThread = std::thread(&TradingEngine::tradingLoop, this);
-    Logger::instance().log(LogLevel::INFO, "Trading engine started for " + m_config.symbol);
+    Logger::instance().log(LogLevel::Info, "Trading engine started for " + m_config.symbol);
 }
 
 void TradingEngine::stop() {
@@ -42,7 +42,7 @@ void TradingEngine::stop() {
     if (m_workerThread.joinable()) {
         m_workerThread.join();
     }
-    Logger::instance().log(LogLevel::INFO, "Trading engine stopped for " + m_config.symbol);
+    Logger::instance().log(LogLevel::Info, "Trading engine stopped for " + m_config.symbol);
 }
 
 bool TradingEngine::isRunning() const {
@@ -124,7 +124,7 @@ Signal TradingEngine::analyzeMarket(const std::vector<Kline>& klines) {
     double macdLine = calculateEMA(closes, 12);
     double signalLine = calculateEMA(closes, 26);
 
-    Logger::instance().log(LogLevel::DEBUG,
+    Logger::instance().log(LogLevel::Debug,
         m_config.symbol + " - Price: " + std::to_string(currentPrice) +
         " RSI: " + std::to_string(rsi) +
         " SMA_S: " + std::to_string(smaShort) +
@@ -172,17 +172,17 @@ void TradingEngine::executeSignal(const Signal& signal) {
 
     if (signal.action == Signal::Action::BUY) {
         if (hasOpenPosition(m_config.symbol)) {
-            Logger::instance().log(LogLevel::INFO, "Position already open for " + m_config.symbol + ", skipping BUY");
+            Logger::instance().log(LogLevel::Info, "Position already open for " + m_config.symbol + ", skipping BUY");
             return;
         }
 
-        Logger::instance().log(LogLevel::TRADE,
+        Logger::instance().log(LogLevel::Trade,
             "Executing BUY: " + m_config.symbol + " qty=" + std::to_string(m_config.tradeQuantity) +
             " confidence=" + std::to_string(signal.confidence));
 
         auto quantity = toQuantity(m_config.tradeQuantity);
         if (!quantity) {
-            Logger::instance().log(LogLevel::ERROR, "Invalid trade quantity for BUY placement");
+            Logger::instance().log(LogLevel::Error, "Invalid trade quantity for BUY placement");
             return;
         }
 
@@ -194,12 +194,12 @@ void TradingEngine::executeSignal(const Signal& signal) {
         };
         auto placement = m_api.marketOrder(std::move(draft));
         if (!placement) {
-            Logger::instance().log(LogLevel::ERROR,
+            Logger::instance().log(LogLevel::Error,
                 "BUY order failed: " + placement.error().toString());
             return;
         }
 
-        Logger::instance().log(LogLevel::TRADE,
+        Logger::instance().log(LogLevel::Trade,
             "BUY order: id=" + std::to_string(placement->orderId.value_or(0)) +
             " status=" + placement->orderStatus.value_or("N/A"));
 
@@ -208,16 +208,16 @@ void TradingEngine::executeSignal(const Signal& signal) {
         }
     } else if (signal.action == Signal::Action::SELL) {
         if (!hasOpenPosition(m_config.symbol)) {
-            Logger::instance().log(LogLevel::INFO, "No position open for " + m_config.symbol + ", skipping SELL");
+            Logger::instance().log(LogLevel::Info, "No position open for " + m_config.symbol + ", skipping SELL");
             return;
         }
 
-        Logger::instance().log(LogLevel::TRADE,
+        Logger::instance().log(LogLevel::Trade,
             "Executing SELL: " + m_config.symbol + " qty=" + std::to_string(m_config.tradeQuantity));
 
         auto quantity = toQuantity(m_config.tradeQuantity);
         if (!quantity) {
-            Logger::instance().log(LogLevel::ERROR, "Invalid trade quantity for SELL placement");
+            Logger::instance().log(LogLevel::Error, "Invalid trade quantity for SELL placement");
             return;
         }
 
@@ -229,12 +229,12 @@ void TradingEngine::executeSignal(const Signal& signal) {
         };
         auto placement = m_api.marketOrder(std::move(draft));
         if (!placement) {
-            Logger::instance().log(LogLevel::ERROR,
+            Logger::instance().log(LogLevel::Error,
                 "SELL order failed: " + placement.error().toString());
             return;
         }
 
-        Logger::instance().log(LogLevel::TRADE,
+        Logger::instance().log(LogLevel::Trade,
             "SELL order: id=" + std::to_string(placement->orderId.value_or(0)) +
             " status=" + placement->orderStatus.value_or("N/A"));
 
@@ -247,7 +247,7 @@ void TradingEngine::executeSignal(const Signal& signal) {
 bool TradingEngine::hasOpenPosition(const std::string& symbol) {
     auto accountInfo = m_api.getAccountInfo();
     if (!accountInfo.has_value()) {
-        Logger::instance().log(LogLevel::WARNING, "Failed to check account balance");
+        Logger::instance().log(LogLevel::Warning, "Failed to check account balance");
         return false;
     }
 
@@ -264,7 +264,7 @@ bool TradingEngine::hasOpenPosition(const std::string& symbol) {
 }
 
 void TradingEngine::tradingLoop() {
-    Logger::instance().log(LogLevel::INFO, "Trading loop started for " + m_config.symbol);
+    Logger::instance().log(LogLevel::Info, "Trading loop started for " + m_config.symbol);
 
     while (m_running) {
         try {
@@ -272,13 +272,13 @@ void TradingEngine::tradingLoop() {
                                           std::max({m_config.smaLongPeriod, m_config.rsiPeriod}) + 50);
 
             if (klines.empty()) {
-                Logger::instance().log(LogLevel::WARNING, "No kline data received for " + m_config.symbol);
+                Logger::instance().log(LogLevel::Warning, "No kline data received for " + m_config.symbol);
                 std::this_thread::sleep_for(std::chrono::milliseconds(m_config.pollIntervalMs));
                 continue;
             }
 
             Signal signal = analyzeMarket(klines);
-            Logger::instance().log(LogLevel::INFO,
+            Logger::instance().log(LogLevel::Info,
                 m_config.symbol + " Signal: " + signal.reason +
                 " Confidence: " + std::to_string(signal.confidence));
 
@@ -289,7 +289,7 @@ void TradingEngine::tradingLoop() {
             executeSignal(signal);
 
         } catch (const std::exception& e) {
-            Logger::instance().log(LogLevel::ERROR,
+            Logger::instance().log(LogLevel::Error,
                 "Error in trading loop: " + std::string(e.what()));
         }
 

@@ -31,7 +31,7 @@ BinanceAPI::BinanceAPI(const std::string& apiKey, const std::string& secretKey)
     ordersConfig.journalIsDurable = false;
     m_orders = std::make_unique<Orders>(*m_ordersAdapter, std::move(ordersConfig));
 
-    Logger::instance().log(LogLevel::INFO, "Binance Futures API initialized");
+    Logger::instance().log(LogLevel::Info, "Binance Futures API initialized");
 }
 
 BinanceAPI::~BinanceAPI() = default;
@@ -45,7 +45,7 @@ std::optional<double> BinanceAPI::getPrice(const std::string& symbol) {
         boost::asio::use_future);
     auto result = future.get();
     if (!result) {
-        Logger::instance().log(LogLevel::ERROR, "Failed to get futures price: " + result.error().toString());
+        Logger::instance().log(LogLevel::Error, "Failed to get futures price: " + result.error().toString());
         return std::nullopt;
     }
     return result->lastPrice;
@@ -60,7 +60,7 @@ std::vector<Kline> BinanceAPI::getKlines(const std::string& symbol, const std::s
         boost::asio::use_future);
     auto result = future.get();
     if (!result) {
-        Logger::instance().log(LogLevel::ERROR, "Failed to get futures klines: " + result.error().toString());
+        Logger::instance().log(LogLevel::Error, "Failed to get futures klines: " + result.error().toString());
         return {};
     }
     return *result;
@@ -75,7 +75,7 @@ std::vector<Ticker> BinanceAPI::get24hrTickers() {
         boost::asio::use_future);
     auto result = future.get();
     if (!result) {
-        Logger::instance().log(LogLevel::ERROR, "Failed to get futures tickers: " + result.error().toString());
+        Logger::instance().log(LogLevel::Error, "Failed to get futures tickers: " + result.error().toString());
         return {};
     }
     return *result;
@@ -90,7 +90,7 @@ std::optional<AccountInfo> BinanceAPI::getAccountInfo() {
         boost::asio::use_future);
     auto result = future.get();
     if (!result) {
-        Logger::instance().log(LogLevel::ERROR, "Failed to get futures balance: " + result.error().toString());
+        Logger::instance().log(LogLevel::Error, "Failed to get futures balance: " + result.error().toString());
         return std::nullopt;
     }
 
@@ -114,7 +114,7 @@ bool BinanceAPI::testConnectivity() {
         boost::asio::use_future);
     auto result = future.get();
     if (!result) {
-        Logger::instance().log(LogLevel::ERROR, "Futures ping failed: " + result.error().toString());
+        Logger::instance().log(LogLevel::Error, "Futures ping failed: " + result.error().toString());
         return false;
     }
     return *result;

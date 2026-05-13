@@ -1,0 +1,38 @@
+{
+    "configurations": [
+        {
+            "name": "Windows MSVC",
+            "includePath": [
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/src/**",
+                "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/beast/include",
+                "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/asio/include",
+                "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/system/include",
+                "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src",
+                "${workspaceFolder}/build/windows-msvc-debug/_deps/simdjson-src/include",
+                "C:/Program Files/OpenSSL-Win64/include"
+            ],
+            "defines": [
+                "WIN32",
+                "_WINDOWS",
+                "_DEBUG",
+                "_CRT_SECURE_NO_WARNINGS"
+            ],
+            "compilerPath": "cl.exe",
+            "cStandard": "c17",
+            "cppStandard": "c++23",
+            "intelliSenseEngine": "default",
+            "compilerArgs": [],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/src",
+                    "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src",
+                    "${workspaceFolder}/build/windows-msvc-debug/_deps/simdjson-src",
+                    "C:/Program Files/OpenSSL-Win64"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4
+}

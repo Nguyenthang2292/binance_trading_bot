@@ -9,6 +9,9 @@ public:
     OrderRequest toOrderRequest(const MarketOrderDraft& draft, const ClientOrderId& clientOrderId) const;
     OrderRequest toOrderRequest(const LimitOrderDraft& draft, const ClientOrderId& clientOrderId) const;
     OrderRequest toOrderRequest(const CloseByMarketDraft& draft, const ClientOrderId& clientOrderId) const;
+    OrderRequest toOrderRequest(const AmendLimitOrderDraft& draft) const;
+    OrderRequest toOrderRequest(const StopEntryDraft& draft, const ClientOrderId& clientOrderId) const;
+    OrderRequest toOrderRequest(const ProtectionOrderDraft& draft, const ClientOrderId& clientOrderId) const;
 
 private:
     const OrdersConfig& m_cfg;

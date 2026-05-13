@@ -1,13 +1,10 @@
 #include "orders/order_validator.h"
 
-#include <regex>
-#include <type_traits>
-#include <unordered_set>
+#include <algorithm>
+#include <array>
+#include <cctype>
 
 namespace {
-
-constexpr size_t kMaxBatchOrders = 5;
-const std::regex kClientOrderIdPattern("^[A-Za-z0-9._:@/-]{1,36}$");
 
 void addIssue(ValidationReport& report,
               ValidationIssue::Severity severity,
@@ -20,18 +17,53 @@ void addIssue(ValidationReport& report,
     });
 }
 
+constexpr size_t kMaxBatchOrders = 5;
+
+bool isConservativeRawKey(const std::string& key) {
+    if (key.empty() || key.size() > 64) {
+        return false;
+    }
+
+    const unsigned char first = static_cast<unsigned char>(key.front());
+    if (!std::isalpha(first)) {
+        return false;
+    }
+
+    return std::all_of(key.begin() + 1, key.end(), [](char c) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        return std::isalnum(uc) || c == '_';
+    });
+}
+
+bool isAlwaysBlockedRawKey(const std::string& key) {
+    static const std::array<std::string_view, 11> blocked{
+        "symbol",
+        "side",
+        "type",
+        "quantity",
+        "price",
+        "positionSide",
+        "newClientOrderId",
+        "newOrderRespType",
+        "timeInForce",
+        "reduceOnly",
+        "clientAlgoId",
+    };
+    return std::find(blocked.begin(), blocked.end(), key) != blocked.end();
+}
+
 } // namespace
 
 void OrderValidator::validateClientOrderId(const std::optional<ClientOrderId>& clientOrderId,
                                            ValidationReport& report) const {
-    if (!clientOrderId.has_value()) {
+    if (!clientOrderId) {
         return;
     }
-    if (!std::regex_match(*clientOrderId, kClientOrderIdPattern)) {
+    if (clientOrderId->size() > 36) {
         addIssue(report,
                  ValidationIssue::Severity::Error,
-                 "client_order_id_invalid",
-                 "clientOrderId must match [A-Za-z0-9._:@/-] and be length 1..36");
+                 "client_order_id_too_long",
+                 "clientOrderId max length is 36");
     }
 }
 
@@ -47,31 +79,53 @@ void OrderValidator::validateCommon(const Symbol& symbol, const Quantity& quanti
 }
 
 void OrderValidator::validateRawParams(const RawOrderParams& raw, ValidationReport& report) const {
-    if (raw.empty()) {
-        return;
-    }
-
-    const std::unordered_set<std::string> blockedKeys = {
-        "symbol", "side", "type", "quantity", "price", "positionSide",
-        "newClientOrderId", "timestamp", "signature",
-    };
-
-    for (const auto& [k, _] : raw) {
-        if (blockedKeys.contains(k)) {
+    for (const auto& [k, v] : raw) {
+        (void)v;
+        if (k.empty()) {
+            addIssue(report, ValidationIssue::Severity::Error, "raw_param_key_empty", "raw parameter key cannot be empty");
+            continue;
+        }
+        if (!isConservativeRawKey(k)) {
+            addIssue(report,
+                     ValidationIssue::Severity::Error,
+                     "raw_param_key_invalid",
+                     "raw parameter key must match ^[A-Za-z][A-Za-z0-9_]{0,63}$");
+            continue;
+        }
+        if (isAlwaysBlockedRawKey(k)) {
             addIssue(report,
                      ValidationIssue::Severity::Error,
                      "raw_param_blocked",
-                     "raw param key '" + k + "' is blocked");
+                     "raw parameter key is blocked: " + k);
             continue;
         }
-
-        if ((k == "recvWindow") && !m_cfg.allowRawTimestampOverride) {
+        if ((k == "recvWindow" || k == "timestamp" || k == "signature") && !m_cfg.allowRawTimestampOverride) {
             addIssue(report,
                      ValidationIssue::Severity::Error,
                      "raw_recvwindow_blocked",
-                     "raw recvWindow is blocked by configuration");
+                     "raw " + k + " is blocked by configuration");
         }
     }
+}
+
+void OrderValidator::addAdvisoryIssues(const Symbol& symbol, ValidationReport& report) const {
+    if (m_cfg.positionMode == PositionMode::Unknown) {
+        addIssue(report,
+                 ValidationIssue::Severity::Warning,
+                 "position_mode_unknown",
+                 "position mode is unknown; reduceOnly/position-side checks may be incomplete");
+    }
+    if (m_cfg.clientIdNamespace.empty()) {
+        addIssue(report,
+                 ValidationIssue::Severity::Warning,
+                 "no_client_id_namespace",
+                 "no clientIdNamespace configured; using default prefix");
+    }
+    addIssue(report,
+             ValidationIssue::Severity::Skipped,
+             "exchange_info_unavailable",
+             "exchange info snapshot not provided; exchange-rule checks skipped");
+    (void)symbol;
 }
 
 ValidationReport OrderValidator::validateMarket(const MarketOrderDraft& draft) const {
@@ -79,8 +133,8 @@ ValidationReport OrderValidator::validateMarket(const MarketOrderDraft& draft) c
     validateCommon(draft.symbol, draft.quantity, report);
     validateClientOrderId(draft.clientOrderId, report);
     validateRawParams(draft.raw, report);
-
-    if (draft.reduceOnly.value_or(false) && m_cfg.positionMode == PositionMode::Hedge) {
+    addAdvisoryIssues(draft.symbol, report);
+    if (draft.reduceOnly && *draft.reduceOnly && m_cfg.positionMode == PositionMode::Hedge) {
         addIssue(report,
                  ValidationIssue::Severity::Error,
                  "reduce_only_hedge_forbidden",
@@ -94,12 +148,21 @@ ValidationReport OrderValidator::validateLimit(const LimitOrderDraft& draft) con
     validateCommon(draft.symbol, draft.quantity, report);
     validateClientOrderId(draft.clientOrderId, report);
     validateRawParams(draft.raw, report);
+    addAdvisoryIssues(draft.symbol, report);
 
-    if (draft.price.value().empty() || draft.price.toDouble() <= 0.0) {
-        addIssue(report, ValidationIssue::Severity::Error, "price_positive", "limit price must be > 0");
+    if (draft.price.value().empty()) {
+        addIssue(report,
+                 ValidationIssue::Severity::Error,
+                 "limit_price_required",
+                 "price is required for LIMIT order");
+    } else if (draft.price.toDouble() <= 0.0) {
+        addIssue(report,
+                 ValidationIssue::Severity::Error,
+                 "limit_price_positive",
+                 "limit price must be > 0");
     }
 
-    if (draft.reduceOnly.value_or(false) && m_cfg.positionMode == PositionMode::Hedge) {
+    if (draft.reduceOnly && *draft.reduceOnly && m_cfg.positionMode == PositionMode::Hedge) {
         addIssue(report,
                  ValidationIssue::Severity::Error,
                  "reduce_only_hedge_forbidden",
@@ -112,6 +175,7 @@ ValidationReport OrderValidator::validateCloseByMarket(const CloseByMarketDraft&
     ValidationReport report;
     validateCommon(draft.symbol, draft.quantity, report);
     validateClientOrderId(draft.clientOrderId, report);
+    addAdvisoryIssues(draft.symbol, report);
 
     if (m_cfg.positionMode != PositionMode::OneWay) {
         addIssue(report,
@@ -119,6 +183,50 @@ ValidationReport OrderValidator::validateCloseByMarket(const CloseByMarketDraft&
                  "close_by_market_requires_one_way",
                  "closeByMarket requires confirmed OneWay mode");
     }
+    return report;
+}
+
+ValidationReport OrderValidator::validateStopEntry(const StopEntryDraft& draft) const {
+    ValidationReport report;
+    validateCommon(draft.symbol, draft.quantity, report);
+    validateClientOrderId(draft.clientAlgoId, report);
+    addAdvisoryIssues(draft.symbol, report);
+
+    if (draft.triggerPrice.value().empty()) {
+        addIssue(report, ValidationIssue::Severity::Error, "trigger_price_required", "triggerPrice is required");
+    } else if (draft.triggerPrice.toDouble() <= 0.0) {
+        addIssue(report, ValidationIssue::Severity::Error, "trigger_price_positive", "triggerPrice must be > 0");
+    }
+
+    if (draft.limitPrice) {
+        if (draft.limitPrice->value().empty()) {
+            addIssue(report, ValidationIssue::Severity::Error, "limit_price_empty", "limitPrice cannot be empty if provided");
+        } else if (draft.limitPrice->toDouble() <= 0.0) {
+            addIssue(report, ValidationIssue::Severity::Error, "limit_price_positive", "limitPrice must be > 0");
+        }
+    }
+
+    return report;
+}
+
+ValidationReport OrderValidator::validateProtection(const ProtectionOrderDraft& draft) const {
+    ValidationReport report;
+    if (std::holds_alternative<Quantity>(draft.closeQuantity)) {
+        validateCommon(draft.symbol, std::get<Quantity>(draft.closeQuantity), report);
+    } else {
+        if (draft.symbol.empty()) {
+            addIssue(report, ValidationIssue::Severity::Error, "symbol_required", "symbol is required");
+        }
+    }
+    validateClientOrderId(draft.clientAlgoId, report);
+    addAdvisoryIssues(draft.symbol, report);
+
+    if (draft.triggerPrice.value().empty()) {
+        addIssue(report, ValidationIssue::Severity::Error, "trigger_price_required", "triggerPrice is required");
+    } else if (draft.triggerPrice.toDouble() <= 0.0) {
+        addIssue(report, ValidationIssue::Severity::Error, "trigger_price_positive", "triggerPrice must be > 0");
+    }
+
     return report;
 }
 

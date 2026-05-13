@@ -8,11 +8,11 @@
 #include <sstream>
 
 enum class LogLevel {
-    DEBUG,
-    INFO,
-    WARNING,
-    ERROR,
-    TRADE
+    Debug,
+    Info,
+    Warning,
+    Error,
+    Trade
 };
 
 class Logger {
@@ -28,7 +28,7 @@ private:
 
     std::ofstream m_logFile;
     std::mutex m_mutex;
-    LogLevel m_minLevel = LogLevel::INFO;
+    LogLevel m_minLevel = LogLevel::Info;
 
     std::string levelToString(LogLevel level) const;
     std::string getTimestamp() const;

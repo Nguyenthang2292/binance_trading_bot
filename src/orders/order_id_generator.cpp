@@ -11,7 +11,7 @@ namespace {
 
 constexpr size_t kMaxClientOrderIdLen = 36;
 constexpr size_t kMaxNamespaceLen = 8;
-const std::regex kClientOrderIdPattern("^[A-Za-z0-9._:@/-]{1,36}$");
+const std::regex kClientOrderIdPattern("^[A-Za-z0-9._:@/\\-]{1,36}$");
 const std::regex kNamespacePattern("^[A-Za-z0-9_]{1,8}$");
 
 int64_t unixMsNow() {
@@ -27,7 +27,7 @@ OrderIdGenerator::OrderIdGenerator(std::string nameSpace)
 std::expected<void, BinanceError> OrderIdGenerator::validateClientOrderId(const ClientOrderId& id) const {
     if (!std::regex_match(id, kClientOrderIdPattern)) {
         return std::unexpected(BinanceError::fromApiResponse(
-            -90003, "Invalid clientOrderId format. Allowed charset: [A-Za-z0-9._:@/-], length 1..36"));
+            -90003, "Invalid clientOrderId format. Allowed charset: [A-Za-z0-9._:@/\\-], length 1..36"));
     }
     return {};
 }

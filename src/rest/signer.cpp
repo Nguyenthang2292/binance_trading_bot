@@ -40,6 +40,25 @@ std::vector<unsigned char> hexToBytes(std::string_view hex) {
     return bytes;
 }
 
+bool hasQueryParam(std::string_view params, std::string_view key) {
+    size_t pos = 0;
+    while (pos <= params.size()) {
+        const auto next = params.find('&', pos);
+        const auto end = next == std::string_view::npos ? params.size() : next;
+        const auto token = params.substr(pos, end - pos);
+        const auto eq = token.find('=');
+        const auto tokenKey = eq == std::string_view::npos ? token : token.substr(0, eq);
+        if (tokenKey == key) {
+            return true;
+        }
+        if (next == std::string_view::npos) {
+            break;
+        }
+        pos = next + 1;
+    }
+    return false;
+}
+
 } // namespace
 
 Signer::Signer(std::string secretKey, SigningMethod method)
@@ -54,10 +73,18 @@ std::string Signer::sign(std::string_view payload) const {
 
 std::string Signer::addSignature(std::string_view params) const {
     std::string signedParams(params);
-    if (!signedParams.empty()) {
-        signedParams += '&';
+
+    if (hasQueryParam(signedParams, "signature")) {
+        return signedParams;
     }
-    signedParams += "timestamp=" + std::to_string(nowMs());
+
+    if (!hasQueryParam(signedParams, "timestamp")) {
+        if (!signedParams.empty()) {
+            signedParams += '&';
+        }
+        signedParams += "timestamp=" + std::to_string(nowMs());
+    }
+
     signedParams += "&signature=" + sign(signedParams);
     return signedParams;
 }

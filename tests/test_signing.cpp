@@ -19,3 +19,18 @@ TEST(SignerTest, AddSignatureAppendsTimestampAndSignatureLast) {
     EXPECT_EQ(signedParams.rfind("&signature="), sigPos);
     EXPECT_GT(signedParams.size(), sigPos + std::string("&signature=").size());
 }
+
+TEST(SignerTest, AddSignatureUsesProvidedTimestampWithoutAddingDuplicate) {
+    Signer signer("secret");
+    const auto signedParams = signer.addSignature("symbol=BTCUSDT&timestamp=1700000000000");
+
+    EXPECT_EQ(signedParams.find("timestamp=1700000000000"), signedParams.rfind("timestamp=1700000000000"));
+    EXPECT_NE(signedParams.find("&signature="), std::string::npos);
+}
+
+TEST(SignerTest, AddSignatureReturnsProvidedSignatureUnchanged) {
+    Signer signer("secret");
+    const std::string params = "symbol=BTCUSDT&timestamp=1700000000000&signature=abc123";
+
+    EXPECT_EQ(signer.addSignature(params), params);
+}
