@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orders Command Reference</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3450;
+      --accent: #f0b90b;
+      --accent2: #2ecc71;
+      --text: #e6eaf4;
+      --muted: #8892a4;
+      --code-bg: #12151f;
+      --tag-algo: #3a2060;
+      --tag-algo-text: #c084fc;
+      --tag-normal: #0d2d4a;
+      --tag-normal-text: #38bdf8;
+      --warning: #ff8c42;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    /* ── Layout ── */
+    .page-wrapper {
+      display: flex;
+      min-height: 100vh;
+    }
+
+    nav {
+      width: 260px;
+      min-width: 220px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 32px 20px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+    }
+
+    nav .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+
+    nav .logo-icon {
+      width: 36px;
+      height: 36px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 16px;
+      color: #000;
+    }
+
+    nav .logo-text {
+      font-weight: 700;
+      font-size: 14px;
+      color: var(--accent);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    nav ul {
+      list-style: none;
+    }
+
+    nav ul li a {
+      display: block;
+      padding: 7px 12px;
+      border-radius: 6px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13.5px;
+      transition: all 0.15s;
+    }
+
+    nav ul li a:hover,
+    nav ul li a.active {
+      background: var(--surface2);
+      color: var(--text);
+    }
+
+    nav ul li a .sec-num {
+      font-size: 11px;
+      background: var(--surface2);
+      border-radius: 4px;
+      padding: 1px 6px;
+      margin-right: 6px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    main {
+      flex: 1;
+      padding: 48px 56px;
+      max-width: 960px;
+    }
+
+    /* ── Header ── */
+    .doc-header {
+      margin-bottom: 40px;
+      padding-bottom: 28px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .doc-header h1 {
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 10px;
+    }
+
+    .doc-header h1 span { color: var(--accent); }
+
+    .doc-header p {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .badges {
+      display: flex;
+      gap: 10px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      padding: 3px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid;
+    }
+
+    .badge.normal { background: var(--tag-normal); color: var(--tag-normal-text); border-color: #1a5a8a; }
+    .badge.algo   { background: var(--tag-algo);   color: var(--tag-algo-text);   border-color: #5b21b6; }
+    .badge.mql4   { background: #1a2e1a;            color: var(--accent2);         border-color: #1a5a3a; }
+
+    /* ── Sections ── */
+    section {
+      margin-bottom: 52px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+
+    .section-num {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #000;
+      font-weight: 800;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .section-title h2 {
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    /* ── Cards (scope) ── */
+    .card-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+
+    .card h3 {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: var(--accent);
+    }
+
+    .card p {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    /* ── Tables ── */
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+    }
+
+    thead tr {
+      background: var(--surface2);
+    }
+
+    thead th {
+      padding: 12px 16px;
+      text-align: left;
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background 0.12s;
+    }
+
+    tbody tr:last-child { border-bottom: none; }
+
+    tbody tr:hover { background: var(--surface2); }
+
+    tbody td {
+      padding: 11px 16px;
+      vertical-align: top;
+    }
+
+    code {
+      font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 12.5px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      padding: 2px 7px;
+      border-radius: 5px;
+      color: #93c5fd;
+      white-space: nowrap;
+    }
+
+    .rest-path {
+      color: var(--accent2);
+      font-family: 'Cascadia Code', 'JetBrains Mono', monospace;
+      font-size: 12px;
+    }
+
+    /* ── Lifecycle chips ── */
+    .lc-chip {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 20px;
+      font-size: 11.5px;
+      font-weight: 600;
+      background: var(--tag-algo);
+      color: var(--tag-algo-text);
+      border: 1px solid #5b21b6;
+    }
+
+    /* ── Notes / callouts ── */
+    .note-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .note-list li {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 13.5px;
+    }
+
+    .note-list li.warn {
+      border-left-color: var(--warning);
+    }
+
+    .note-list li.ok {
+      border-left-color: var(--accent2);
+    }
+
+    /* ── Validator section ── */
+    .validator-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .vcard {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+
+    .vcard h4 {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    .vcard ul {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .vcard ul li {
+      font-size: 13px;
+    }
+
+    .blocked-key {
+      display: inline-block;
+      background: #3a1515;
+      border: 1px solid #7f1d1d;
+      color: #fca5a5;
+      font-family: monospace;
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin: 2px;
+    }
+
+    .advisory-key {
+      display: inline-block;
+      background: #1e2a1a;
+      border: 1px solid #365a2a;
+      color: #86efac;
+      font-family: monospace;
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin: 2px;
+    }
+
+    .regex-block {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-family: 'Cascadia Code', 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: #c084fc;
+      margin: 12px 0;
+    }
+
+    /* ── Snapshot section ── */
+    .snap-item {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      padding: 9px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      font-size: 13.5px;
+    }
+
+    .snap-item code { flex-shrink: 0; }
+
+    /* ── MQL4 mapping ── */
+    .mql4-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 10px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      font-size: 13.5px;
+    }
+
+    .arrow {
+      color: var(--muted);
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    /* ── Footer ── */
+    footer {
+      margin-top: 60px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 12.5px;
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      nav { display: none; }
+      main { padding: 28px 20px; }
+      .card-grid, .validator-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="page-wrapper">
+
+  <!-- Sidebar -->
+  <nav>
+    <div class="logo">
+      <div class="logo-icon">B</div>
+      <div class="logo-text">Orders API</div>
+    </div>
+    <ul>
+      <li><a href="#scope"><span class="sec-num">1</span> Scope</a></li>
+      <li><a href="#normal"><span class="sec-num">2</span> Normal Commands</a></li>
+      <li><a href="#algo"><span class="sec-num">3</span> Algo Commands</a></li>
+      <li><a href="#validator"><span class="sec-num">4</span> Strict Validator</a></li>
+      <li><a href="#mql4"><span class="sec-num">5</span> MQL4 Adapter</a></li>
+      <li><a href="#data"><span class="sec-num">6</span> Data &amp; Snapshots</a></li>
+      <li><a href="#journal"><span class="sec-num">7</span> Journal Notes</a></li>
+    </ul>
+  </nav>
+
+  <!-- Main content -->
+  <main>
+
+    <!-- Header -->
+    <div class="doc-header">
+      <h1>Orders <span>Command Reference</span></h1>
+      <p>Actual API in <code>src/orders</code> — based on current implementation.</p>
+      <div class="badges">
+        <span class="badge normal">NormalOrderService</span>
+        <span class="badge algo">AlgoOrderService</span>
+        <span class="badge mql4">MQL4 Adapter</span>
+      </div>
+    </div>
+
+    <!-- §1 Scope -->
+    <section id="scope">
+      <div class="section-title">
+        <div class="section-num">1</div>
+        <h2>Scope</h2>
+      </div>
+      <div class="card-grid">
+        <div class="card">
+          <h3>NormalOrderService</h3>
+          <p>Market / limit / close-by-market, amend, cancel, query, open orders, history, and batch operations (up to 5).</p>
+        </div>
+        <div class="card">
+          <h3>AlgoOrderService</h3>
+          <p>Stop-entry / protection (SL/TP style), cancel/query by algo identity, separate journal &amp; reconcile semantics.</p>
+        </div>
+      </div>
+      <ul class="note-list">
+        <li class="ok"><code>orders::mql4::Mql4Adapter</code> maps MQL4 operations to the typed API above.</li>
+      </ul>
+    </section>
+
+    <!-- §2 Normal Commands -->
+    <section id="normal">
+      <div class="section-title">
+        <div class="section-num">2</div>
+        <h2>Normal Commands</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Command</th>
+              <th>Method</th>
+              <th>REST Path</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Place market</td>
+              <td><code>Orders::market(MarketOrderDraft)</code></td>
+              <td><span class="rest-path">POST /fapi/v1/order</span></td>
+            </tr>
+            <tr>
+              <td>Place limit</td>
+              <td><code>Orders::limit(LimitOrderDraft)</code></td>
+              <td><span class="rest-path">POST /fapi/v1/order</span></td>
+            </tr>
+            <tr>
+              <td>Close by market <em>(one-way only)</em></td>
+              <td><code>Orders::closeByMarket(CloseByMarketDraft)</code></td>
+              <td><span class="rest-path">POST /fapi/v1/order</span></td>
+            </tr>
+            <tr>
+              <td>Amend limit by draft</td>
+              <td><code>Orders::amendLimitOrder(AmendLimitOrderDraft)</code></td>
+              <td><span class="rest-path">PUT /fapi/v1/order</span></td>
+            </tr>
+            <tr>
+              <td>Amend by orderId</td>
+              <td><code>Orders::amendLimitOrderByOrderId(symbol, side, orderId, qty, price, …)</code></td>
+              <td><span class="rest-path">PUT /fapi/v1/order</span></td>
+            </tr>
+            <tr>
+              <td>Amend by clientOrderId</td>
+              <td><code>Orders::amendLimitOrderByClientOrderId(symbol, side, clientOrderId, qty, price, …)</code></td>
+              <td><span class="rest-path">PUT /fapi/v1/order</span></td>
+            </tr>
+            <tr>
+              <td>Cancel by orderId</td>
+              <td><code>Orders::cancelNormalByOrderId(…)</code></td>
+              <td><span class="rest-path">DELETE /fapi/v1/order</span></td>
+            </tr>
+            <tr>
+              <td>Cancel by clientOrderId</td>
+              <td><code>Orders::cancelNormalByClientOrderId(…)</code></td>
+              <td><span class="rest-path">DELETE /fapi/v1/order</span></td>
+            </tr>
+            <tr>
+              <td>Cancel all by symbol</td>
+              <td><code>Orders::cancelAllNormal(symbol)</code></td>
+              <td><span class="rest-path">DELETE /fapi/v1/allOpenOrders</span></td>
+            </tr>
+            <tr>
+              <td>Query by orderId</td>
+              <td><code>Orders::queryNormalByOrderId(…)</code></td>
+              <td><span class="rest-path">GET /fapi/v1/order</span></td>
+            </tr>
+            <tr>
+              <td>Query by clientOrderId</td>
+              <td><code>Orders::queryNormalByClientOrderId(…)</code></td>
+              <td><span class="rest-path">GET /fapi/v1/order</span></td>
+            </tr>
+            <tr>
+              <td>Open orders</td>
+              <td><code>Orders::openNormalOrders(optional&lt;symbol&gt;)</code></td>
+              <td><span class="rest-path">GET /fapi/v1/openOrders</span></td>
+            </tr>
+            <tr>
+              <td>History</td>
+              <td><code>Orders::queryAllNormal(…)</code></td>
+              <td><span class="rest-path">GET /fapi/v1/allOrders</span></td>
+            </tr>
+            <tr>
+              <td>Batch normal <em>(max 5)</em></td>
+              <td><code>Orders::batchNormal(vector&lt;NormalOrderDraft&gt;)</code></td>
+              <td><span class="rest-path">POST /fapi/v1/batchOrders</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- §3 Algo Commands -->
+    <section id="algo">
+      <div class="section-title">
+        <div class="section-num">3</div>
+        <h2>Algo Commands</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Command</th>
+              <th>Method</th>
+              <th>Lifecycle</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Stop entry</td>
+              <td><code>Orders::stopEntry(StopEntryDraft)</code></td>
+              <td><span class="lc-chip">Algo placement + journal/reconcile</span></td>
+            </tr>
+            <tr>
+              <td>Protection (SL/TP style)</td>
+              <td><code>Orders::protection(ProtectionOrderDraft)</code></td>
+              <td><span class="lc-chip">Algo placement + journal/reconcile</span></td>
+            </tr>
+            <tr>
+              <td>Cancel by algoId</td>
+              <td><code>Orders::cancelAlgoByAlgoId(symbol, algoId)</code></td>
+              <td><span class="lc-chip">Algo cancel</span></td>
+            </tr>
+            <tr>
+              <td>Cancel by clientAlgoId</td>
+              <td><code>Orders::cancelAlgoByClientAlgoId(symbol, clientAlgoId)</code></td>
+              <td><span class="lc-chip">Algo cancel</span></td>
+            </tr>
+            <tr>
+              <td>Query by algoId</td>
+              <td><code>Orders::queryAlgoByAlgoId(symbol, algoId)</code></td>
+              <td><span class="lc-chip">Algo query</span></td>
+            </tr>
+            <tr>
+              <td>Query by clientAlgoId</td>
+              <td><code>Orders::queryAlgoByClientAlgoId(symbol, clientAlgoId)</code></td>
+              <td><span class="lc-chip">Algo query</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <ul class="note-list" style="margin-top:16px">
+        <li>Placement states: <code>Accepted</code> · <code>Rejected</code> · <code>UnknownPendingReconcile</code></li>
+        <li class="warn">When journal is configured, algo intent is recorded with <code>orderCategory="algo"</code> and <code>metadata</code>.</li>
+        <li>After <code>stopEntry</code> / <code>protection</code> the result does not expose a separate <code>algoId</code>. Use <code>clientAlgoId</code> with <code>queryAlgoByClientAlgoId(…)</code> to retrieve exchange identity.</li>
+      </ul>
+    </section>
+
+    <!-- §4 Strict Validator -->
+    <section id="validator">
+      <div class="section-title">
+        <div class="section-num">4</div>
+        <h2>Strict Validator Contract</h2>
+      </div>
+
+      <div class="validator-grid">
+        <div class="vcard">
+          <h4>Rules</h4>
+          <ul>
+            <li style="margin-bottom:8px"><code>reduceOnly=true</code> is <strong>rejected</strong> in Hedge mode (market + limit).</li>
+            <li>
+              Raw key regex:<br/>
+              <div class="regex-block">^[A-Za-z][A-Za-z0-9_]{0,63}$</div>
+            </li>
+          </ul>
+        </div>
+
+        <div class="vcard">
+          <h4>Blocked Raw Keys</h4>
+          <div style="margin-top:6px">
+            <span class="blocked-key">symbol</span>
+            <span class="blocked-key">side</span>
+            <span class="blocked-key">type</span>
+            <span class="blocked-key">quantity</span>
+            <span class="blocked-key">price</span>
+            <span class="blocked-key">positionSide</span>
+            <span class="blocked-key">newClientOrderId</span>
+            <span class="blocked-key">newOrderRespType</span>
+            <span class="blocked-key">timeInForce</span>
+            <span class="blocked-key">reduceOnly</span>
+            <span class="blocked-key">clientAlgoId</span>
+          </div>
+          <div style="margin-top:10px; font-size:13px; color:var(--muted)">
+            <code>recvWindow</code> / <code>timestamp</code> / <code>signature</code> are also blocked when <code>allowRawTimestampOverride=false</code>.
+          </div>
+        </div>
+
+        <div class="vcard" style="grid-column: 1 / -1">
+          <h4>Advisory Issues (always attached)</h4>
+          <div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:8px">
+            <span class="advisory-key">warning: position_mode_unknown</span>
+            <span class="advisory-key">warning: no_client_id_namespace</span>
+            <span class="advisory-key">skipped: exchange_info_unavailable</span>
+          </div>
+          <p style="font-size:13px; color:var(--muted); margin-top:10px">
+            <code>NormalPlacementResult::validation</code> is always present on both success and failure paths.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- §5 MQL4 Adapter -->
+    <section id="mql4">
+      <div class="section-title">
+        <div class="section-num">5</div>
+        <h2>MQL4 Adapter Mapping</h2>
+      </div>
+      <p style="margin-bottom:16px; color:var(--muted); font-size:13.5px">
+        <code>orders::mql4::Mql4Adapter::orderSend(MappedOrderSendDraft)</code>
+      </p>
+
+      <div class="mql4-row">
+        <code>Buy / Sell</code>
+        <span class="arrow">→</span>
+        <code>Orders::market</code>
+      </div>
+      <div class="mql4-row">
+        <code>BuyLimit / SellLimit</code>
+        <span class="arrow">→</span>
+        <code>Orders::limit</code>
+      </div>
+      <div class="mql4-row">
+        <code>BuyStop / SellStop</code>
+        <span class="arrow">→</span>
+        <code>Orders::stopEntry</code>
+      </div>
+
+      <ul class="note-list" style="margin-top:18px">
+        <li class="ok"><strong>metadata</strong> is not dropped — passed into the typed draft and the journal.</li>
+        <li class="ok">
+          <strong>stopLoss / takeProfit</strong> are not dropped. After an entry is <code>Accepted</code>, the adapter creates separate protection orders via <code>Orders::protection</code>:
+          <ul style="margin-top:6px; margin-left:20px; list-style:disc; font-size:13px; color:var(--muted)">
+            <li><code>stopLoss</code> → <code>ProtectionKind::StopLoss</code> (<code>STOP_MARKET</code>)</li>
+            <li><code>takeProfit</code> → <code>ProtectionKind::TakeProfit</code> (<code>TAKE_PROFIT_MARKET</code>)</li>
+          </ul>
+          If attaching protection fails, the entry result is still returned and a warning is added to <code>validation.issues</code>.
+        </li>
+        <li>
+          <strong>BuyStop / SellStop</strong> optional <code>limitPrice</code>:
+          <ul style="margin-top:6px; margin-left:20px; list-style:disc; font-size:13px; color:var(--muted)">
+            <li>No <code>limitPrice</code> → stop-market (<code>STOP_MARKET</code>)</li>
+            <li>With <code>limitPrice</code> → stop-limit (<code>STOP</code> + <code>price</code>)</li>
+          </ul>
+        </li>
+      </ul>
+    </section>
+
+    <!-- §6 Data & Snapshots -->
+    <section id="data">
+      <div class="section-title">
+        <div class="section-num">6</div>
+        <h2>Data &amp; Snapshots</h2>
+      </div>
+
+      <p style="font-weight:600; margin-bottom:10px; font-size:13.5px">OrderPoolSnapshot</p>
+      <div class="snap-item"><code>count()</code></div>
+      <div class="snap-item"><code>items()</code></div>
+      <div class="snap-item"><code>atSnapshotIndex(…)</code></div>
+      <div class="snap-item"><code>byIdentity(…)</code></div>
+
+      <ul class="note-list" style="margin-top:16px">
+        <li class="ok"><code>openNormalOrderSnapshot</code> / <code>queryAllNormalSnapshot</code> enrich metadata from the journal.</li>
+        <li>
+          <code>queryOrderFillSummary(symbol, orderId)</code> aggregates from <code>userTrades</code>.
+          <ul style="margin-top:6px; margin-left:20px; list-style:disc; font-size:13px; color:var(--muted)">
+            <li>Uses <code>long double</code> accumulation (not a multiprecision library).</li>
+            <li>Marks result as <code>Partial</code> if any trade parse fails or fill metadata is incomplete.</li>
+          </ul>
+        </li>
+      </ul>
+    </section>
+
+    <!-- §7 Journal Notes -->
+    <section id="journal">
+      <div class="section-title">
+        <div class="section-num">7</div>
+        <h2>Journal Notes</h2>
+      </div>
+      <ul class="note-list">
+        <li class="warn">The <strong>normal flow</strong> enforces the durable-journal requirement when <code>allowBestEffortJournal=false</code>.</li>
+        <li class="ok">The <strong>algo flow</strong> supports full journal/reconcile behavior when a journal is configured. Without a journal, placement is still allowed to preserve backward compatibility.</li>
+      </ul>
+    </section>
+
+    <footer>
+      Generated from <code>docs/spec/orders-command-reference.md</code> &nbsp;·&nbsp; 2026-05-14
+    </footer>
+
+  </main>
+</div>
+
+</body>
+</html>

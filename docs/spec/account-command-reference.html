@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Account Command Reference</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3450;
+      --accent: #f0b90b;
+      --accent2: #2ecc71;
+      --text: #e6eaf4;
+      --muted: #8892a4;
+      --code-bg: #12151f;
+      --red: #ef4444;
+      --red-bg: #3a1515;
+      --red-border: #7f1d1d;
+      --green-bg: #1a2e1a;
+      --green-border: #1a5a3a;
+      --yellow-bg: #2a2210;
+      --yellow-border: #7a5a10;
+      --blue-bg: #0d2d4a;
+      --blue-border: #1a5a8a;
+      --blue-text: #38bdf8;
+      --purple-bg: #1e1030;
+      --purple-border: #5b21b6;
+      --purple-text: #c084fc;
+      --orange: #f97316;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    /* ── Layout ── */
+    .page-wrapper { display: flex; min-height: 100vh; }
+
+    nav {
+      width: 270px;
+      min-width: 230px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 28px 18px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+    }
+
+    nav .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 26px;
+    }
+
+    nav .logo-icon {
+      width: 36px;
+      height: 36px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 16px;
+      color: #000;
+      flex-shrink: 0;
+    }
+
+    nav .logo-text {
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--accent);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    nav ul { list-style: none; }
+
+    nav ul li a {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+      transition: all 0.15s;
+    }
+
+    nav ul li a:hover { background: var(--surface2); color: var(--text); }
+
+    nav ul li a .sn {
+      font-size: 10px;
+      font-weight: 700;
+      background: var(--surface2);
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: var(--muted);
+      min-width: 22px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    nav .sub-link {
+      padding-left: 28px;
+      font-size: 12px;
+    }
+
+    main {
+      flex: 1;
+      padding: 48px 56px;
+      max-width: 1000px;
+    }
+
+    /* ── Doc header ── */
+    .doc-header {
+      margin-bottom: 40px;
+      padding-bottom: 28px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .doc-header h1 {
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+
+    .doc-header h1 span { color: var(--accent); }
+
+    .doc-header .sub { color: var(--muted); font-size: 14px; margin-bottom: 14px; }
+
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .badge {
+      padding: 3px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid;
+    }
+
+    .badge.svc  { background: var(--blue-bg);   color: var(--blue-text);   border-color: var(--blue-border); }
+    .badge.rest { background: var(--purple-bg);  color: var(--purple-text); border-color: var(--purple-border); }
+    .badge.mql4 { background: var(--green-bg);   color: var(--accent2);     border-color: var(--green-border); }
+
+    /* ── Sections ── */
+    section { margin-bottom: 52px; }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+
+    .snum {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #000;
+      font-weight: 800;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .section-title h2 { font-size: 20px; font-weight: 700; }
+
+    h3 {
+      font-size: 15px;
+      font-weight: 700;
+      margin: 22px 0 10px;
+      color: var(--accent);
+    }
+
+    /* ── Cards ── */
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+
+    .card h4 {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+
+    .card p { font-size: 12.5px; color: var(--muted); }
+
+    /* ── Status chips ── */
+    .chip {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 20px;
+      font-size: 11.5px;
+      font-weight: 600;
+      margin-left: 6px;
+    }
+
+    .chip.stub   { background: var(--yellow-bg); color: #fbbf24; border: 1px solid var(--yellow-border); }
+    .chip.live   { background: var(--green-bg);  color: var(--accent2); border: 1px solid var(--green-border); }
+    .chip.unsup  { background: var(--red-bg);    color: #fca5a5; border: 1px solid var(--red-border); }
+
+    /* ── Tables ── */
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      margin-bottom: 16px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    thead tr { background: var(--surface2); }
+
+    thead th {
+      padding: 10px 14px;
+      text-align: left;
+      font-weight: 700;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background 0.12s;
+    }
+
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: var(--surface2); }
+
+    tbody td {
+      padding: 10px 14px;
+      vertical-align: top;
+    }
+
+    code {
+      font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 12px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #93c5fd;
+    }
+
+    .rest-path {
+      color: var(--accent2);
+      font-family: 'Cascadia Code', 'JetBrains Mono', monospace;
+      font-size: 12px;
+    }
+
+    .err-cell { color: #fca5a5; font-size: 12px; }
+    .dash-cell { color: var(--muted); font-size: 13px; }
+
+    /* ── Notes list ── */
+    .note-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .note-list li {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13.5px;
+    }
+
+    .note-list li.warn  { border-left-color: var(--orange); }
+    .note-list li.ok    { border-left-color: var(--accent2); }
+    .note-list li.error { border-left-color: var(--red); }
+    .note-list li.sec   { border-left-color: #a78bfa; }
+
+    /* ── Completeness table accents ── */
+    .comp-full    { color: var(--muted); font-style: italic; }
+    .comp-unsup   { color: #fca5a5; }
+    .comp-ok      { color: var(--accent2); }
+
+    /* ── Code block ── */
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px;
+      font-family: 'Cascadia Code', 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      overflow-x: auto;
+      color: #c4b5fd;
+      margin: 12px 0;
+      line-height: 1.6;
+    }
+
+    pre .kw  { color: #60a5fa; }
+    pre .ty  { color: #34d399; }
+    pre .cm  { color: var(--muted); font-style: italic; }
+    pre .st  { color: #fbbf24; }
+
+    /* ── Error model cards ── */
+    .err-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 12px;
+    }
+
+    .err-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+
+    .err-card h4 {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .err-tag {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      margin: 2px;
+    }
+
+    .err-tag.binance { background: var(--red-bg);    color: #fca5a5; border: 1px solid var(--red-border); }
+    .err-tag.mapping { background: var(--blue-bg);   color: var(--blue-text); border: 1px solid var(--blue-border); }
+
+    /* ── Compat config ── */
+    .config-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .config-row {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+    }
+
+    .config-row .field { color: var(--accent); font-family: monospace; font-size: 12px; }
+    .config-row .default { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+    .config-row .desc { color: var(--text); font-size: 12.5px; margin-top: 4px; }
+
+    /* ── Footer ── */
+    footer {
+      margin-top: 60px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      nav { display: none; }
+      main { padding: 24px 18px; }
+      .card-grid, .err-grid, .config-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="page-wrapper">
+
+  <!-- ── Sidebar ── -->
+  <nav>
+    <div class="logo">
+      <div class="logo-icon">B</div>
+      <div class="logo-text">Account API</div>
+    </div>
+    <ul>
+      <li><a href="#scope"><span class="sn">1</span> Scope</a></li>
+      <li><a href="#service"><span class="sn">2</span> Service Commands</a></li>
+      <li><a href="#mql4"><span class="sn">3</span> MQL4 Commands</a></li>
+      <li><a class="sub-link" href="#mql4-double">— Double Properties</a></li>
+      <li><a class="sub-link" href="#mql4-int">— Integer Properties</a></li>
+      <li><a class="sub-link" href="#mql4-str">— String Properties</a></li>
+      <li><a href="#errors"><span class="sn">4</span> Data &amp; Error Model</a></li>
+      <li><a href="#compat"><span class="sn">5</span> Compat Config</a></li>
+      <li><a href="#notes"><span class="sn">6</span> Important Notes</a></li>
+    </ul>
+  </nav>
+
+  <!-- ── Main ── -->
+  <main>
+
+    <!-- Header -->
+    <div class="doc-header">
+      <h1>Account <span>Command Reference</span></h1>
+      <p class="sub">Actual API in <code>src/account</code> — based on current implementation.</p>
+      <div class="badges">
+        <span class="badge svc">AccountService</span>
+        <span class="badge rest">IAccountRestClient</span>
+        <span class="badge mql4">Mql4AccountAdapter</span>
+      </div>
+    </div>
+
+    <!-- §1 Scope -->
+    <section id="scope">
+      <div class="section-title">
+        <div class="snum">1</div>
+        <h2>Scope</h2>
+      </div>
+
+      <div class="card-grid">
+        <div class="card">
+          <h4>AccountService</h4>
+          <p>Async facade for account snapshots and account-related checks.</p>
+        </div>
+        <div class="card">
+          <h4>IAccountRestClient / Adapter</h4>
+          <p>Narrow REST seam over <code>RestClient::account()</code>, <code>balance()</code>, and <code>positions()</code>.</p>
+        </div>
+        <div class="card">
+          <h4>Mql4AccountAdapter</h4>
+          <p>Snapshot-only compatibility adapter for MQL4-style account getters. Never calls REST.</p>
+        </div>
+      </div>
+
+      <ul class="note-list">
+        <li class="ok"><code>AccountService::snapshot()</code> — <strong>implemented</strong> <span class="chip live">Live</span></li>
+        <li class="warn"><code>AccountService::checkFreeMargin()</code> — Phase C stub, returns <code>Unavailable</code> <span class="chip stub">Stub</span></li>
+        <li class="error"><code>AccountService::liquidationRisk()</code> — Phase C stub, returns <code>AccountMappingError::Unsupported</code> <span class="chip unsup">Unsupported</span></li>
+        <li><code>Mql4AccountAdapter</code> reads only the <code>AccountSnapshot</code> passed to its constructor. Never performs network I/O.</li>
+      </ul>
+    </section>
+
+    <!-- §2 Service Commands -->
+    <section id="service">
+      <div class="section-title">
+        <div class="snum">2</div>
+        <h2>Service Commands</h2>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Command</th>
+              <th>Method / Flag</th>
+              <th>REST Path</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Account snapshot</td>
+              <td><code>AccountService::snapshot(AccountSnapshotRequest)</code></td>
+              <td><span class="rest-path">GET /fapi/v2/account</span> (always)</td>
+            </tr>
+            <tr>
+              <td>Optional balance endpoint</td>
+              <td><code>request.includeBalanceEndpoint = true</code></td>
+              <td><span class="rest-path">GET /fapi/v2/balance</span></td>
+            </tr>
+            <tr>
+              <td>Optional positions endpoint</td>
+              <td><code>request.includePositions = true</code></td>
+              <td><span class="rest-path">GET /fapi/v2/positionRisk</span></td>
+            </tr>
+            <tr>
+              <td>Position filter</td>
+              <td><code>request.positionFilter = "BTCUSDT"</code></td>
+              <td>Adds <code>symbol=BTCUSDT</code> to position risk</td>
+            </tr>
+            <tr>
+              <td>Include account config</td>
+              <td><code>request.includeAccountConfig = true</code></td>
+              <td><span class="err-cell">Not implemented — returns Unsupported</span></td>
+            </tr>
+            <tr>
+              <td>Free margin check <span class="chip stub">Stub</span></td>
+              <td><code>checkFreeMargin(MarginCheckDraft)</code></td>
+              <td><span class="dash-cell">No REST call currently</span></td>
+            </tr>
+            <tr>
+              <td>Liquidation risk <span class="chip unsup">Unsupported</span></td>
+              <td><code>liquidationRisk(optional&lt;symbol&gt;)</code></td>
+              <td><span class="dash-cell">No REST call currently</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Snapshot Behavior</h3>
+      <ul class="note-list">
+        <li><code>snapshot()</code> always calls <code>account()</code> first unless <code>includeAccountConfig=true</code>.</li>
+        <li class="error">If the account call fails, <code>BinanceError</code> is propagated and no optional calls are made.</li>
+        <li class="warn">If <code>includeBalanceEndpoint=true</code>, <code>balance()</code> must succeed or the whole snapshot fails.</li>
+        <li class="warn">If <code>includePositions=true</code>, <code>positions(positionFilter)</code> must succeed or the whole snapshot fails.</li>
+        <li class="ok"><code>capturedAt</code> is set when the snapshot is built.</li>
+        <li>The provided <code>AccountCompatibilityConfig</code> is copied into the snapshot.</li>
+        <li class="sec">Only <code>AccountService</code> and <code>RestClient</code> paths may return <code>BinanceError</code>; the snapshot-only <code>Mql4AccountAdapter</code> cannot.</li>
+      </ul>
+
+      <h3>Completeness Values</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Request Flags</th><th>Completeness</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><em>none</em></td>
+              <td><code class="comp-ok">AccountOnly</code></td>
+            </tr>
+            <tr>
+              <td><code>includeBalanceEndpoint</code></td>
+              <td><code class="comp-ok">AccountAndBalance</code></td>
+            </tr>
+            <tr>
+              <td><code>includePositions</code></td>
+              <td><code class="comp-ok">AccountAndPositions</code></td>
+            </tr>
+            <tr>
+              <td>both balance and positions</td>
+              <td><code class="comp-ok">AccountBalanceAndPositions</code></td>
+            </tr>
+            <tr>
+              <td><code>includeAccountConfig</code></td>
+              <td><span class="comp-unsup">error: AccountMappingError::Unsupported</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <ul class="note-list">
+        <li class="warn"><code>AccountSnapshotCompleteness::Full</code> exists in the type but is <strong>not produced</strong> by the current service implementation.</li>
+      </ul>
+    </section>
+
+    <!-- §3 MQL4 Commands -->
+    <section id="mql4">
+      <div class="section-title">
+        <div class="snum">3</div>
+        <h2>MQL4 Compatibility Commands</h2>
+      </div>
+      <p style="color:var(--muted);font-size:13.5px;margin-bottom:8px">
+        <code>Mql4AccountAdapter</code> stores an <code>AccountSnapshot</code> by value and exposes safe MQL4-style getters.<br/>
+        Display asset lookup is <strong>case-insensitive</strong>: checks <code>snapshot.balances</code> first, then falls back to <code>snapshot.account.assets</code>.
+      </p>
+
+      <!-- Double Properties -->
+      <h3 id="mql4-double">Double Properties</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>MQL4-style Property</th>
+              <th>Method</th>
+              <th>Mapping</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Balance</td>
+              <td><code>accountBalance()</code> / <code>accountInfoDouble(Balance)</code></td>
+              <td>display asset <code>Balance::walletBalance</code></td>
+              <td class="err-cell">display asset errors</td>
+            </tr>
+            <tr>
+              <td>Credit</td>
+              <td><code>accountCredit()</code> / <code>accountInfoDouble(Credit)</code></td>
+              <td><code>0.0</code> when <code>creditPolicy=AssumeZero</code></td>
+              <td class="err-cell"><code>Unsupported</code> otherwise</td>
+            </tr>
+            <tr>
+              <td>Profit</td>
+              <td><code>accountProfit()</code> / <code>accountInfoDouble(Profit)</code></td>
+              <td>display asset <code>Balance::unrealizedProfit</code></td>
+              <td class="err-cell">display asset errors</td>
+            </tr>
+            <tr>
+              <td>Equity</td>
+              <td><code>accountEquity()</code> / <code>accountInfoDouble(Equity)</code></td>
+              <td>display asset <code>Balance::marginBalance</code></td>
+              <td class="err-cell">display asset errors</td>
+            </tr>
+            <tr>
+              <td>Margin</td>
+              <td><code>accountMargin()</code> / <code>accountInfoDouble(Margin)</code></td>
+              <td>display asset <code>Balance::initialMargin</code></td>
+              <td class="err-cell">display asset errors</td>
+            </tr>
+            <tr>
+              <td>Free margin</td>
+              <td><code>accountFreeMargin()</code> / <code>accountInfoDouble(FreeMargin)</code></td>
+              <td>display asset <code>Balance::availableBalance</code></td>
+              <td class="err-cell">display asset errors</td>
+            </tr>
+            <tr>
+              <td>Margin level</td>
+              <td><code>accountInfoDouble(MarginLevel)</code></td>
+              <td><code>equity / margin * 100</code>; <code>0.0</code> when margin is zero</td>
+              <td class="err-cell">propagated display asset errors</td>
+            </tr>
+            <tr>
+              <td>Stopout call</td>
+              <td><code>accountInfoDouble(MarginStopoutCall)</code></td>
+              <td class="dash-cell">—</td>
+              <td class="err-cell"><code>Unsupported</code></td>
+            </tr>
+            <tr>
+              <td>Stopout stop</td>
+              <td><code>accountInfoDouble(MarginStopoutStop)</code></td>
+              <td class="dash-cell">—</td>
+              <td class="err-cell"><code>Unsupported</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Integer Properties -->
+      <h3 id="mql4-int">Integer Properties</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>MQL4-style Property</th>
+              <th>Method</th>
+              <th>Mapping</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Login</td>
+              <td><code>accountNumber()</code> / <code>accountInfoInteger(Login)</code></td>
+              <td><code>AccountCompatibilityConfig::loginOverride</code></td>
+            </tr>
+            <tr>
+              <td>Trade mode</td>
+              <td><code>accountInfoInteger(TradeMode)</code></td>
+              <td>integer value of <code>AccountTradeMode</code></td>
+            </tr>
+            <tr>
+              <td>Leverage</td>
+              <td><code>accountInfoInteger(Leverage)</code></td>
+              <td><span class="err-cell">unsupported account-wide → <code>AmbiguousSymbol</code></span></td>
+            </tr>
+            <tr>
+              <td>Limit orders</td>
+              <td><code>accountInfoInteger(LimitOrders)</code></td>
+              <td><span class="err-cell"><code>Unsupported</code></span></td>
+            </tr>
+            <tr>
+              <td>Stopout mode</td>
+              <td><code>accountInfoInteger(MarginStopoutMode)</code></td>
+              <td><span class="err-cell"><code>Unsupported</code></span></td>
+            </tr>
+            <tr>
+              <td>Trade allowed</td>
+              <td><code>accountInfoInteger(TradeAllowed)</code></td>
+              <td><code>snapshot.account.canTrade ? 1 : 0</code></td>
+            </tr>
+            <tr>
+              <td>Expert trade allowed</td>
+              <td><code>accountInfoInteger(TradeExpert)</code></td>
+              <td><code>canTrade &amp;&amp; expertTradeAllowed ? 1 : 0</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <ul class="note-list">
+        <li class="ok">Use <code>accountLeverage(symbol)</code> for symbol-specific leverage. Reads <code>Position::leverage</code> from <code>snapshot.positions</code> first, then <code>snapshot.account.positions</code>.</li>
+        <li class="warn">Symbol match in <code>accountLeverage</code> is <strong>exact and case-sensitive</strong>.</li>
+      </ul>
+
+      <!-- String Properties -->
+      <h3 id="mql4-str">String Properties</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>MQL4-style Property</th>
+              <th>Method</th>
+              <th>Mapping</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Name</td>
+              <td><code>accountName()</code> / <code>accountInfoString(Name)</code></td>
+              <td><code>AccountCompatibilityConfig::accountName</code></td>
+            </tr>
+            <tr>
+              <td>Server</td>
+              <td><code>accountServer()</code> / <code>accountInfoString(Server)</code></td>
+              <td><code>AccountCompatibilityConfig::serverName</code></td>
+            </tr>
+            <tr>
+              <td>Currency</td>
+              <td><code>accountCurrency()</code> / <code>accountInfoString(Currency)</code></td>
+              <td><code>AccountCompatibilityConfig::displayAsset</code></td>
+            </tr>
+            <tr>
+              <td>Company</td>
+              <td><code>accountCompany()</code> / <code>accountInfoString(Company)</code></td>
+              <td><code>AccountCompatibilityConfig::company</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <ul class="note-list">
+        <li class="warn">All string getters fail with <code>AccountMappingError::NotConfigured</code> when required fields are absent or empty.</li>
+      </ul>
+    </section>
+
+    <!-- §4 Data & Error Model -->
+    <section id="errors">
+      <div class="section-title">
+        <div class="snum">4</div>
+        <h2>Data and Error Model</h2>
+      </div>
+
+      <h3>Return Types</h3>
+      <pre><span class="cm">// Service methods</span>
+<span class="kw">using</span> <span class="ty">AccountServiceResult</span>&lt;T&gt; = std::expected&lt;T, std::variant&lt;<span class="ty">BinanceError</span>, <span class="ty">AccountMappingError</span>&gt;&gt;;
+
+<span class="cm">// Snapshot-only adapter methods</span>
+<span class="kw">using</span> <span class="ty">AccountMappingResult</span>&lt;T&gt; = std::expected&lt;T, <span class="ty">AccountMappingError</span>&gt;;</pre>
+
+      <div class="err-grid">
+        <div class="err-card">
+          <h4>BinanceError</h4>
+          <p style="font-size:13px; color:var(--muted); margin-bottom:10px">REST / API / network / parse failures from <code>RestClient</code> or <code>IAccountRestClient</code> only.</p>
+          <span class="err-tag binance">BinanceError</span>
+        </div>
+        <div class="err-card">
+          <h4>AccountMappingError values</h4>
+          <div class="table-wrap" style="border:none; border-radius:6px; margin-top:4px;">
+            <table>
+              <thead><tr><th>Error</th><th>Meaning</th></tr></thead>
+              <tbody>
+                <tr><td><code>Unsupported</code></td><td style="font-size:12px;color:var(--muted)">No Binance equivalent, or intentionally not implemented</td></tr>
+                <tr><td><code>NotConfigured</code></td><td style="font-size:12px;color:var(--muted)">Required compat config field absent</td></tr>
+                <tr><td><code>SnapshotIncomplete</code></td><td style="font-size:12px;color:var(--muted)">Snapshot lacks the asset or position needed</td></tr>
+                <tr><td><code>AmbiguousSymbol</code></td><td style="font-size:12px;color:var(--muted)">Caller must provide a symbol (e.g. leverage)</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- §5 Compat Config -->
+    <section id="compat">
+      <div class="section-title">
+        <div class="snum">5</div>
+        <h2>Compatibility Configuration</h2>
+      </div>
+      <p style="color:var(--muted); font-size:13.5px; margin-bottom:12px">
+        <code>AccountCompatibilityConfig</code> supplies values that Binance Futures does not expose in MQL4 form.
+      </p>
+
+      <div class="config-grid">
+        <div class="config-row">
+          <div class="field">displayAsset</div>
+          <div class="default">default: "USDT"</div>
+          <div class="desc">Selects which asset powers balance / equity / free-margin getters.</div>
+        </div>
+        <div class="config-row">
+          <div class="field">company</div>
+          <div class="default">default: "Binance"</div>
+          <div class="desc">Returned by <code>accountCompany()</code>.</div>
+        </div>
+        <div class="config-row">
+          <div class="field">serverName</div>
+          <div class="default">required</div>
+          <div class="desc">Required for <code>accountServer()</code>; empty → <code>NotConfigured</code>.</div>
+        </div>
+        <div class="config-row">
+          <div class="field">accountName</div>
+          <div class="default">optional</div>
+          <div class="desc">Required only for <code>accountName()</code>.</div>
+        </div>
+        <div class="config-row">
+          <div class="field">loginOverride</div>
+          <div class="default">optional int64</div>
+          <div class="desc">Required only for <code>accountNumber()</code>.</div>
+        </div>
+        <div class="config-row">
+          <div class="field">tradeMode</div>
+          <div class="default">AccountTradeMode::Unknown</div>
+          <div class="desc">Returned by <code>accountInfoInteger(TradeMode)</code>.</div>
+        </div>
+        <div class="config-row">
+          <div class="field">expertTradeAllowed</div>
+          <div class="default">default: true</div>
+          <div class="desc">Combined with <code>canTrade</code> for <code>TradeExpert</code>.</div>
+        </div>
+        <div class="config-row">
+          <div class="field">creditPolicy</div>
+          <div class="default">ExplicitOnly</div>
+          <div class="desc">Controls whether <code>accountCredit()</code> is <code>Unsupported</code> or explicitly returns <code>0.0</code>.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- §6 Important Notes -->
+    <section id="notes">
+      <div class="section-title">
+        <div class="snum">6</div>
+        <h2>Important Notes</h2>
+      </div>
+      <ul class="note-list">
+        <li>Account getters use <code>double</code> because the current <code>types/account.h</code> model stores account fields as plain doubles (no multiprecision library).</li>
+        <li class="warn">MQL4 lot semantics are <strong>not accepted</strong> by <code>checkFreeMargin()</code>; callers must pass an explicit <code>Quantity</code>.</li>
+        <li>Account-wide leverage is not supported because Binance Futures leverage is symbol/position-specific.</li>
+        <li>Stopout level and stopout mode are not mapped to MQL4 values.</li>
+        <li class="warn"><code>dualSidePosition</code> and <code>multiAssetsMargin</code> exist in <code>AccountSnapshot</code> but are <strong>not filled</strong> by <code>snapshot()</code> in the current implementation.</li>
+        <li class="sec">Do <strong>not</strong> log account names, login overrides, signed URLs, signatures, or raw account response bodies by default.</li>
+        <li class="sec">Test fixtures must use <strong>fake</strong> account names, fake server names, and fake login overrides.</li>
+      </ul>
+    </section>
+
+    <footer>
+      Generated from <code>docs/spec/account-command-reference.md</code> &nbsp;·&nbsp; 2026-05-14
+    </footer>
+  </main>
+</div>
+</body>
+</html>

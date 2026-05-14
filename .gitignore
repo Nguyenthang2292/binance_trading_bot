@@ -22,6 +22,8 @@ build/
 
 # EC2 infrastructure state (contains instance IDs and IPs)
 infra/.ec2-state
+infra/aws.env.local
+infra/prod.env
 
 # SSH private keys
 *.pem

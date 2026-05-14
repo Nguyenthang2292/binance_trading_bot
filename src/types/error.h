@@ -1,5 +1,6 @@
 #pragma once
 
+#include <boost/config.hpp>
 #include <boost/system/error_code.hpp>
 #include <optional>
 #include <string>

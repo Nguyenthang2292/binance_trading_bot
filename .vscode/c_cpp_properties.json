@@ -5,6 +5,9 @@
             "includePath": [
                 "${workspaceFolder}/src",
                 "${workspaceFolder}/src/**",
+                "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/assert/include",
+                "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/config/include",
+                "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/core/include",
                 "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/beast/include",
                 "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/asio/include",
                 "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/system/include",
@@ -21,11 +24,13 @@
             "compilerPath": "cl.exe",
             "cStandard": "c17",
             "cppStandard": "c++23",
-            "intelliSenseEngine": "default",
             "compilerArgs": [],
             "browse": {
                 "path": [
                     "${workspaceFolder}/src",
+                    "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/assert/include",
+                    "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/config/include",
+                    "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src/libs/core/include",
                     "${workspaceFolder}/build/windows-msvc-debug/_deps/boost-src",
                     "${workspaceFolder}/build/windows-msvc-debug/_deps/simdjson-src",
                     "C:/Program Files/OpenSSL-Win64"

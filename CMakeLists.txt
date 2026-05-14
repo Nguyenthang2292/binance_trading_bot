@@ -54,6 +54,9 @@ set(LIB_SOURCES
     src/orders/mql4_adapter.cpp
     src/orders/orders.cpp
     src/orders/rest_client_adapter.cpp
+    src/account/rest_account_client_adapter.cpp
+    src/account/mql4_account_adapter.cpp
+    src/account/account_service.cpp
     src/ws/ws_client.cpp
     src/ws/user_data_stream.cpp
     src/binance_api.cpp
@@ -90,6 +93,11 @@ set(LIB_HEADERS
     src/orders/irest_client.h
     src/orders/rest_client_adapter.h
     src/orders/orders.h
+    src/account/irest_account_client.h
+    src/account/rest_account_client_adapter.h
+    src/account/account_snapshot.h
+    src/account/mql4_account_adapter.h
+    src/account/account_service.h
     src/ws/ws_client.h
     src/ws/user_data_stream.h
     src/binance_api.h
