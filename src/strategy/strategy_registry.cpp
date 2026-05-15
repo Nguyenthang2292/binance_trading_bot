@@ -18,6 +18,10 @@ void StrategyRegistry::addShared(std::shared_ptr<IStrategy> strategy) {
     m_strategies.push_back(std::move(strategy));
 }
 
+void StrategyRegistry::clear() {
+    m_strategies.clear();
+}
+
 std::vector<const IStrategy*> StrategyRegistry::all() const {
     std::vector<const IStrategy*> out;
     out.reserve(m_strategies.size());

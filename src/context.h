@@ -16,6 +16,7 @@
 class RestClient;
 class WsClient;
 class UserDataStream;
+class RateLimiter;
 
 namespace asio = boost::asio;
 namespace ssl = boost::asio::ssl;
@@ -51,9 +52,11 @@ public:
     asio::io_context& ioc() { return m_ioc; }
     ssl::context& sslContext() { return m_ssl; }
     const ContextConfig& config() const { return m_cfg; }
+    std::shared_ptr<RateLimiter> rateLimiter() const { return m_rateLimiter; }
 
 private:
     ContextConfig m_cfg;
+    std::shared_ptr<RateLimiter> m_rateLimiter;
     asio::io_context m_ioc;
     asio::executor_work_guard<asio::io_context::executor_type> m_work;
     ssl::context m_ssl;

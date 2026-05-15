@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Local EC2 SOCKS5 Runbook</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #f0b90b;
+      --ok: #3fb950;
+      --warn: #f0883e;
+      --bad: #ff7b72;
+      --code: #0b0f14;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+      font-size: 15px;
+      line-height: 1.65;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+      background: var(--surface);
+      padding: 28px 20px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 26px;
+    }
+
+    .logo-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #111;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+    }
+
+    .logo-text {
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    nav a {
+      display: block;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 7px 0;
+      border-bottom: 1px solid transparent;
+      font-size: 14px;
+    }
+
+    nav a:hover { color: var(--text); }
+
+    main {
+      width: min(1040px, 100%);
+      padding: 42px 48px 72px;
+    }
+
+    h1 {
+      font-size: 32px;
+      line-height: 1.2;
+      margin-bottom: 10px;
+      color: var(--text);
+    }
+
+    .subtitle {
+      color: var(--muted);
+      max-width: 820px;
+      margin-bottom: 28px;
+    }
+
+    h2 {
+      font-size: 20px;
+      margin: 34px 0 12px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+    }
+
+    h3 {
+      font-size: 16px;
+      margin: 22px 0 8px;
+      color: var(--accent);
+    }
+
+    p, li { color: var(--text); }
+    ul, ol { padding-left: 22px; margin: 8px 0 16px; }
+    li + li { margin-top: 5px; }
+
+    code {
+      background: var(--code);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 1px 5px;
+      color: #d2a8ff;
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 13px;
+    }
+
+    pre {
+      background: var(--code);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin: 10px 0 18px;
+      overflow-x: auto;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      color: #c9d1d9;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .callout {
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin: 14px 0 18px;
+    }
+
+    .callout.warn { border-left-color: var(--warn); }
+    .callout.bad { border-left-color: var(--bad); }
+    .callout.ok { border-left-color: var(--ok); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 14px 0 20px;
+    }
+
+    .box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .box strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--accent);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--border);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface2);
+      color: var(--accent);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+    .muted { color: var(--muted); }
+    .ok-text { color: var(--ok); }
+    .warn-text { color: var(--warn); }
+    .bad-text { color: var(--bad); }
+
+    @media (max-width: 820px) {
+      .layout { grid-template-columns: 1fr; }
+      nav {
+        position: static;
+        width: 100%;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+      main { padding: 28px 20px 48px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <nav>
+      <div class="logo">
+        <div class="logo-mark">EC2</div>
+        <div class="logo-text">SOCKS5 Runbook</div>
+      </div>
+      <a href="#purpose">Purpose</a>
+      <a href="#traffic-model">Traffic Model</a>
+      <a href="#prerequisites">Prerequisites</a>
+      <a href="#powershell">PowerShell Run</a>
+      <a href="#verify">Verification</a>
+      <a href="#expected-logs">Expected Logs</a>
+      <a href="#troubleshooting">Troubleshooting</a>
+      <a href="#scope">Project Scope</a>
+    </nav>
+
+    <main>
+      <h1>Run Local Bot Through EC2 Static IP</h1>
+      <p class="subtitle">
+        Use this runbook when the bot runs on a local Windows machine but every Binance REST and WebSocket
+        connection must egress through an EC2 Elastic IP that is whitelisted in Binance.
+      </p>
+
+      <section id="purpose">
+        <h2>Purpose</h2>
+        <div class="callout">
+          The Binance whitelist must contain the EC2 Elastic IP, not the local ISP IP. A local run is valid only
+          when the bot logs <code>Using SOCKS5 proxy...</code> before connecting to Binance.
+        </div>
+        <p>
+          The bot supports SOCKS5 at the transport layer through <code>BINANCE_SOCKS5_PROXY</code>. It does not
+          rely on operating-system transparent routing.
+        </p>
+      </section>
+
+      <section id="traffic-model">
+        <h2>Traffic Model</h2>
+        <div class="grid">
+          <div class="box">
+            <strong>Local Bot</strong>
+            <span class="muted">Runs <code>binance_trading_bot.exe</code> and signs requests locally.</span>
+          </div>
+          <div class="box">
+            <strong>SSH SOCKS5 Tunnel</strong>
+            <span class="muted">Listens on <code>127.0.0.1:1080</code> and forwards via EC2.</span>
+          </div>
+          <div class="box">
+            <strong>Binance</strong>
+            <span class="muted">Sees the EC2 Elastic IP as the source IP.</span>
+          </div>
+        </div>
+        <pre><code>binance_trading_bot.exe
+  -> SOCKS5 127.0.0.1:1080
+  -> SSH tunnel
+  -> EC2 Elastic IP
+  -> Binance Futures REST / WebSocket</code></pre>
+      </section>
+
+      <section id="prerequisites">
+        <h2>Prerequisites</h2>
+        <ul>
+          <li>EC2 instance is running and has an Elastic IP.</li>
+          <li>Binance API key whitelist includes the EC2 Elastic IP.</li>
+          <li>Local machine has SSH access to EC2 with the private key.</li>
+          <li><code>BINANCE_API_KEY</code> and <code>BINANCE_SECRET_KEY</code> are set in the bot terminal.</li>
+          <li>For live trading, <code>BINANCE_TESTNET</code> is not set. For testnet, set <code>BINANCE_TESTNET=1</code>.</li>
+        </ul>
+      </section>
+
+      <section id="powershell">
+        <h2>PowerShell Run</h2>
+
+        <h3>Terminal 1: open the EC2 SOCKS5 tunnel</h3>
+        <pre><code>ssh -i C:\path\to\key.pem `
+  -D 1080 `
+  -N `
+  -o ExitOnForwardFailure=yes `
+  -o ServerAliveInterval=30 `
+  -o ServerAliveCountMax=3 `
+  ubuntu@&lt;EC2_ELASTIC_IP&gt;</code></pre>
+
+        <h3>Terminal 2: run the bot through the tunnel</h3>
+        <pre><code>cd C:\Users\Admin\Desktop\binance_trading_bot
+
+$env:BINANCE_API_KEY="&lt;your_api_key&gt;"
+$env:BINANCE_SECRET_KEY="&lt;your_secret_key&gt;"
+$env:BINANCE_SOCKS5_PROXY="socks5://127.0.0.1:1080"
+$env:BINANCE_REQUIRE_SOCKS5_PROXY="1"
+
+.\build\bin\Release\binance_trading_bot.exe</code></pre>
+
+        <div class="callout ok">
+          <code>BINANCE_REQUIRE_SOCKS5_PROXY=1</code> is a safety guard. If the tunnel env var is missing, the bot
+          exits before sending Binance traffic from the local IP.
+        </div>
+      </section>
+
+      <section id="verify">
+        <h2>Verification</h2>
+
+        <h3>Verify the tunnel egress IP</h3>
+        <pre><code>curl.exe --socks5-hostname 127.0.0.1:1080 https://api.ipify.org</code></pre>
+        <p>The output must equal the EC2 Elastic IP that is whitelisted in Binance.</p>
+
+        <h3>Verify bot environment</h3>
+        <pre><code>$env:BINANCE_SOCKS5_PROXY
+$env:BINANCE_REQUIRE_SOCKS5_PROXY</code></pre>
+        <p>Expected values:</p>
+        <pre><code>socks5://127.0.0.1:1080
+1</code></pre>
+
+        <h3>Verify the bot did not bypass EC2</h3>
+        <p>Check <code>trading_bot.log</code> after startup:</p>
+        <pre><code>Select-String -LiteralPath trading_bot.log -Pattern "Using SOCKS5 proxy" | Select-Object -Last 1</code></pre>
+      </section>
+
+      <section id="expected-logs">
+        <h2>Expected Logs</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Log Pattern</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Using SOCKS5 proxy from BINANCE_SOCKS5_PROXY: 127.0.0.1:1080</code></td>
+              <td><span class="ok-text">Correct.</span> The bot is configured to use the EC2 tunnel.</td>
+            </tr>
+            <tr>
+              <td><code>SOCKS5 proxy is not configured</code></td>
+              <td><span class="bad-text">Wrong for EC2 whitelist runs.</span> The bot will use the local egress IP.</td>
+            </tr>
+            <tr>
+              <td><code>BINANCE_REQUIRE_SOCKS5_PROXY is set but no SOCKS5 proxy was configured</code></td>
+              <td><span class="ok-text">Guard worked.</span> Set <code>BINANCE_SOCKS5_PROXY</code> and reopen the tunnel.</td>
+            </tr>
+            <tr>
+              <td><code>binanceCode=-2015</code></td>
+              <td>Usually invalid key, wrong IP whitelist, missing futures permission, or wrong testnet/live key.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="troubleshooting">
+        <h2>Troubleshooting</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Symptom</th>
+              <th>Check</th>
+              <th>Fix</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Binance returns <code>-2015</code></td>
+              <td>Run <code>curl.exe --socks5-hostname 127.0.0.1:1080 https://api.ipify.org</code>.</td>
+              <td>Whitelist the returned EC2 Elastic IP and enable Futures permissions on the key.</td>
+            </tr>
+            <tr>
+              <td>No <code>Using SOCKS5 proxy</code> log</td>
+              <td>Inspect <code>$env:BINANCE_SOCKS5_PROXY</code> in the same terminal that starts the bot.</td>
+              <td>Set <code>BINANCE_SOCKS5_PROXY=socks5://127.0.0.1:1080</code>.</td>
+            </tr>
+            <tr>
+              <td>Bot exits before ping</td>
+              <td>Look for <code>BINANCE_REQUIRE_SOCKS5_PROXY</code> guard error.</td>
+              <td>Open the SSH tunnel and set <code>BINANCE_SOCKS5_PROXY</code>.</td>
+            </tr>
+            <tr>
+              <td>SOCKS5 connect fails</td>
+              <td>Check Terminal 1 is still running and SSH did not exit.</td>
+              <td>Restart SSH with <code>-o ExitOnForwardFailure=yes</code>.</td>
+            </tr>
+            <tr>
+              <td>Testnet key fails on live endpoint</td>
+              <td>Check <code>$env:BINANCE_TESTNET</code>.</td>
+              <td>Use matching key type and endpoint mode.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="scope">
+        <h2>Project Scope</h2>
+        <p>The main executable path routes these through <code>ContextConfig.socks5Proxy</code> when configured:</p>
+        <ul>
+          <li>REST market data, account, orders, and listen key calls.</li>
+          <li>Market scanner warmup and backfill REST calls.</li>
+          <li>Market data WebSocket sessions.</li>
+          <li>User data stream REST listen key and WebSocket session.</li>
+        </ul>
+
+        <div class="callout warn">
+          The legacy <code>BinanceAPI</code> wrapper constructs its own context and is not the recommended runtime path
+          for EC2-proxied live operation. Use the main executable flow documented above.
+        </div>
+
+        <p class="muted">Last updated: 2026-05-16.</p>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

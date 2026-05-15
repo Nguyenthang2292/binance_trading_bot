@@ -1,10 +1,14 @@
 #include "rest/rest_client.h"
 
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <simdjson.h>
 
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <chrono>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -115,6 +119,19 @@ std::string query(std::initializer_list<std::pair<std::string, std::string>> par
         out += urlEncode(v);
     }
     return out;
+}
+
+bool shouldRetryPublicGet(const BinanceError& err) {
+    if (err.code == 503) {
+        return true;
+    }
+    return err.category == ErrorCategory::RateLimit && err.code == 429;
+}
+
+std::chrono::milliseconds retryDelay(const BinanceError& err, int attempt) {
+    const int baseMs = (err.category == ErrorCategory::RateLimit) ? 1000 : 500;
+    const int factor = 1 << std::max(0, attempt);
+    return std::chrono::milliseconds(baseMs * factor);
 }
 
 std::string urlEncode(std::string_view input) {
@@ -389,8 +406,16 @@ Position parsePosition(simdjson::ondemand::object& doc) {
 } // namespace
 
 RestClient::RestClient(asio::io_context& ioc, boost::asio::ssl::context& ssl, ContextConfig cfg)
+    : RestClient(ioc, ssl, std::move(cfg), nullptr) {}
+
+RestClient::RestClient(
+    asio::io_context& ioc,
+    boost::asio::ssl::context& ssl,
+    ContextConfig cfg,
+    std::shared_ptr<RateLimiter> sharedRateLimiter)
     : m_session(std::make_shared<HttpSession>(ioc, ssl, restHost(cfg.testnet), cfg.socks5Proxy)),
       m_signer(cfg.secretKey, cfg.signingMethod),
+      m_rateLimiter(sharedRateLimiter ? std::move(sharedRateLimiter) : std::make_shared<RateLimiter>()),
       m_cfg(std::move(cfg)) {}
 
 RestClient::RawParseResult RestClient::rawParse(std::string_view body) {
@@ -410,38 +435,88 @@ RestClient::RawParseResult RestClient::rawParse(std::string_view body) {
         std::string_view(m_rawBuffer.data(), m_rawBuffer.length())};
 }
 
-asio::awaitable<HttpSession::Result> RestClient::publicGet(std::string_view path, std::string q) {
-    co_await m_rateLimiter.waitIfNeeded();
-    auto result = co_await m_session->get(path, q);
-    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders(), m_session->lastUsedOrders10s());
-    co_return result;
+asio::awaitable<HttpSession::Result> RestClient::publicGet(
+    std::string_view path,
+    std::string q,
+    RateLimiter::Cost cost) {
+    constexpr int kMaxAttempts = 3;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        co_await m_rateLimiter->acquire(cost);
+        auto result = co_await m_session->get(path, q);
+        m_rateLimiter->updateFromHeaders(
+            m_session->lastUsedWeight(),
+            m_session->lastUsedOrders(),
+            m_session->lastUsedOrders10s());
+        if (result) {
+            co_return result;
+        }
+        if (!shouldRetryPublicGet(result.error()) || attempt + 1 >= kMaxAttempts) {
+            if (result.error().category == ErrorCategory::RateLimit && result.error().code == 429) {
+                m_rateLimiter->penalize(retryDelay(result.error(), attempt));
+            }
+            co_return result;
+        }
+        const auto delay = retryDelay(result.error(), attempt);
+        if (result.error().category == ErrorCategory::RateLimit && result.error().code == 429) {
+            m_rateLimiter->penalize(delay);
+        }
+        auto executor = co_await asio::this_coro::executor;
+        asio::steady_timer timer(executor);
+        timer.expires_after(delay);
+        co_await timer.async_wait(asio::use_awaitable);
+    }
+    co_return std::unexpected(BinanceError::fromApiResponse(-91002, "unexpected publicGet retry flow"));
 }
 
-asio::awaitable<HttpSession::Result> RestClient::signedGet(std::string_view path, std::string params) {
-    co_await m_rateLimiter.waitIfNeeded();
+asio::awaitable<HttpSession::Result> RestClient::signedGet(
+    std::string_view path,
+    std::string params,
+    RateLimiter::Cost cost) {
+    co_await m_rateLimiter->acquire(cost);
     auto result = co_await m_session->get(path, m_signer.addSignature(params), m_cfg.apiKey);
-    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders(), m_session->lastUsedOrders10s());
+    m_rateLimiter->updateFromHeaders(
+        m_session->lastUsedWeight(),
+        m_session->lastUsedOrders(),
+        m_session->lastUsedOrders10s());
     co_return result;
 }
 
-asio::awaitable<HttpSession::Result> RestClient::signedPost(std::string_view path, std::string params) {
-    co_await m_rateLimiter.waitIfNeeded();
+asio::awaitable<HttpSession::Result> RestClient::signedPost(
+    std::string_view path,
+    std::string params,
+    RateLimiter::Cost cost) {
+    co_await m_rateLimiter->acquire(cost);
     auto result = co_await m_session->post(path, m_signer.addSignature(params), m_cfg.apiKey);
-    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders(), m_session->lastUsedOrders10s());
+    m_rateLimiter->updateFromHeaders(
+        m_session->lastUsedWeight(),
+        m_session->lastUsedOrders(),
+        m_session->lastUsedOrders10s());
     co_return result;
 }
 
-asio::awaitable<HttpSession::Result> RestClient::signedPut(std::string_view path, std::string params) {
-    co_await m_rateLimiter.waitIfNeeded();
+asio::awaitable<HttpSession::Result> RestClient::signedPut(
+    std::string_view path,
+    std::string params,
+    RateLimiter::Cost cost) {
+    co_await m_rateLimiter->acquire(cost);
     auto result = co_await m_session->put(path, m_signer.addSignature(params), m_cfg.apiKey);
-    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders(), m_session->lastUsedOrders10s());
+    m_rateLimiter->updateFromHeaders(
+        m_session->lastUsedWeight(),
+        m_session->lastUsedOrders(),
+        m_session->lastUsedOrders10s());
     co_return result;
 }
 
-asio::awaitable<HttpSession::Result> RestClient::signedDelete(std::string_view path, std::string params) {
-    co_await m_rateLimiter.waitIfNeeded();
+asio::awaitable<HttpSession::Result> RestClient::signedDelete(
+    std::string_view path,
+    std::string params,
+    RateLimiter::Cost cost) {
+    co_await m_rateLimiter->acquire(cost);
     auto result = co_await m_session->del(path, m_signer.addSignature(params), m_cfg.apiKey);
-    m_rateLimiter.update(m_session->lastUsedWeight(), m_session->lastUsedOrders(), m_session->lastUsedOrders10s());
+    m_rateLimiter->updateFromHeaders(
+        m_session->lastUsedWeight(),
+        m_session->lastUsedOrders(),
+        m_session->lastUsedOrders10s());
     co_return result;
 }
 
@@ -521,7 +596,8 @@ asio::awaitable<Result<std::vector<Kline>>> RestClient::klines(std::string symbo
         {"startTime", startTime ? std::to_string(*startTime) : ""},
         {"endTime", endTime ? std::to_string(*endTime) : ""},
     });
-    auto body = co_await publicGet("/fapi/v1/klines", q);
+    const int cost = RateLimiter::klineWeight(limit);
+    auto body = co_await publicGet("/fapi/v1/klines", q, RateLimiter::Cost{.requestWeight = cost});
     if (!body) co_return std::unexpected(body.error());
     co_return parseResponse<std::vector<Kline>>(*body, [](simdjson::ondemand::document& doc) {
         std::vector<Kline> out;

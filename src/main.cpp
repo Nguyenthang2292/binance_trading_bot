@@ -25,6 +25,7 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -34,6 +35,21 @@
 #include <vector>
 
 std::atomic<bool> g_running{true};
+
+void terminateHandler() noexcept {
+    try {
+        const auto ep = std::current_exception();
+        if (ep) {
+            std::rethrow_exception(ep);
+        }
+        Logger::instance().log(LogLevel::Error, "Unhandled std::terminate without active exception");
+    } catch (const std::exception& e) {
+        Logger::instance().log(LogLevel::Error, std::string("Unhandled std::terminate: ") + e.what());
+    } catch (...) {
+        Logger::instance().log(LogLevel::Error, "Unhandled std::terminate with unknown exception");
+    }
+    std::abort();
+}
 
 void signalHandler(int signum) {
     Logger::instance().log(LogLevel::Info, "Received signal " + std::to_string(signum) + ", shutting down...");
@@ -142,9 +158,18 @@ std::optional<Socks5ProxyConfig> parseSocks5Proxy(std::string_view raw, std::str
     return Socks5ProxyConfig{.host = host, .port = static_cast<std::uint16_t>(parsedPort)};
 }
 
+struct StrategyRegistryCleanup {
+    strategy::StrategyRegistry& registry;
+
+    ~StrategyRegistryCleanup() {
+        registry.clear();
+    }
+};
+
 int main(int argc, char* argv[]) {
     Logger::instance().setLogFile("trading_bot.log");
     Logger::instance().setMinLevel(LogLevel::Info);
+    std::set_terminate(terminateHandler);
     Logger::instance().log(LogLevel::Info, "Binance Trading Bot started");
 
     nlohmann::json config = nlohmann::json::object();
@@ -161,6 +186,7 @@ int main(int argc, char* argv[]) {
     strategy::StrategyRegistry registry;
     catalog::PluginLoader pluginLoader({.pluginsDir = pluginsDir});
     catalog::StrategyCatalog strategyCatalog({.pluginsDir = pluginsDir}, registry, std::move(pluginLoader));
+    StrategyRegistryCleanup registryCleanup{registry};
     const auto catalogSummary = strategyCatalog.initialize(toStrategyConfigs(config));
 
     if (argc > 1 && std::string_view(argv[1]) == "--list-strategies") {
@@ -210,6 +236,13 @@ int main(int argc, char* argv[]) {
     const auto betaDailyInterval = scannerJson.value("beta_daily_interval", std::string("1d"));
     const int betaDailyLimit =
         scannerJson.value("beta_daily_limit", std::max(2, exposureConfig.betaWindowDays + 1));
+    const size_t scannerBufferSize = static_cast<size_t>(scannerJson.value("kline_buffer_size", 200));
+    const size_t warmupInitialLimitRaw = static_cast<size_t>(scannerJson.value("warmup_initial_limit", 99));
+    const size_t warmupInitialLimit = std::max<size_t>(1, std::min(warmupInitialLimitRaw, scannerBufferSize));
+    const size_t warmupConcurrency = std::max<size_t>(1, static_cast<size_t>(scannerJson.value("warmup_concurrency", 10)));
+    const bool backfillEnabled = scannerJson.value("backfill_enabled", true);
+    const size_t backfillConcurrency =
+        std::max<size_t>(1, static_cast<size_t>(scannerJson.value("backfill_concurrency", 1)));
 
     ContextConfig contextConfig;
     contextConfig.apiKey = apiKey;
@@ -245,13 +278,26 @@ int main(int argc, char* argv[]) {
                     + std::to_string(contextConfig.socks5Proxy.port));
         }
     }
+    if (!contextConfig.socks5Proxy.enabled()) {
+        if (std::getenv("BINANCE_REQUIRE_SOCKS5_PROXY") != nullptr) {
+            Logger::instance().log(
+                LogLevel::Error,
+                "BINANCE_REQUIRE_SOCKS5_PROXY is set but no SOCKS5 proxy was configured. "
+                "Set BINANCE_SOCKS5_PROXY=socks5://127.0.0.1:1080 after opening the EC2 tunnel.");
+            return 1;
+        }
+        Logger::instance().log(
+            LogLevel::Warning,
+            "SOCKS5 proxy is not configured; Binance REST and WebSocket traffic will use the local network egress IP");
+    }
 
     BinanceContext ctx(contextConfig);
     RestClient rest = ctx.makeRestClient();
 
     auto ping = syncAwait(ctx.ioc(), rest.ping());
     if (!ping || !*ping) {
-        Logger::instance().log(LogLevel::Error, "Failed to connect to Binance REST API");
+        const std::string detail = ping ? "" : ": " + ping.error().toString();
+        Logger::instance().log(LogLevel::Error, "Failed to connect to Binance REST API" + detail);
         return 1;
     }
 
@@ -260,9 +306,14 @@ int main(int argc, char* argv[]) {
         ctx,
         scanner::MarketScanner::Config{
             .intervals = scannerJson.value("intervals", std::vector<std::string>{"15m", "30m"}),
-            .klineBufferSize = static_cast<size_t>(scannerJson.value("kline_buffer_size", 200)),
+            .klineBufferSize = scannerBufferSize,
             .maxStreamsPerConnection = static_cast<size_t>(scannerJson.value("max_streams_per_connection", 512)),
-            .warmupRequestDelay = std::chrono::milliseconds(scannerJson.value("warmup_request_delay_ms", 100)),
+            .warmupRequestDelay = std::chrono::milliseconds(scannerJson.value("warmup_request_delay_ms", 0)),
+            .warmupInitialLimit = warmupInitialLimit,
+            .warmupConcurrency = warmupConcurrency,
+            .backfillEnabled = backfillEnabled,
+            .backfillConcurrency = backfillConcurrency,
+            .backfillRequestDelay = std::chrono::milliseconds(scannerJson.value("backfill_request_delay_ms", 200)),
             .betaDailyKlinesEnabled = betaDailyEnabled,
             .betaDailyInterval = betaDailyInterval,
             .betaDailyLimit = betaDailyLimit,
@@ -327,7 +378,19 @@ int main(int argc, char* argv[]) {
     boost::asio::co_spawn(
         ctx.ioc(),
         [&signalEngine]() -> boost::asio::awaitable<void> { co_await signalEngine.run(); },
-        boost::asio::detached);
+        [](std::exception_ptr ep) {
+            if (!ep) {
+                return;
+            }
+            try {
+                std::rethrow_exception(ep);
+            } catch (const std::exception& e) {
+                Logger::instance().log(LogLevel::Error, std::string("SignalEngine coroutine exception: ") + e.what());
+            } catch (...) {
+                Logger::instance().log(LogLevel::Error, "SignalEngine coroutine unknown exception");
+            }
+            g_running = false;
+        });
 
     Logger::instance().log(LogLevel::Info, "SignalEngine started. Press Ctrl+C to stop");
     while (g_running) {

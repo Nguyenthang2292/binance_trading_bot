@@ -1,5 +1,6 @@
 #include "transport/ws_session.h"
 
+#include "logger.h"
 #include "transport/socks5_proxy.h"
 
 #include <boost/asio/co_spawn.hpp>
@@ -12,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <memory>
 
 namespace asio = boost::asio;
@@ -46,7 +48,21 @@ void WsSession::start(std::string path, WsMessageCb onMessage, WsSimpleCb onDisc
     m_stopped = false;
 
     auto self = shared_from_this();
-    asio::co_spawn(m_ioc, [self] { return self->connectLoop(); }, asio::detached);
+    asio::co_spawn(
+        m_ioc,
+        [self] { return self->connectLoop(); },
+        [](std::exception_ptr ep) {
+            if (!ep) {
+                return;
+            }
+            try {
+                std::rethrow_exception(ep);
+            } catch (const std::exception& e) {
+                Logger::instance().log(LogLevel::Error, std::string("WsSession connectLoop exception: ") + e.what());
+            } catch (...) {
+                Logger::instance().log(LogLevel::Error, "WsSession connectLoop unknown exception");
+            }
+        });
 }
 
 void WsSession::stop() {

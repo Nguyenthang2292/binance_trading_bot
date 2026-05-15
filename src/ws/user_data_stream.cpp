@@ -1,12 +1,33 @@
 #include "ws/user_data_stream.h"
 #include "ws/ws_parse_helpers.h"
 
+#include "logger.h"
+
 #include <simdjson.h>
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/use_awaitable.hpp>
+
+#include <exception>
+
+namespace {
+
+void logCoroutineException(std::string_view name, std::exception_ptr ep) {
+    if (!ep) {
+        return;
+    }
+    try {
+        std::rethrow_exception(ep);
+    } catch (const std::exception& e) {
+        Logger::instance().log(LogLevel::Error, std::string(name) + " exception: " + e.what());
+    } catch (...) {
+        Logger::instance().log(LogLevel::Error, std::string(name) + " unknown exception");
+    }
+}
+
+} // namespace
 
 namespace {
 
@@ -107,7 +128,10 @@ UserDataStream::UserDataStream(boost::asio::io_context& ioc, boost::asio::ssl::c
 
 void UserDataStream::start(UserDataCb cb) {
     m_callback = std::move(cb);
-    boost::asio::co_spawn(m_ioc, [this] { return startAsync(); }, boost::asio::detached);
+    boost::asio::co_spawn(
+        m_ioc,
+        [this] { return startAsync(); },
+        [](std::exception_ptr ep) { logCoroutineException("UserDataStream startAsync", ep); });
 }
 
 boost::asio::awaitable<void> UserDataStream::startAsync() {
@@ -118,7 +142,10 @@ boost::asio::awaitable<void> UserDataStream::startAsync() {
     }
     m_listenKey = *listenKey;
     startSessionWithCurrentListenKey();
-    boost::asio::co_spawn(m_ioc, [this] { return keepaliveLoop(); }, boost::asio::detached);
+    boost::asio::co_spawn(
+        m_ioc,
+        [this] { return keepaliveLoop(); },
+        [](std::exception_ptr ep) { logCoroutineException("UserDataStream keepaliveLoop", ep); });
 }
 
 void UserDataStream::stop() {
@@ -127,7 +154,10 @@ void UserDataStream::stop() {
     }
     m_keepaliveTimer.cancel();
     if (!m_listenKey.empty()) {
-        boost::asio::co_spawn(m_ioc, [this] { return m_rest.deleteListenKey(m_listenKey); }, boost::asio::detached);
+        boost::asio::co_spawn(
+            m_ioc,
+            [this] { return m_rest.deleteListenKey(m_listenKey); },
+            [](std::exception_ptr ep, auto) { logCoroutineException("UserDataStream deleteListenKey", ep); });
     }
 }
 
@@ -146,7 +176,12 @@ void UserDataStream::startSessionWithCurrentListenKey() {
         [this](auto ec, auto raw) { onRawMessage(ec, raw); },
         m_onDisconnect,
         [this] {
-            boost::asio::co_spawn(m_ioc, [this] { return refreshListenKeyAfterReconnect(); }, boost::asio::detached);
+            boost::asio::co_spawn(
+                m_ioc,
+                [this] { return refreshListenKeyAfterReconnect(); },
+                [](std::exception_ptr ep) {
+                    logCoroutineException("UserDataStream refreshListenKeyAfterReconnect", ep);
+                });
             if (m_onReconnect) {
                 m_onReconnect();
             }

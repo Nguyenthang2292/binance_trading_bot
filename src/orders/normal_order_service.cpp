@@ -68,6 +68,9 @@ void logPlacement(const NormalPlacementResult& result, std::chrono::steady_clock
         << " errorCategory=" << errorCategoryToString(result.errorCategory)
         << " binanceCode=" << result.binanceCode.value_or(0)
         << " unknownPendingReconcileCount=" << g_unknownPendingReconcileCount.load();
+    if (result.binanceMessage.has_value()) {
+        out << " binanceMessage=" << std::quoted(*result.binanceMessage);
+    }
     Logger::instance().log(LogLevel::Info, out.str());
 }
 

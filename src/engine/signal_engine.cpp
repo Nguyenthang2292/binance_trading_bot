@@ -81,13 +81,39 @@ boost::asio::awaitable<void> SignalEngine::run() {
     boost::asio::co_spawn(
         m_scanner.ioContext(),
         [this] { return monitorTimeExit(); },
-        boost::asio::detached);
+        [this](std::exception_ptr ep) {
+            if (!ep) {
+                return;
+            }
+            try {
+                std::rethrow_exception(ep);
+            } catch (const std::exception& e) {
+                Logger::instance().log(LogLevel::Error, std::string("monitorTimeExit exception: ") + e.what());
+            } catch (...) {
+                Logger::instance().log(LogLevel::Error, "monitorTimeExit unknown exception");
+            }
+            m_running = false;
+        });
 
     if (m_config.monitorTrailingStops) {
         boost::asio::co_spawn(
             m_scanner.ioContext(),
             [this] { return monitorTrailingStops(); },
-            boost::asio::detached);
+            [this](std::exception_ptr ep) {
+                if (!ep) {
+                    return;
+                }
+                try {
+                    std::rethrow_exception(ep);
+                } catch (const std::exception& e) {
+                    Logger::instance().log(
+                        LogLevel::Error,
+                        std::string("monitorTrailingStops exception: ") + e.what());
+                } catch (...) {
+                    Logger::instance().log(LogLevel::Error, "monitorTrailingStops unknown exception");
+                }
+                m_running = false;
+            });
     }
 
     while (m_running) {

@@ -55,9 +55,6 @@ BinanceError BinanceError::fromHttp(int httpStatus, std::string_view body) {
     if (httpStatus == 429 || httpStatus == 418) {
         return {ErrorCategory::RateLimit, httpStatus, std::string(body)};
     }
-    if (httpStatus == 401 || httpStatus == 403) {
-        return {ErrorCategory::Auth, httpStatus, std::string(body)};
-    }
 
     simdjson::dom::parser parser;
     simdjson::dom::element doc;
@@ -68,6 +65,10 @@ BinanceError BinanceError::fromHttp(int httpStatus, std::string_view body) {
         (void)doc["code"].get(code);
         (void)doc["msg"].get(msg);
         return fromApiResponse(static_cast<int>(code), msg);
+    }
+
+    if (httpStatus == 401 || httpStatus == 403) {
+        return {ErrorCategory::Auth, httpStatus, std::string(body)};
     }
 
     return {ErrorCategory::Api, httpStatus, std::string(body)};

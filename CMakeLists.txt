@@ -171,6 +171,8 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
+add_subdirectory(plugins/src/trend_breakout)
+
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
 
 FetchContent_Declare(

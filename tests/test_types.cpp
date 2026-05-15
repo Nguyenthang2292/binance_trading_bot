@@ -20,6 +20,15 @@ TEST(ErrorTypesTest, BinanceAuthCodesMapAuthCategory) {
     EXPECT_NE(err.toString().find("Invalid API-key"), std::string::npos);
 }
 
+TEST(ErrorTypesTest, HttpAuthJsonPreservesBinanceCodeAndMessage) {
+    const auto err = BinanceError::fromHttp(
+        401,
+        R"({"code":-2015,"msg":"Invalid API-key, IP, or permissions for action."})");
+    EXPECT_EQ(err.category, ErrorCategory::Auth);
+    EXPECT_EQ(err.code, -2015);
+    EXPECT_EQ(err.message, "Invalid API-key, IP, or permissions for action.");
+}
+
 TEST(TypesTest, KlineKeepsLegacyFieldAliases) {
     Kline k;
     k.quoteVolume = 123.4;

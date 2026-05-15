@@ -4,6 +4,7 @@
 #include "logger.h"
 
 #include <chrono>
+#include <iomanip>
 #include <sstream>
 
 namespace {
@@ -29,6 +30,9 @@ void logPlacement(const NormalPlacementResult& result, std::chrono::steady_clock
         << " state=" << stateToString(result.state)
         << " errorCategory=" << errorCategoryToString(result.errorCategory)
         << " binanceCode=" << result.binanceCode.value_or(0);
+    if (result.binanceMessage.has_value()) {
+        out << " binanceMessage=" << std::quoted(*result.binanceMessage);
+    }
     Logger::instance().log(LogLevel::Info, out.str());
 }
 

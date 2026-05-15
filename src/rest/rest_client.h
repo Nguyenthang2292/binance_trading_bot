@@ -28,6 +28,10 @@ using Result = std::expected<T, BinanceError>;
 class RestClient {
 public:
     RestClient(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl, ContextConfig cfg);
+    RestClient(boost::asio::io_context& ioc,
+               boost::asio::ssl::context& ssl,
+               ContextConfig cfg,
+               std::shared_ptr<RateLimiter> sharedRateLimiter);
 
     boost::asio::awaitable<Result<bool>> ping();
     boost::asio::awaitable<Result<int64_t>> serverTime();
@@ -86,14 +90,29 @@ public:
 private:
     std::shared_ptr<HttpSession> m_session;
     Signer m_signer;
-    RateLimiter m_rateLimiter;
+    std::shared_ptr<RateLimiter> m_rateLimiter;
     ContextConfig m_cfg;
 
-    boost::asio::awaitable<HttpSession::Result> publicGet(std::string_view path, std::string query);
-    boost::asio::awaitable<HttpSession::Result> signedGet(std::string_view path, std::string params);
-    boost::asio::awaitable<HttpSession::Result> signedPost(std::string_view path, std::string params);
-    boost::asio::awaitable<HttpSession::Result> signedPut(std::string_view path, std::string params);
-    boost::asio::awaitable<HttpSession::Result> signedDelete(std::string_view path, std::string params);
+    boost::asio::awaitable<HttpSession::Result> publicGet(
+        std::string_view path,
+        std::string query,
+        RateLimiter::Cost cost = {});
+    boost::asio::awaitable<HttpSession::Result> signedGet(
+        std::string_view path,
+        std::string params,
+        RateLimiter::Cost cost = {});
+    boost::asio::awaitable<HttpSession::Result> signedPost(
+        std::string_view path,
+        std::string params,
+        RateLimiter::Cost cost = {});
+    boost::asio::awaitable<HttpSession::Result> signedPut(
+        std::string_view path,
+        std::string params,
+        RateLimiter::Cost cost = {});
+    boost::asio::awaitable<HttpSession::Result> signedDelete(
+        std::string_view path,
+        std::string params,
+        RateLimiter::Cost cost = {});
 
     // Buffer+parser used by rawParse(). Access serialized via m_rawParseMutex.
     std::mutex m_rawParseMutex;

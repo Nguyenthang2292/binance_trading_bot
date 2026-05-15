@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <unordered_map>
 
 namespace scanner {
 
@@ -14,9 +15,48 @@ void KlineCache::update(std::string_view symbol, std::string_view interval, cons
         bucket.back() = kline;
         return;
     }
+    if (!bucket.empty() && kline.openTime < bucket.back().openTime) {
+        std::vector<Kline> one{kline};
+        lock.unlock();
+        merge(symbol, interval, one);
+        return;
+    }
     bucket.push_back(kline);
     while (bucket.size() > m_bufferSize) {
         bucket.pop_front();
+    }
+}
+
+void KlineCache::merge(std::string_view symbol, std::string_view interval, std::span<const Kline> klines) {
+    if (klines.empty()) {
+        return;
+    }
+
+    std::unique_lock lock(m_mutex);
+    auto& bucket = m_data[std::string(symbol)][std::string(interval)];
+
+    std::unordered_map<int64_t, Kline> mergedByOpenTime;
+    mergedByOpenTime.reserve(bucket.size() + klines.size());
+    for (const auto& kline : bucket) {
+        mergedByOpenTime[kline.openTime] = kline;
+    }
+    for (const auto& kline : klines) {
+        mergedByOpenTime[kline.openTime] = kline;
+    }
+
+    std::vector<Kline> ordered;
+    ordered.reserve(mergedByOpenTime.size());
+    for (const auto& [_, kline] : mergedByOpenTime) {
+        ordered.push_back(kline);
+    }
+    std::sort(ordered.begin(), ordered.end(), [](const Kline& a, const Kline& b) {
+        return a.openTime < b.openTime;
+    });
+
+    const size_t keepFrom = ordered.size() > m_bufferSize ? (ordered.size() - m_bufferSize) : 0;
+    bucket.clear();
+    for (size_t i = keepFrom; i < ordered.size(); ++i) {
+        bucket.push_back(ordered[i]);
     }
 }
 

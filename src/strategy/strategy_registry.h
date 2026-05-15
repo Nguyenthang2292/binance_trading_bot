@@ -12,6 +12,7 @@ class StrategyRegistry {
 public:
     void add(std::unique_ptr<IStrategy> strategy);
     void addShared(std::shared_ptr<IStrategy> strategy);
+    void clear();
 
     std::vector<const IStrategy*> all() const;
     std::vector<const IStrategy*> forInterval(std::string_view interval) const;

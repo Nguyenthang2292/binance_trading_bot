@@ -6,10 +6,14 @@
 #include "ws/ws_client.h"
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/steady_timer.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,13 +28,19 @@ public:
         std::vector<std::string> intervals{"15m", "30m"};
         size_t klineBufferSize{200};
         size_t maxStreamsPerConnection{512};
-        std::chrono::milliseconds warmupRequestDelay{100};
+        std::chrono::milliseconds warmupRequestDelay{0};
+        size_t warmupInitialLimit{99};
+        size_t warmupConcurrency{10};
+        bool backfillEnabled{true};
+        size_t backfillConcurrency{1};
+        std::chrono::milliseconds backfillRequestDelay{200};
         bool betaDailyKlinesEnabled{false};
         std::string betaDailyInterval{"1d"};
         int betaDailyLimit{31};
     };
 
     MarketScanner(RestClient& rest, BinanceContext& ctx, Config config);
+    ~MarketScanner();
 
     boost::asio::awaitable<Result<void>> start();
     void stop();
@@ -47,7 +57,20 @@ public:
     void setOnKlineClosed(KlineClosedCb cb);
 
 private:
+    struct BackfillState {
+        std::atomic_bool cancel{false};
+        std::mutex mutex;
+        std::shared_ptr<boost::asio::steady_timer> timer;
+        std::future<void> done;
+    };
+
     boost::asio::awaitable<void> subscribeStreams(const std::vector<std::string>& symbols);
+    boost::asio::awaitable<void> backgroundBackfill(
+        std::vector<std::string> symbols,
+        std::shared_ptr<BackfillState> state);
+    void startBackfill(const std::vector<std::string>& symbols);
+    void cancelBackfill();
+    size_t normalizedWarmupInitialLimit() const;
 
     RestClient& m_rest;
     BinanceContext& m_ctx;
@@ -56,6 +79,8 @@ private:
     std::vector<std::unique_ptr<WsClient>> m_wsClients;
     KlineClosedCb m_onKlineClosed;
     std::unordered_map<std::string, ExchangeSymbol> m_symbolInfo;
+    std::mutex m_backfillMutex;
+    std::shared_ptr<BackfillState> m_backfillState;
 };
 
 } // namespace scanner

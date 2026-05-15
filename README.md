@@ -35,3 +35,4 @@ Optional:
    - `socks5h://127.0.0.1:1080`
 
 If `BINANCE_SOCKS5_PROXY` is not set, the bot also checks `ALL_PROXY` and `all_proxy`.
+Set `BINANCE_REQUIRE_SOCKS5_PROXY=1` when local runs must fail instead of bypassing the EC2 tunnel.
