@@ -25,6 +25,9 @@ public:
         size_t klineBufferSize{200};
         size_t maxStreamsPerConnection{512};
         std::chrono::milliseconds warmupRequestDelay{100};
+        bool betaDailyKlinesEnabled{false};
+        std::string betaDailyInterval{"1d"};
+        int betaDailyLimit{31};
     };
 
     MarketScanner(RestClient& rest, BinanceContext& ctx, Config config);

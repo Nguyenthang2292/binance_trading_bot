@@ -40,11 +40,20 @@ Typical config:
   "min_notional": 1.0,
   "atr_period": 14,
   "min_confidence": 0.5,
+  "trailing_enabled": false,
+  "trailing_interval": "15m",
+  "trailing_candles": 0,
+  "trailing_check_interval_seconds": 300,
   "params": {
     "rsi_period": 14
   }
 }
 ```
+
+Generic trailing stop support is exposed through `StrategyConfig::trailingStop`.
+If your strategy wants engine-managed trailing stops, parse the JSON fields above
+and copy them into `cfg.trailingStop`. The engine reads `StrategyConfig`; it does
+not inspect raw strategy params.
 
 ## 3. Build template
 
@@ -62,4 +71,5 @@ Build steps (Windows, MSVC):
 - `config().intervals` is not empty
 - `evaluate()` returns `Signal::Direction::None` when no signal
 - `Signal.atr > 0` when strategy expects engine TP/SL sizing from strategy ATR
+- `config().trailingStop.enabled` is set only when the strategy expects the generic engine trailing stop monitor to manage SL movement
 

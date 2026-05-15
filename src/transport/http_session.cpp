@@ -1,6 +1,7 @@
 #include "transport/http_session.h"
 
 #include "transport/rate_limit_headers.h"
+#include "transport/socks5_proxy.h"
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -14,8 +15,11 @@ namespace http = boost::beast::http;
 namespace ssl = boost::asio::ssl;
 using tcp = boost::asio::ip::tcp;
 
-HttpSession::HttpSession(asio::io_context& ioc, ssl::context& sslContext, std::string host)
-    : m_ioc(ioc), m_ssl(sslContext), m_host(std::move(host)) {
+HttpSession::HttpSession(asio::io_context& ioc,
+                         ssl::context& sslContext,
+                         std::string host,
+                         Socks5ProxyConfig proxy)
+    : m_ioc(ioc), m_ssl(sslContext), m_host(std::move(host)), m_proxy(std::move(proxy)) {
     resetStream();
 }
 
@@ -35,10 +39,19 @@ asio::awaitable<std::expected<void, BinanceError>> HttpSession::ensureConnected(
             co_return std::unexpected(BinanceError{ErrorCategory::Network, 0, "failed to set SNI host name"});
         }
 
+        const std::string connectHost = m_proxy.enabled() ? m_proxy.host : m_host;
+        const std::string connectPort = m_proxy.enabled() ? std::to_string(m_proxy.port) : "443";
+
         tcp::resolver resolver(m_ioc);
-        auto results = co_await resolver.async_resolve(m_host, "443", asio::use_awaitable);
+        auto results = co_await resolver.async_resolve(connectHost, connectPort, asio::use_awaitable);
         beast::get_lowest_layer(*m_stream).expires_after(std::chrono::seconds(30));
         co_await beast::get_lowest_layer(*m_stream).async_connect(results, asio::use_awaitable);
+        if (m_proxy.enabled()) {
+            co_await transport::socks5::connectTunnel(
+                beast::get_lowest_layer(*m_stream).socket(),
+                m_host,
+                443);
+        }
         co_await m_stream->async_handshake(ssl::stream_base::client, asio::use_awaitable);
         beast::get_lowest_layer(*m_stream).expires_never();
         m_connected = true;

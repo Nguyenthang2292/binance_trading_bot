@@ -19,3 +19,19 @@ Open the repository in VS Code and choose one of the CMake presets:
 2. `windows-ninja-debug` for a single-config Ninja build.
 
 The workspace also includes ready-made VS Code tasks for configure, build, and test, plus a debug launch configuration for the main executable.
+
+## Runtime Environment
+
+The bot requires:
+
+1. `BINANCE_API_KEY`
+2. `BINANCE_SECRET_KEY`
+
+Optional:
+
+1. `BINANCE_TESTNET=1` to use Binance Futures testnet.
+2. `BINANCE_SOCKS5_PROXY` to route all REST + WebSocket traffic via SOCKS5 proxy (for example EC2 SSH tunnel):
+   - `socks5://127.0.0.1:1080`
+   - `socks5h://127.0.0.1:1080`
+
+If `BINANCE_SOCKS5_PROXY` is not set, the bot also checks `ALL_PROXY` and `all_proxy`.

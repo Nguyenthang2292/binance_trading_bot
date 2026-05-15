@@ -85,21 +85,62 @@ boost::asio::awaitable<Result<void>> MarketScanner::start() {
         }
     }
 
+    if (m_config.betaDailyKlinesEnabled) {
+        std::vector<std::string> betaSymbols = symbols;
+        if (std::find(betaSymbols.begin(), betaSymbols.end(), "BTCUSDT") == betaSymbols.end()) {
+            betaSymbols.push_back("BTCUSDT");
+        }
+        const int betaLimit = std::max(2, m_config.betaDailyLimit);
+        for (const auto& symbol : betaSymbols) {
+            const auto klines = co_await m_rest.klines(symbol, m_config.betaDailyInterval, betaLimit);
+            if (!klines) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "market_scanner beta warmup failed symbol=" + symbol + " interval=" + m_config.betaDailyInterval +
+                        " reason=" + klines.error().toString());
+                continue;
+            }
+            for (const auto& kline : *klines) {
+                m_cache.update(symbol, m_config.betaDailyInterval, kline);
+            }
+            if (m_config.warmupRequestDelay.count() > 0) {
+                boost::asio::steady_timer timer(m_ctx.ioc());
+                timer.expires_after(m_config.warmupRequestDelay);
+                boost::system::error_code ec;
+                co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+                if (ec) {
+                    co_return std::unexpected(BinanceError::fromNetwork(ec));
+                }
+            }
+        }
+    }
+
     co_await subscribeStreams(symbols);
     co_return Result<void>{};
 }
 
 boost::asio::awaitable<void> MarketScanner::subscribeStreams(const std::vector<std::string>& symbols) {
-    if (symbols.empty() || m_config.intervals.empty()) {
+    if (symbols.empty() || (m_config.intervals.empty() && !m_config.betaDailyKlinesEnabled)) {
         co_return;
     }
 
     const size_t perConnection = std::max<size_t>(1, m_config.maxStreamsPerConnection);
     std::vector<std::pair<std::string, std::string>> streams;
-    streams.reserve(symbols.size() * m_config.intervals.size());
+    streams.reserve(symbols.size() * (m_config.intervals.size() + (m_config.betaDailyKlinesEnabled ? 1 : 0)));
     for (const auto& symbol : symbols) {
         for (const auto& interval : m_config.intervals) {
             streams.emplace_back(symbol, interval);
+        }
+        if (m_config.betaDailyKlinesEnabled &&
+            std::find(m_config.intervals.begin(), m_config.intervals.end(), m_config.betaDailyInterval) ==
+                m_config.intervals.end()) {
+            streams.emplace_back(symbol, m_config.betaDailyInterval);
+        }
+    }
+    if (m_config.betaDailyKlinesEnabled) {
+        const bool hasBtc = std::find(symbols.begin(), symbols.end(), "BTCUSDT") != symbols.end();
+        if (!hasBtc) {
+            streams.emplace_back("BTCUSDT", m_config.betaDailyInterval);
         }
     }
 

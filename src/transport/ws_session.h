@@ -1,5 +1,7 @@
 #pragma once
 
+#include "context.h"
+
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ssl/context.hpp>
@@ -28,6 +30,7 @@ public:
     WsSession(boost::asio::io_context& ioc,
               boost::asio::ssl::context& ssl,
               std::string host,
+              Socks5ProxyConfig proxy = {},
               ReconnectConfig cfg = {});
 
     void start(std::string path,
@@ -49,6 +52,7 @@ private:
     boost::asio::io_context& m_ioc;
     boost::asio::ssl::context& m_ssl;
     std::string m_host;
+    Socks5ProxyConfig m_proxy;
     std::string m_path;
     std::unique_ptr<WebSocket> m_ws;
     WsMessageCb m_onMessage;

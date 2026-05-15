@@ -389,7 +389,7 @@ Position parsePosition(simdjson::ondemand::object& doc) {
 } // namespace
 
 RestClient::RestClient(asio::io_context& ioc, boost::asio::ssl::context& ssl, ContextConfig cfg)
-    : m_session(std::make_shared<HttpSession>(ioc, ssl, restHost(cfg.testnet))),
+    : m_session(std::make_shared<HttpSession>(ioc, ssl, restHost(cfg.testnet), cfg.socks5Proxy)),
       m_signer(cfg.secretKey, cfg.signingMethod),
       m_cfg(std::move(cfg)) {}
 

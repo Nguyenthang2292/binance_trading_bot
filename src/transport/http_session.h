@@ -1,5 +1,6 @@
 #pragma once
 
+#include "context.h"
 #include "common/expected_compat.h"
 #include "types/error.h"
 
@@ -19,7 +20,10 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
 public:
     using Result = std::expected<std::string, BinanceError>;
 
-    HttpSession(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl, std::string host);
+    HttpSession(boost::asio::io_context& ioc,
+                boost::asio::ssl::context& ssl,
+                std::string host,
+                Socks5ProxyConfig proxy = {});
 
     boost::asio::awaitable<Result> get(std::string_view path,
                                        std::string_view query,
@@ -48,6 +52,7 @@ private:
     boost::asio::io_context& m_ioc;
     boost::asio::ssl::context& m_ssl;
     std::string m_host;
+    Socks5ProxyConfig m_proxy;
     std::unique_ptr<Stream> m_stream;
     bool m_connected{false};
     std::atomic<int> m_lastUsedWeight{0};

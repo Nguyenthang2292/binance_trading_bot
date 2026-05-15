@@ -16,8 +16,8 @@ echo "Opening SOCKS5 proxy tunnel"
 echo "EC2 Elastic IP : $ELASTIC_IP"
 echo "Local port     : $PROXY_PORT"
 echo
-echo "Note: this only works for clients that explicitly support SOCKS5."
-echo "Current C++ bot transport does NOT auto-use ALL_PROXY/HTTPS_PROXY."
+echo "Bot supports SOCKS5 tunnel when BINANCE_SOCKS5_PROXY (or ALL_PROXY) is set."
+echo "Example: export BINANCE_SOCKS5_PROXY=socks5://127.0.0.1:${PROXY_PORT}"
 echo
 echo "Proxy smoke test:"
 echo "HTTPS_PROXY=socks5h://localhost:${PROXY_PORT} curl https://fapi.binance.com/fapi/v1/ping"

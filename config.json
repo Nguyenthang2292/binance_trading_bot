@@ -10,29 +10,49 @@
   },
   "engine": {
     "min_notional": 1.0,
-    "position_check_interval_seconds": 60
+    "position_check_interval_seconds": 60,
+    "trailing_check_interval_seconds": 300,
+    "monitor_trailing_stops": true,
+    "place_stop_loss": false
+  },
+  "exposure_control": {
+    "enabled": true,
+    "target_net_beta": 0.0,
+    "soft_limit_net_beta": 0.5,
+    "hard_limit_net_beta": 1.0,
+    "max_gross_beta": 3.0,
+    "default_beta": 1.0,
+    "min_notional_after_scale": 5.0,
+    "beta_window_days": 30,
+    "failure_mode": "closed"
   },
   "strategies": [
     {
-      "name": "momentum_v1",
-      "type": "momentum",
-      "intervals": ["15m"],
-      "scan_interval_seconds": 3600,
-      "max_hold_duration_seconds": 86400,
+      "name": "Trend Breakout Trader",
+      "type": "trend_breakout",
+      "intervals": ["4h"],
+      "scan_interval_seconds": 14400,
+      "max_hold_duration_seconds": 604800,
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
-      "tp_multiplier": 3.0,
+      "tp_multiplier": 20.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.5,
-      "params": {}
+      "params": {
+        "breakout_period": 20,
+        "trailing_enabled": true,
+        "trailing_interval": "4h",
+        "trailing_candles": 42,
+        "trailing_check_interval_seconds": 300
+      }
     }
   ],
   "legacy_trading_engine": {
     "symbol": "BTCUSDT",
     "interval": "15m",
     "tradeQuantity": 0.001,
-    "stopLossPercent": 2.0,
+    "stopLossPercent": 0.0,
     "takeProfitPercent": 4.0,
     "rsiPeriod": 14,
     "rsiOversold": 30.0,

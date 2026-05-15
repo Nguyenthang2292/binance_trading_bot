@@ -1,6 +1,7 @@
 #include "engine/position_tracker.h"
 
 #include <cmath>
+#include <utility>
 
 namespace engine {
 
@@ -79,6 +80,22 @@ std::optional<TrackedPosition> PositionTracker::bySymbol(std::string_view symbol
         return std::nullopt;
     }
     return it->second;
+}
+
+bool PositionTracker::updateStopLoss(
+    std::string_view symbol,
+    int64_t slOrderId,
+    std::string slClientOrderId,
+    double currentTrailLevel) {
+    std::lock_guard lock(m_mutex);
+    const auto it = m_positions.find(std::string(symbol));
+    if (it == m_positions.end()) {
+        return false;
+    }
+    it->second.slOrderId = slOrderId;
+    it->second.slClientOrderId = std::move(slClientOrderId);
+    it->second.currentTrailLevel = currentTrailLevel;
+    return true;
 }
 
 } // namespace engine

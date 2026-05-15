@@ -140,7 +140,7 @@ void UserDataStream::setOnReconnect(std::function<void()> cb) {
 }
 
 void UserDataStream::startSessionWithCurrentListenKey() {
-    m_session = std::make_shared<WsSession>(m_ioc, m_ssl, wsHost(m_cfg.testnet));
+    m_session = std::make_shared<WsSession>(m_ioc, m_ssl, wsHost(m_cfg.testnet), m_cfg.socks5Proxy);
     m_session->start(
         "/ws/" + m_listenKey,
         [this](auto ec, auto raw) { onRawMessage(ec, raw); },

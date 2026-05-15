@@ -6,6 +6,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ssl/context.hpp>
 
+#include <cstdint>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -19,12 +20,20 @@ class UserDataStream;
 namespace asio = boost::asio;
 namespace ssl = boost::asio::ssl;
 
+struct Socks5ProxyConfig {
+    std::string host;
+    std::uint16_t port = 0;
+
+    bool enabled() const { return !host.empty() && port != 0; }
+};
+
 struct ContextConfig {
     std::string apiKey;
     std::string secretKey;
     bool testnet = false;
     size_t threadPoolSize = 2;
     SigningMethod signingMethod = SigningMethod::HMAC_SHA256;
+    Socks5ProxyConfig socks5Proxy;
 };
 
 class BinanceContext {

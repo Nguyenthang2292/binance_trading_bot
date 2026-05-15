@@ -203,7 +203,7 @@ void WsClient::connect() {
     if (m_session) {
         m_session->stop();
     }
-    m_session = std::make_shared<WsSession>(m_ioc, m_ssl, wsHost(m_cfg.testnet));
+    m_session = std::make_shared<WsSession>(m_ioc, m_ssl, wsHost(m_cfg.testnet), m_cfg.socks5Proxy);
     m_session->start(buildStreamPath(),
                      [this](auto ec, auto raw) { onRawMessage(ec, raw); },
                      m_onDisconnect,

@@ -1,7 +1,9 @@
 #pragma once
 
 #include "account/account_service.h"
+#include "engine/exposure_controller.h"
 #include "engine/position_tracker.h"
+#include "engine/trailing_stop_controller.h"
 #include "engine/work_queue.h"
 #include "orders/orders.h"
 #include "scanner/market_scanner.h"
@@ -61,6 +63,9 @@ public:
     struct Config {
         double minNotional{1.0};
         std::chrono::seconds positionCheckInterval{60};
+        std::chrono::seconds trailingCheckInterval{300};
+        bool placeStopLoss{true};
+        bool monitorTrailingStops{true};
     };
 
     SignalEngine(
@@ -68,6 +73,7 @@ public:
         strategy::StrategyRegistry& registry,
         IAccountPort& account,
         IOrdersPort& orders,
+        IExposurePort& exposure,
         Config config);
 
     boost::asio::awaitable<void> run();
@@ -82,8 +88,10 @@ public:
         double currentPrice,
         const strategy::StrategyConfig& cfg);
     boost::asio::awaitable<void> monitorTimeExit();
+    boost::asio::awaitable<void> monitorTrailingStops();
     boost::asio::awaitable<void> processExpiredPositions(std::chrono::system_clock::time_point now);
-    boost::asio::awaitable<double> fetchAvailableBalance();
+    boost::asio::awaitable<void> processTrailingStops();
+    boost::asio::awaitable<void> logExposureMetrics();
 
     void onUserDataEvent(const UserDataEvent& event);
     const PositionTracker& tracker() const { return m_tracker; }
@@ -97,8 +105,10 @@ private:
     strategy::StrategyRegistry& m_registry;
     IAccountPort& m_account;
     IOrdersPort& m_orders;
+    IExposurePort& m_exposure;
     Config m_config;
     PositionTracker m_tracker;
+    TrailingStopController m_trailingStops;
     std::atomic<bool> m_running{false};
     ScanCycleStatusCb m_scanCycleStatusCb;
 };

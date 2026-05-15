@@ -6,6 +6,13 @@
 
 namespace strategy {
 
+struct TrailingStopConfig {
+    bool enabled{false};
+    std::string interval;
+    int candles{0};
+    std::chrono::seconds checkInterval{300};
+};
+
 struct StrategyConfig {
     std::string name;
     std::string type;
@@ -18,6 +25,7 @@ struct StrategyConfig {
     double minNotional{1.0};
     int atrPeriod{14};
     double minConfidence{0.0};
+    TrailingStopConfig trailingStop;
 };
 
 } // namespace strategy

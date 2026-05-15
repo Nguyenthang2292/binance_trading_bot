@@ -1,5 +1,7 @@
 #include "transport/ws_session.h"
 
+#include "transport/socks5_proxy.h"
+
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -18,8 +20,16 @@ namespace websocket = boost::beast::websocket;
 namespace ssl = boost::asio::ssl;
 using tcp = boost::asio::ip::tcp;
 
-WsSession::WsSession(asio::io_context& ioc, ssl::context& sslContext, std::string host, ReconnectConfig cfg)
-    : m_ioc(ioc), m_ssl(sslContext), m_host(std::move(host)), m_reconnectCfg(cfg) {
+WsSession::WsSession(asio::io_context& ioc,
+                     ssl::context& sslContext,
+                     std::string host,
+                     Socks5ProxyConfig proxy,
+                     ReconnectConfig cfg)
+    : m_ioc(ioc),
+      m_ssl(sslContext),
+      m_host(std::move(host)),
+      m_proxy(std::move(proxy)),
+      m_reconnectCfg(cfg) {
     resetSocket();
 }
 
@@ -114,10 +124,19 @@ asio::awaitable<void> WsSession::doConnect() {
         throw boost::system::system_error(asio::error::operation_aborted);
     }
 
+    const std::string connectHost = m_proxy.enabled() ? m_proxy.host : m_host;
+    const std::string connectPort = m_proxy.enabled() ? std::to_string(m_proxy.port) : "443";
+
     tcp::resolver resolver(m_ioc);
-    auto results = co_await resolver.async_resolve(m_host, "443", asio::use_awaitable);
+    auto results = co_await resolver.async_resolve(connectHost, connectPort, asio::use_awaitable);
     beast::get_lowest_layer(*m_ws).expires_after(std::chrono::seconds(30));
     co_await beast::get_lowest_layer(*m_ws).async_connect(results, asio::use_awaitable);
+    if (m_proxy.enabled()) {
+        co_await transport::socks5::connectTunnel(
+            beast::get_lowest_layer(*m_ws).socket(),
+            m_host,
+            443);
+    }
     co_await m_ws->next_layer().async_handshake(ssl::stream_base::client, asio::use_awaitable);
     beast::get_lowest_layer(*m_ws).expires_never();
 

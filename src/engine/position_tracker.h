@@ -24,6 +24,11 @@ struct TrackedPosition {
     int64_t slOrderId{0};
     std::string tpClientOrderId;
     std::string slClientOrderId;
+    bool trailingEnabled{false};
+    std::string trailingInterval;
+    int trailingCandles{0};
+    std::chrono::seconds trailingCheckInterval{0};
+    double currentTrailLevel{0.0};
 };
 
 class PositionTracker {
@@ -38,6 +43,11 @@ public:
     std::vector<TrackedPosition> all() const;
     bool removeByExitOrderClientId(std::string_view clientOrderId);
     std::optional<TrackedPosition> bySymbol(std::string_view symbol) const;
+    bool updateStopLoss(
+        std::string_view symbol,
+        int64_t slOrderId,
+        std::string slClientOrderId,
+        double currentTrailLevel);
 
 private:
     mutable std::mutex m_mutex;

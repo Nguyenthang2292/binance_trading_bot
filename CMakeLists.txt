@@ -73,6 +73,9 @@ set(LIB_SOURCES
     src/engine/position_tracker.cpp
     src/engine/sizing_policy.cpp
     src/engine/work_queue.cpp
+    src/engine/beta_calculator.cpp
+    src/engine/exposure_controller.cpp
+    src/engine/trailing_stop_controller.cpp
     src/engine/signal_engine.cpp
     src/catalog/plugin_handle.cpp
     src/catalog/plugin_loader.cpp
@@ -93,6 +96,7 @@ set(LIB_HEADERS
     src/types/events.h
     src/transport/http_session.h
     src/transport/rate_limit_headers.h
+    src/transport/socks5_proxy.h
     src/transport/ws_session.h
     src/rest/rest_client.h
     src/rest/signer.h
@@ -128,6 +132,9 @@ set(LIB_HEADERS
     src/engine/position_tracker.h
     src/engine/sizing_policy.h
     src/engine/work_queue.h
+    src/engine/beta_calculator.h
+    src/engine/exposure_controller.h
+    src/engine/trailing_stop_controller.h
     src/engine/signal_engine.h
     src/catalog/plugin_handle.h
     src/catalog/plugin_loader.h
