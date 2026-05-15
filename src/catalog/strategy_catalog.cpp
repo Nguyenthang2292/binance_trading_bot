@@ -1,0 +1,79 @@
+#include "catalog/strategy_catalog.h"
+
+#include <algorithm>
+
+namespace catalog {
+
+StrategyCatalog::StrategyCatalog(Config config, strategy::StrategyRegistry& registry, PluginLoader loader)
+    : m_config(std::move(config)), m_registry(registry), m_loader(std::move(loader)) {}
+
+StrategyCatalog::StrategyCatalog(Config config, strategy::StrategyRegistry& registry)
+    : m_config(std::move(config)),
+      m_registry(registry),
+      m_loader(PluginLoader::Config{.pluginsDir = m_config.pluginsDir}) {}
+
+StrategyCatalog::LoadSummary StrategyCatalog::initialize(const std::vector<nlohmann::json>& strategiesConfig) {
+    m_info.clear();
+    LoadSummary summary;
+    const auto pluginResults = m_loader.loadAll();
+    summary.pluginsFound = static_cast<int>(pluginResults.size());
+    for (const auto& result : pluginResults) {
+        if (result.success) {
+            ++summary.pluginsLoaded;
+        } else {
+            summary.errors.push_back(result.path.string() + ": " + result.error);
+        }
+    }
+
+    for (const auto& item : strategiesConfig) {
+        if (!item.is_object()) {
+            summary.errors.push_back("strategy config must be an object");
+            continue;
+        }
+        const std::string type = item.value("type", "");
+        if (type.empty()) {
+            summary.errors.push_back("strategy config missing type");
+            continue;
+        }
+
+        const std::string jsonConfig = item.dump();
+        auto created = m_loader.createStrategy(type, jsonConfig.c_str());
+        if (!created) {
+            summary.errors.push_back("failed creating strategy type=" + type);
+            continue;
+        }
+
+        const auto deleter = created.get_deleter();
+        strategy::IStrategy* raw = created.release();
+        auto shared = std::shared_ptr<strategy::IStrategy>(raw, deleter);
+        const auto& cfg = shared->config();
+
+        StrategyInfo info;
+        info.name = cfg.name;
+        info.type = type;
+        info.intervals = cfg.intervals;
+        info.scanInterval = cfg.scanInterval;
+        info.maxHoldDuration = cfg.maxHoldDuration;
+
+        const auto loadedIt = std::find_if(
+            pluginResults.begin(),
+            pluginResults.end(),
+            [&type](const PluginLoadResult& result) { return result.success && result.type == type; });
+        if (loadedIt != pluginResults.end()) {
+            info.version = loadedIt->version;
+            info.pluginFile = loadedIt->path.filename().string();
+        }
+
+        m_registry.addShared(shared);
+        m_info.push_back(std::move(info));
+        ++summary.strategiesRegistered;
+    }
+
+    return summary;
+}
+
+std::vector<StrategyCatalog::StrategyInfo> StrategyCatalog::listStrategies() const {
+    return m_info;
+}
+
+} // namespace catalog

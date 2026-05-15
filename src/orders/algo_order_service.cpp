@@ -252,6 +252,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::st
     result.state = PlacementState::Accepted;
     result.orderId = placed->orderId;
     result.orderStatus = placed->status;
+    result.avgPrice = placed->avgPrice;
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
     logPlacement(result, startedAt);
     co_return result;
@@ -292,6 +293,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::pr
     result.state = PlacementState::Accepted;
     result.orderId = placed->orderId;
     result.orderStatus = placed->status;
+    result.avgPrice = placed->avgPrice;
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
     logPlacement(result, startedAt);
     co_return result;

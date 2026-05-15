@@ -32,6 +32,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(simdjson)
 
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 find_package(OpenSSL REQUIRED)
 
 set(LIB_SOURCES
@@ -59,6 +66,18 @@ set(LIB_SOURCES
     src/account/account_service.cpp
     src/ws/ws_client.cpp
     src/ws/user_data_stream.cpp
+    src/scanner/kline_cache.cpp
+    src/scanner/market_scanner.cpp
+    src/strategy/strategy_registry.cpp
+    src/strategy/indicators/atr.cpp
+    src/engine/position_tracker.cpp
+    src/engine/sizing_policy.cpp
+    src/engine/work_queue.cpp
+    src/engine/signal_engine.cpp
+    src/catalog/plugin_handle.cpp
+    src/catalog/plugin_loader.cpp
+    src/catalog/strategy_catalog.cpp
+    src/catalog/catalog_reporter.cpp
     src/binance_api.cpp
     src/trading_engine.cpp
     src/logger.cpp
@@ -100,6 +119,20 @@ set(LIB_HEADERS
     src/account/account_service.h
     src/ws/ws_client.h
     src/ws/user_data_stream.h
+    src/scanner/kline_cache.h
+    src/scanner/market_scanner.h
+    src/strategy/strategy_config.h
+    src/strategy/istrategy.h
+    src/strategy/strategy_registry.h
+    src/strategy/indicators/atr.h
+    src/engine/position_tracker.h
+    src/engine/sizing_policy.h
+    src/engine/work_queue.h
+    src/engine/signal_engine.h
+    src/catalog/plugin_handle.h
+    src/catalog/plugin_loader.h
+    src/catalog/strategy_catalog.h
+    src/catalog/catalog_reporter.h
     src/binance_api.h
     src/trading_engine.h
     src/logger.h
@@ -114,6 +147,7 @@ target_link_libraries(bot_lib PUBLIC
     Boost::asio
     Boost::system
     simdjson::simdjson
+    nlohmann_json::nlohmann_json
     OpenSSL::SSL
     OpenSSL::Crypto
 )

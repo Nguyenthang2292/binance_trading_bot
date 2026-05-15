@@ -17,6 +17,7 @@ struct NormalPlacementResult {
     CorrelationId correlationId;
     std::optional<int64_t> orderId;
     std::optional<std::string> orderStatus;
+    std::optional<std::string> avgPrice;
     std::optional<OrderErrorCategory> errorCategory;
     std::optional<int> binanceCode;
     std::optional<std::string> binanceMessage;

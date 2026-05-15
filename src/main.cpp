@@ -1,10 +1,30 @@
-#include "binance_api.h"
-#include "trading_engine.h"
+#include "account/account_service.h"
+#include "catalog/catalog_reporter.h"
+#include "catalog/plugin_loader.h"
+#include "catalog/strategy_catalog.h"
+#include "context.h"
+#include "engine/signal_engine.h"
 #include "logger.h"
-#include <iostream>
-#include <csignal>
+#include "orders/orders.h"
+#include "orders/rest_client_adapter.h"
+#include "scanner/market_scanner.h"
+#include "strategy/strategy_registry.h"
+#include "ws/user_data_stream.h"
+
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/use_future.hpp>
+#include <nlohmann/json.hpp>
+
+#include <atomic>
 #include <chrono>
+#include <csignal>
+#include <cstdlib>
+#include <fstream>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 std::atomic<bool> g_running{true};
 
@@ -13,100 +33,152 @@ void signalHandler(int signum) {
     g_running = false;
 }
 
-void onSignal(const Signal& signal) {
-    std::string action;
-    switch (signal.action) {
-        case Signal::Action::BUY:  action = "BUY"; break;
-        case Signal::Action::SELL: action = "SELL"; break;
-        case Signal::Action::HOLD: action = "HOLD"; break;
-    }
-    Logger::instance().log(LogLevel::Trade,
-        "Signal received: " + action + " (confidence: " + std::to_string(signal.confidence) + ")");
+template <typename T>
+T syncAwait(boost::asio::io_context& ioc, boost::asio::awaitable<T> task) {
+    auto future = boost::asio::co_spawn(ioc, std::move(task), boost::asio::use_future);
+    return future.get();
 }
 
-void onTrade(const NormalPlacementResult& order) {
-    const auto state =
-        order.state == PlacementState::Accepted
-            ? "ACCEPTED"
-            : (order.state == PlacementState::Rejected ? "REJECTED" : "UNKNOWN_PENDING_RECONCILE");
-    Logger::instance().log(LogLevel::Trade,
-        "Trade executed: " + order.symbol +
-        " state=" + state +
-        " clientOrderId=" + order.clientOrderId +
-        " orderId=" + std::to_string(order.orderId.value_or(0)) +
-        " status=" + order.orderStatus.value_or("N/A"));
+std::vector<nlohmann::json> toStrategyConfigs(const nlohmann::json& cfg) {
+    std::vector<nlohmann::json> out;
+    const auto strategies = cfg.value("strategies", nlohmann::json::array());
+    out.reserve(strategies.size());
+    for (const auto& item : strategies) {
+        out.push_back(item);
+    }
+    return out;
 }
 
 int main(int argc, char* argv[]) {
-    std::cout << R"(
-    ____  _                         __          _             _   ____        _      __
-   / __ )(_)___  ____ _____  ___   / /_ _____ _(_)___  ___   / /  / __ )____  / /_   / /
-  / __  / / __ \/ __ `/ __ \/ _ \ / / / / __ `/ / __ \/ _ \ / /  / __  / __ \/ __/  / /
- / /_/ / / / / / /_/ / / / /  __// / /_/ / /_/ / / / / /  __// /  / /_/ / /_/ / /_   /_/
-/_____/_/_/ /_/\__,_/_/ /_/\___//_/\__,_/\__,_/_/_/ /_/\___//_/  /_____/\____/\__/  (_)
-)" << std::endl;
-
     Logger::instance().setLogFile("trading_bot.log");
-    Logger::instance().setMinLevel(LogLevel::Debug);
-    Logger::instance().log(LogLevel::Info, "Binance Trading Bot v1.0.0 started");
+    Logger::instance().setMinLevel(LogLevel::Info);
+    Logger::instance().log(LogLevel::Info, "Binance Trading Bot started");
+
+    nlohmann::json config = nlohmann::json::object();
+    try {
+        std::ifstream in("config.json");
+        if (in) {
+            in >> config;
+        }
+    } catch (const std::exception& e) {
+        Logger::instance().log(LogLevel::Warning, std::string("Failed to parse config.json: ") + e.what());
+    }
+
+    const auto pluginsDir = config.value("catalog", nlohmann::json::object()).value("plugins_dir", "plugins");
+    strategy::StrategyRegistry registry;
+    catalog::PluginLoader pluginLoader({.pluginsDir = pluginsDir});
+    catalog::StrategyCatalog strategyCatalog({.pluginsDir = pluginsDir}, registry, std::move(pluginLoader));
+    const auto catalogSummary = strategyCatalog.initialize(toStrategyConfigs(config));
+
+    if (argc > 1 && std::string_view(argv[1]) == "--list-strategies") {
+        catalog::CatalogReporter::printList(
+            strategyCatalog.listStrategies(),
+            catalogSummary.pluginsLoaded,
+            pluginsDir);
+        return 0;
+    }
+
+    catalog::CatalogReporter::logStartupSummary(catalogSummary, strategyCatalog.listStrategies());
 
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
 
     const char* apiKey = std::getenv("BINANCE_API_KEY");
     const char* secretKey = std::getenv("BINANCE_SECRET_KEY");
-
     if (!apiKey || !secretKey) {
-        Logger::instance().log(LogLevel::Error,
+        Logger::instance().log(
+            LogLevel::Error,
             "Please set BINANCE_API_KEY and BINANCE_SECRET_KEY environment variables");
         return 1;
     }
 
-    BinanceAPI api(apiKey, secretKey);
+    const auto scannerJson = config.value("scanner", nlohmann::json::object());
+    const auto engineJson = config.value("engine", nlohmann::json::object());
 
-    Logger::instance().log(LogLevel::Info, "Testing Binance connectivity...");
-    if (!api.testConnectivity()) {
-        Logger::instance().log(LogLevel::Error, "Failed to connect to Binance API");
+    ContextConfig contextConfig;
+    contextConfig.apiKey = apiKey;
+    contextConfig.secretKey = secretKey;
+    contextConfig.testnet = std::getenv("BINANCE_TESTNET") != nullptr;
+    contextConfig.threadPoolSize = 2;
+
+    BinanceContext ctx(contextConfig);
+    RestClient rest = ctx.makeRestClient();
+
+    auto ping = syncAwait(ctx.ioc(), rest.ping());
+    if (!ping || !*ping) {
+        Logger::instance().log(LogLevel::Error, "Failed to connect to Binance REST API");
         return 1;
     }
-    Logger::instance().log(LogLevel::Info, "Connected to Binance API successfully");
 
-    auto btcPrice = api.getPrice("BTCUSDT");
-    if (btcPrice.has_value()) {
-        Logger::instance().log(LogLevel::Info,
-            "BTC/USDT Current Price: $" + std::to_string(btcPrice.value()));
+    scanner::MarketScanner scanner(
+        rest,
+        ctx,
+        scanner::MarketScanner::Config{
+            .intervals = scannerJson.value("intervals", std::vector<std::string>{"15m", "30m"}),
+            .klineBufferSize = static_cast<size_t>(scannerJson.value("kline_buffer_size", 200)),
+            .maxStreamsPerConnection = static_cast<size_t>(scannerJson.value("max_streams_per_connection", 512)),
+            .warmupRequestDelay = std::chrono::milliseconds(scannerJson.value("warmup_request_delay_ms", 100)),
+        });
+
+    auto scannerStart = syncAwait(ctx.ioc(), scanner.start());
+    if (!scannerStart) {
+        Logger::instance().log(LogLevel::Error, "MarketScanner start failed: " + scannerStart.error().toString());
+        return 1;
     }
 
-    TradingConfig config;
-    config.symbol = "BTCUSDT";
-    config.interval = "15m";
-    config.tradeQuantity = 0.001;
-    config.stopLossPercent = 2.0;
-    config.takeProfitPercent = 4.0;
-    config.rsiPeriod = 14;
-    config.rsiOversold = 30.0;
-    config.rsiOverbought = 70.0;
-    config.smaShortPeriod = 9;
-    config.smaLongPeriod = 21;
-    config.pollIntervalMs = 60000;
+    RestClientAdapter ordersRest(rest);
+    Orders orders(
+        ordersRest,
+        OrdersConfig{
+            .clientIdNamespace = "bot",
+            .allowBestEffortJournal = true,
+            .positionMode = PositionMode::OneWay,
+        });
 
-    TradingEngine engine(api, config);
-    engine.setOnSignal(onSignal);
-    engine.setOnTrade(onTrade);
+    account::AccountService accountSvc(rest, account::AccountCompatibilityConfig{});
+    engine::ScannerPort scannerPort(scanner);
+    engine::AccountPort accountPort(accountSvc);
+    engine::OrdersPort ordersPort(orders);
+    engine::SignalEngine signalEngine(
+        scannerPort,
+        registry,
+        accountPort,
+        ordersPort,
+        engine::SignalEngine::Config{
+            .minNotional = engineJson.value("min_notional", 1.0),
+            .positionCheckInterval = std::chrono::seconds(engineJson.value("position_check_interval_seconds", 60)),
+        });
+    signalEngine.setScanCycleStatusCallback(
+        [&strategyCatalog](int queueItems, int openPositions) {
+            catalog::CatalogReporter::logRuntimeStatus(
+                strategyCatalog.listStrategies(),
+                queueItems,
+                openPositions);
+        });
 
-    Logger::instance().log(LogLevel::Info, "Starting trading engine (DRY RUN - no real trades)");
-    Logger::instance().log(LogLevel::Info, "Symbol: " + config.symbol + " Interval: " + config.interval);
-    Logger::instance().log(LogLevel::Info, "Press Ctrl+C to stop");
+    UserDataStream userData = ctx.makeUserDataStream();
+    userData.start([&signalEngine](boost::system::error_code ec, UserDataEvent event) {
+        if (ec) {
+            Logger::instance().log(LogLevel::Warning, "User data stream error: " + ec.message());
+            return;
+        }
+        signalEngine.onUserDataEvent(event);
+    });
 
-    engine.start();
+    boost::asio::co_spawn(
+        ctx.ioc(),
+        [&signalEngine]() -> boost::asio::awaitable<void> { co_await signalEngine.run(); },
+        boost::asio::detached);
 
+    Logger::instance().log(LogLevel::Info, "SignalEngine started. Press Ctrl+C to stop");
     while (g_running) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
-    Logger::instance().log(LogLevel::Info, "Stopping trading engine...");
-    engine.stop();
-    Logger::instance().log(LogLevel::Info, "Binance Trading Bot stopped");
+    signalEngine.stop();
+    userData.stop();
+    scanner.stop();
 
+    Logger::instance().log(LogLevel::Info, "Binance Trading Bot stopped");
     return 0;
 }

@@ -372,6 +372,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     result.state = PlacementState::Accepted;
     result.orderId = placed->orderId;
     result.orderStatus = placed->status;
+    result.avgPrice = placed->avgPrice;
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
     logPlacement(result, startedAt);
     co_return result;
@@ -412,6 +413,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     result.state = PlacementState::Accepted;
     result.orderId = placed->orderId;
     result.orderStatus = placed->status;
+    result.avgPrice = placed->avgPrice;
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
     logPlacement(result, startedAt);
     co_return result;
@@ -452,6 +454,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     result.state = PlacementState::Accepted;
     result.orderId = placed->orderId;
     result.orderStatus = placed->status;
+    result.avgPrice = placed->avgPrice;
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
     logPlacement(result, startedAt);
     co_return result;
@@ -833,6 +836,7 @@ boost::asio::awaitable<OrdersResult<BatchPlacementResult>> NormalOrderService::b
         item.state = PlacementState::Accepted;
         item.orderId = resultItem->orderId;
         item.orderStatus = resultItem->status;
+        item.avgPrice = resultItem->avgPrice;
         (void)updateJournal(item.correlationId, PlacementState::Accepted, resultItem->orderId);
         logPlacement(item, startedAt);
         out = item;

@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Binance Trading Bot — Module Architecture</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --c-entry: #3fb950;
+  --c-orch:  #58a6ff;
+  --c-biz:   #ffa657;
+  --c-infra: #d2a8ff;
+  --c-found: #79c0ff;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Header ─────────────────────────────────── */
+header {
+  padding: 12px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+}
+header h1 { font-size: 15px; font-weight: 700; color: var(--text); }
+header span { font-size: 12px; color: var(--muted); }
+.hbadge {
+  margin-left: auto;
+  padding: 2px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #1c2d41;
+  border: 1px solid #1f6feb;
+  color: var(--c-orch);
+}
+
+/* ── Layout ──────────────────────────────────── */
+#layout {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ── Diagram ─────────────────────────────────── */
+#diagram-wrap {
+  flex: 1;
+  position: relative;
+  overflow: auto;
+  background: var(--bg);
+}
+
+#canvas {
+  position: relative;
+  width: 1150px;
+  height: 680px;
+}
+
+#edge-svg {
+  position: absolute;
+  inset: 0;
+  width: 1150px;
+  height: 680px;
+  pointer-events: none;
+}
+
+/* ── Module boxes ────────────────────────────── */
+.mbox {
+  position: absolute;
+  width: 148px;
+  height: 58px;
+  border-radius: 9px;
+  border: 1.5px solid;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+  transition: box-shadow .18s, transform .18s;
+  text-align: center;
+  user-select: none;
+}
+.mbox:hover { transform: translate(-50%,-50%) scale(1.06); box-shadow: 0 0 18px currentColor; z-index: 4; }
+.mbox.sel   { transform: translate(-50%,-50%) scale(1.09); box-shadow: 0 0 26px currentColor; z-index: 5; }
+.mn  { font-size: 13px; font-weight: 700; letter-spacing: .2px; }
+.ms  { font-size: 10px; opacity: .65; margin-top: 2px; }
+
+.l-entry { background:#0d200d; border-color:#3fb950; color:#3fb950; }
+.l-orch  { background:#0d1b2e; border-color:#58a6ff; color:#58a6ff; }
+.l-biz   { background:#201308; border-color:#ffa657; color:#ffa657; }
+.l-infra { background:#1a0e2e; border-color:#d2a8ff; color:#d2a8ff; }
+.l-found { background:#0d1a2b; border-color:#79c0ff; color:#79c0ff; }
+
+/* ── Legend ──────────────────────────────────── */
+#legend {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  background: #161b22ee;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 11px;
+  pointer-events: none;
+}
+#legend .lt { font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 7px; }
+.li { display: flex; align-items: center; gap: 7px; margin: 4px 0; color: var(--muted); }
+.ld { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+/* ── Sidebar ─────────────────────────────────── */
+#sidebar {
+  width: 360px;
+  min-width: 360px;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#sb-inner { padding: 20px; overflow-y: auto; flex: 1; }
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--muted);
+  text-align: center;
+  gap: 10px;
+  opacity: .6;
+}
+.empty p { font-size: 13px; }
+
+.mtitle { font-size: 21px; font-weight: 700; margin-bottom: 7px; }
+.lbadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  margin-bottom: 16px;
+}
+.dot6 { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+.slabel {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin: 18px 0 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.desc { font-size: 13px; line-height: 1.65; color: #c9d1d9; }
+
+.cls-list { display: flex; flex-direction: column; gap: 6px; }
+.cls {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.cname { font-size: 12.5px; font-weight: 600; color: #ffa657; font-family: 'Cascadia Code','Fira Code',monospace; }
+.cdesc { font-size: 11.5px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+
+.feat-list { display: flex; flex-direction: column; gap: 4px; }
+.feat {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  color: #c9d1d9;
+  line-height: 1.45;
+}
+.feat-dot { color: #ffa657; flex-shrink: 0; font-size: 10px; margin-top: 2px; }
+
+.tag-row { display: flex; flex-wrap: wrap; gap: 5px; }
+.ptag {
+  padding: 3px 9px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #1c2d41;
+  border: 1px solid #1f6feb44;
+  color: var(--c-orch);
+}
+
+.int-list { display: flex; flex-direction: column; gap: 5px; }
+.int-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: border-color .15s;
+  font-size: 12px;
+  color: #c9d1d9;
+}
+.int-item:hover { border-color: var(--c-orch); }
+.arr { font-weight: 700; font-size: 13px; flex-shrink: 0; }
+.arr.out { color: var(--c-orch); }
+.arr.in  { color: var(--c-entry); }
+.iname { font-weight: 600; }
+.ilbl  { color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ Binance Trading Bot</h1>
+  <span>Module Architecture &amp; Interaction Map</span>
+  <span class="hbadge">C++20 · Boost.Asio · 13 Modules</span>
+</header>
+
+<div id="layout">
+  <div id="diagram-wrap">
+    <div id="canvas">
+      <svg id="edge-svg"></svg>
+      <div id="boxes"></div>
+
+      <div id="legend">
+        <div class="lt">Layer</div>
+        <div class="li"><div class="ld" style="background:#3fb950"></div>Entry Point</div>
+        <div class="li"><div class="ld" style="background:#58a6ff"></div>Orchestration</div>
+        <div class="li"><div class="ld" style="background:#ffa657"></div>Business Logic</div>
+        <div class="li"><div class="ld" style="background:#d2a8ff"></div>Infrastructure</div>
+        <div class="li"><div class="ld" style="background:#79c0ff"></div>Foundation</div>
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid #30363d;">
+          <div class="lt">Edges</div>
+          <div class="li"><svg width="28" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="#444c56" stroke-width="1.5" marker-end="url(#arr-n)"/></svg>depends on</div>
+          <div class="li"><svg width="28" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-c)"/></svg>callback / event</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="sidebar">
+    <div id="sb-inner">
+      <div class="empty" id="empty-state">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+          <rect x="2" y="2" width="8" height="8" rx="1.5"/>
+          <rect x="14" y="2" width="8" height="8" rx="1.5"/>
+          <rect x="2" y="14" width="8" height="8" rx="1.5"/>
+          <rect x="14" y="14" width="8" height="8" rx="1.5"/>
+          <line x1="6" y1="10" x2="6" y2="14"/>
+          <line x1="18" y1="10" x2="18" y2="14"/>
+          <line x1="10" y1="6" x2="14" y2="6"/>
+          <line x1="10" y1="18" x2="14" y2="18"/>
+        </svg>
+        <div>
+          <strong style="color:#c9d1d9">Click a module to explore</strong>
+          <p>View purpose, classes, patterns, and dependencies</p>
+        </div>
+      </div>
+      <div id="detail" style="display:none"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Module data ──────────────────────────────────────────────────────────────
+const MODS = {
+  main: {
+    id:'main', label:'main.cpp', sub:'Entry Point', layer:'entry',
+    x:575, y:65,
+    desc:'Application entry point. Orchestrates the full startup sequence: parses config.json, initialises all subsystems in dependency order, wires ports via dependency injection, spawns the Boost.Asio io_context thread pool, and handles graceful shutdown on SIGINT/SIGTERM.',
+    classes:[
+      {n:'main()', d:'Startup: config → catalog → context → scanner → orders → account → engine → run'}
+    ],
+    patterns:['Bootstrap','Composition Root'],
+    features:[
+      'Parses config.json for all subsystem configs',
+      'CLI flag: --list-strategies prints catalog then exits',
+      'Wires concrete port adapters into SignalEngine',
+      'Thread pool size configurable via config',
+      'SIGINT/SIGTERM handler triggers graceful shutdown'
+    ]
+  },
+
+  catalog: {
+    id:'catalog', label:'Catalog', sub:'Plugin Management', layer:'orch',
+    x:230, y:195,
+    desc:'Dynamic strategy plugin management system. Scans the plugins/ directory at startup, loads .dll files via the Windows API, extracts C ABI function pointers, and registers IStrategy instances into StrategyRegistry. Strategies can be added without recompiling the bot.',
+    classes:[
+      {n:'StrategyCatalog',  d:'Main orchestrator: combines PluginLoader + StrategyRegistry'},
+      {n:'PluginLoader',     d:'Scans plugins/ dir, loads DLLs, creates IStrategy instances'},
+      {n:'PluginHandle',     d:'RAII wrapper managing Windows HMODULE DLL lifetime'},
+      {n:'CatalogReporter',  d:'CLI output and runtime status logging for loaded strategies'}
+    ],
+    patterns:['Plugin Architecture','Registry','RAII','Adapter'],
+    features:[
+      'C ABI contract: createStrategy / destroyStrategy / strategyType / pluginVersion',
+      '1 DLL = 1 strategy type — no core rebuild needed',
+      'Load errors isolated per plugin; others continue',
+      'LoadSummary reports plugins found / loaded / failed',
+      '--list-strategies CLI mode supported via CatalogReporter'
+    ]
+  },
+
+  engine: {
+    id:'engine', label:'Engine', sub:'Signal Processing', layer:'orch',
+    x:890, y:195,
+    desc:'Core async trading loop. Builds a cartesian product of (symbols × intervals × strategies) as a WorkQueue, evaluates each combination each scan cycle, opens positions on signals using ATR-based sizing, and runs a parallel timer loop for time-based position exits.',
+    classes:[
+      {n:'SignalEngine',    d:'Async coroutine loop: run() → runScanCycle() → processItem()'},
+      {n:'PositionTracker', d:'Thread-safe map of open TrackedPositions (symbol → position)'},
+      {n:'WorkQueue',       d:'Builds cartesian product: symbols × intervals × strategies'},
+      {n:'SizingPolicy',    d:'ATR-based size = balance × risk_pct / (atr × sl_multiplier)'}
+    ],
+    patterns:['Orchestrator','Dependency Injection','Async/Await (C++20)','Observer'],
+    features:[
+      'Boost.Asio C++20 coroutines (co_await / co_spawn)',
+      'Sequential scan cycle prevents concurrent position write races',
+      'IScannerPort / IAccountPort / IOrdersPort port interfaces',
+      'Concrete adapters: ScannerPort, AccountPort, OrdersPort',
+      'Time-exit monitoring runs as a separate async coroutine',
+      'onUserDataEvent() callback updates PositionTracker on fills'
+    ]
+  },
+
+  scanner: {
+    id:'scanner', label:'Scanner', sub:'Market Data', layer:'biz',
+    x:110, y:335,
+    desc:'Real-time OHLCV market data collector. On startup fetches exchange info to discover tradable USDT perpetual symbols, warms up the kline cache via REST, then subscribes to WebSocket kline streams for zero-poll data collection.',
+    classes:[
+      {n:'MarketScanner', d:'Orchestrates symbol discovery, REST warmup, WebSocket subscriptions'},
+      {n:'KlineCache',    d:'Thread-safe (symbol × interval) → deque<Kline> FIFO cache'}
+    ],
+    patterns:['Publisher','Thread-safe Cache','Observer'],
+    features:[
+      'Auto-discovers tradable USDT perpetual futures symbols',
+      'REST warmup fills cache before WebSocket takes over',
+      'std::shared_mutex for read-heavy concurrent access',
+      'Configurable klineBufferSize (default 200 candles)',
+      'Max 512 streams per WebSocket connection',
+      'onKlineClosed callback triggers engine scan cycle'
+    ]
+  },
+
+  strategy: {
+    id:'strategy', label:'Strategy', sub:'Interface & Registry', layer:'biz',
+    x:360, y:335,
+    desc:'Defines the plugin contract (IStrategy), unified per-strategy configuration (StrategyConfig), evaluation result type (Signal), and the runtime StrategyRegistry. Acts as the shared contract between the core engine and all dynamically loaded plugin implementations.',
+    classes:[
+      {n:'IStrategy',        d:'Pure virtual: config() → StrategyConfig, evaluate(symbol, interval, klines) → Signal'},
+      {n:'Signal',           d:'Evaluation result: direction (Long/Short/None), confidence, atr, reason'},
+      {n:'StrategyConfig',   d:'Unified config: intervals, risk_pct, sl/tp multipliers, atr_period'},
+      {n:'StrategyRegistry', d:'add() / addShared() / all() / forInterval() — holds shared_ptr<IStrategy>'},
+      {n:'ATR',              d:'Average True Range indicator computed over Kline OHLC data'}
+    ],
+    patterns:['Strategy Pattern','Registry','Interface Segregation'],
+    features:[
+      'Pure virtual interface isolates core from plugin implementations',
+      'Signal carries the ATR value used by SizingPolicy in engine',
+      'Registry supports filtering strategies by interval',
+      'StrategyConfig is the single source of truth for strategy params',
+      'Plugins only need to inherit IStrategy — no core changes required'
+    ]
+  },
+
+  orders: {
+    id:'orders', label:'Orders', sub:'Order Execution', layer:'biz',
+    x:615, y:335,
+    desc:'Type-safe order execution facade for Binance Futures. Hides the complexity of NormalOrderService and AlgoOrderService behind a clean async interface. Validates inputs, converts types, logs to an audit journal, and handles decimal precision for quantity and price.',
+    classes:[
+      {n:'Orders',              d:'Async facade: market(), limit(), protection(), closeByMarket(), cancel()'},
+      {n:'NormalOrderService',  d:'Standard limit / market order placement, cancellation, amendment'},
+      {n:'AlgoOrderService',    d:'Advanced order types (TWAP, VWAP, etc.)'},
+      {n:'OrderValidator',      d:'Pre-flight validation of order drafts before submission'},
+      {n:'OrderJournal',        d:'Persistent audit trail logging for all placed orders'}
+    ],
+    patterns:['Facade','Service Layer','Type-safe Builders'],
+    features:[
+      'Type-safe drafts: MarketOrderDraft, LimitOrderDraft, ProtectionOrderDraft',
+      'ProtectionOrderDraft places TP + SL simultaneously',
+      'Decimal precision handling to meet Binance step size rules',
+      'Centralised validation prevents invalid order submission',
+      'Audit journal for debugging and compliance',
+      'MQL4 compatibility adapter for legacy support'
+    ]
+  },
+
+  account: {
+    id:'account', label:'Account', sub:'Account State', layer:'biz',
+    x:870, y:335,
+    desc:'Abstracts the Binance account REST API to provide consistent snapshots of wallet balance, open positions, and margin information. Used by SignalEngine to verify sufficient capital before opening a new position.',
+    classes:[
+      {n:'AccountService',  d:'Async: snapshot(), checkFreeMargin(), liquidationRisk()'},
+      {n:'AccountSnapshot', d:'Point-in-time state: totalWalletBalance, availableBalance, positions[]'}
+    ],
+    patterns:['Service Layer','Snapshot Pattern'],
+    features:[
+      'Returns consistent point-in-time account snapshot',
+      'Checks available margin before engine calls SizingPolicy',
+      'Provides liquidation price and margin ratio',
+      'Adapts RestClient via IRestAccountClient interface',
+      'MQL4 compatibility adapter for legacy support'
+    ]
+  },
+
+  rest: {
+    id:'rest', label:'REST Client', sub:'HTTP Abstraction', layer:'infra',
+    x:275, y:465,
+    desc:'Async HTTP client wrapping the Binance REST API. Handles HMAC-SHA256 request signing, token-bucket rate limiting to stay within Binance weight limits (1200/min), and all endpoint mappings including klines, orders, and account data.',
+    classes:[
+      {n:'RestClient',  d:'Main interface: ping(), serverTime(), exchangeInfo(), klines(), placeOrder()…'},
+      {n:'Signer',      d:'HMAC-SHA256 request authentication with API key/secret'},
+      {n:'RateLimiter', d:'Token bucket enforcing Binance 1200-weight-per-minute limit'}
+    ],
+    patterns:['Adapter','Token Bucket','Chain of Responsibility'],
+    features:[
+      'All HTTP calls are async (Boost.Asio coroutines)',
+      'HMAC-SHA256 signing via OpenSSL',
+      'Token bucket rate limiter prevents 429 HTTP errors',
+      'Parses X-MBX-USED-WEIGHT headers from responses',
+      'Supports both testnet and mainnet base URLs'
+    ]
+  },
+
+  ws: {
+    id:'ws', label:'WebSocket', sub:'Real-time Streams', layer:'infra',
+    x:545, y:465,
+    desc:'Manages persistent WebSocket connections to Binance for real-time kline data and user account events via UserDataStream. Auto-reconnects on network interruption. Fires callbacks into the engine when order fills or position changes occur.',
+    classes:[
+      {n:'WsClient',       d:'WebSocket connection manager: subscribeKline() with auto-reconnect'},
+      {n:'UserDataStream', d:'Listens for order fills, position changes, and liquidation alerts'}
+    ],
+    patterns:['Observer','Reactor','Auto-reconnect'],
+    features:[
+      'Boost.Beast WebSocket protocol implementation',
+      'Handles multiplexed combined streams (up to 512 per connection)',
+      'Auto-reconnect with backoff on network interruption',
+      'UserDataStream fires onUserDataEvent callbacks to SignalEngine',
+      'JSON parsing via nlohmann/json with ws_parse_helpers'
+    ]
+  },
+
+  context: {
+    id:'context', label:'Context', sub:'API Initialisation', layer:'infra',
+    x:820, y:465,
+    desc:'Global Binance API setup and lifecycle manager. Creates and owns RestClient, WsClient, and UserDataStream instances. Manages the Boost.Asio io_context and SSL context. Acts as the composition root for all network infrastructure and API credentials.',
+    classes:[
+      {n:'BinanceContext', d:'Config: api_key, secret_key, testnet flag, thread_pool_size. Owns all clients.'}
+    ],
+    patterns:['Context Object','RAII','Composition Root'],
+    features:[
+      'Creates RestClient and WsClient with loaded API credentials',
+      'SSL context initialisation (OpenSSL) for HTTPS / WSS',
+      'Manages io_context thread pool size',
+      'Testnet flag allows safe development without real trades',
+      'Single point of API credential configuration'
+    ]
+  },
+
+  types: {
+    id:'types', label:'Types', sub:'Domain Data', layer:'found',
+    x:185, y:595,
+    desc:'Shared domain type definitions used across all modules. Defines Kline, ExchangeSymbol, Position, Balance, Order, Trade, Fill, UserDataEvent, and error handling wrappers. Zero external dependencies — imported by every module.',
+    classes:[
+      {n:'Kline',         d:'OHLCV candle: open, high, low, close, volume, open/close timestamps'},
+      {n:'ExchangeSymbol',d:'Symbol metadata: tick size, step size, min notional, status'},
+      {n:'Position',      d:'Open position: symbol, quantity, entry price, unrealized PnL'},
+      {n:'UserDataEvent', d:'Fill / cancel / liquidation event received from UserDataStream'},
+      {n:'Result<T>',     d:'Explicit error-or-value wrapper for type-safe error propagation'}
+    ],
+    patterns:['Value Object','Result Type'],
+    features:[
+      'Zero external dependencies — safe to import anywhere',
+      'Result<T> makes error handling explicit (no exceptions)',
+      'Strong type definitions prevent accidental mix-ups',
+      'Single source of truth for all shared data shapes'
+    ]
+  },
+
+  transport: {
+    id:'transport', label:'Transport', sub:'Session Layer', layer:'found',
+    x:545, y:595,
+    desc:'Low-level HTTP and WebSocket session management. Provides HTTP connection pooling and WebSocket auto-reconnect logic. Parses Binance rate-limit response headers and feeds them to the rate limiter in RestClient.',
+    classes:[
+      {n:'HttpSession',      d:'Async HTTP/1.1 with keep-alive and connection reuse'},
+      {n:'WsSession',        d:'Persistent WebSocket connection with auto-reconnect on close'},
+      {n:'RateLimitHeaders', d:'Parses X-MBX-USED-WEIGHT-* headers from HTTP responses'}
+    ],
+    patterns:['Session Pool','Auto-reconnect','Decorator'],
+    features:[
+      'Boost.Asio + Boost.Beast protocol implementation',
+      'HTTP connection pooling reduces TLS handshake overhead',
+      'Rate limit header extraction feeds back into RateLimiter',
+      'WebSocket heartbeat and ping/pong frame handling'
+    ]
+  },
+
+  logger: {
+    id:'logger', label:'Logger', sub:'Logging', layer:'found',
+    x:910, y:595,
+    desc:'Centralised thread-safe logging utility used by all modules for diagnostics, audit trails, and runtime monitoring. Supports configurable log levels and writes to both stdout and a rotating log file.',
+    classes:[
+      {n:'Logger', d:'log(level, msg) — thread-safe write to console + log file'}
+    ],
+    patterns:['Singleton','Cross-cutting Concern'],
+    features:[
+      'Thread-safe via internal mutex',
+      'Configurable minimum log level (DEBUG / INFO / WARN / ERROR)',
+      'Dual output: console and rotating file',
+      'Used by all modules — no circular dependency'
+    ]
+  }
+};
+
+// ── Edge data ────────────────────────────────────────────────────────────────
+// [src, tgt, label, type]  type: 'dep' | 'cb' (callback/event)
+const EDGES = [
+  ['main','catalog',  'loads plugins',    'dep'],
+  ['main','engine',   'creates & runs',   'dep'],
+  ['main','context',  'initialises',      'dep'],
+  ['main','scanner',  'starts',           'dep'],
+  ['main','orders',   'creates',          'dep'],
+  ['main','account',  'creates',          'dep'],
+  ['catalog','strategy','fills registry', 'dep'],
+  ['engine','scanner', 'IScannerPort',    'dep'],
+  ['engine','strategy','evaluate()',      'dep'],
+  ['engine','orders',  'IOrdersPort',     'dep'],
+  ['engine','account', 'IAccountPort',    'dep'],
+  ['scanner','rest',   'REST warmup',     'dep'],
+  ['scanner','ws',     'subscribe klines','dep'],
+  ['scanner','types',  'Kline',           'dep'],
+  ['orders','rest',    'HTTP calls',      'dep'],
+  ['orders','types',   'OrderDraft',      'dep'],
+  ['account','rest',   'HTTP calls',      'dep'],
+  ['account','types',  'AccountSnapshot', 'dep'],
+  ['engine','types',   'Signal/Position', 'dep'],
+  ['strategy','types', 'Kline/Signal',    'dep'],
+  ['rest','transport', 'HttpSession',     'dep'],
+  ['ws','transport',   'WsSession',       'dep'],
+  ['context','rest',   'owns',            'dep'],
+  ['context','ws',     'owns',            'dep'],
+  ['ws','engine',      'UserDataEvent',   'cb'],
+];
+
+const LAYER_META = {
+  entry: {label:'Entry Point',  color:'#3fb950'},
+  orch:  {label:'Orchestration',color:'#58a6ff'},
+  biz:   {label:'Business Logic',color:'#ffa657'},
+  infra: {label:'Infrastructure',color:'#d2a8ff'},
+  found: {label:'Foundation',   color:'#79c0ff'},
+};
+
+const BW = 74, BH = 29; // half box width/height
+
+let sel = null;
+
+// ── Box rendering ────────────────────────────────────────────────────────────
+function renderBoxes() {
+  const cont = document.getElementById('boxes');
+  Object.values(MODS).forEach(m => {
+    const d = document.createElement('div');
+    d.className = `mbox l-${m.layer}`;
+    d.id = `b-${m.id}`;
+    d.style.left = m.x + 'px';
+    d.style.top  = m.y + 'px';
+    d.innerHTML  = `<div class="mn">${m.label}</div><div class="ms">${m.sub}</div>`;
+    d.addEventListener('click', () => pick(m.id));
+    cont.appendChild(d);
+  });
+}
+
+// ── Edge rendering ───────────────────────────────────────────────────────────
+function boxExit(m, nx, ny) {
+  // Find exit point on box boundary given normalised direction (nx,ny)
+  const tx = nx !== 0 ? BW / Math.abs(nx) : Infinity;
+  const ty = ny !== 0 ? BH / Math.abs(ny) : Infinity;
+  const t  = Math.min(tx, ty);
+  return [m.x + nx * t, m.y + ny * t];
+}
+
+function renderEdges() {
+  const svg = document.getElementById('edge-svg');
+
+  // Defs for arrowheads
+  const defs = svg.appendChild(mkSVG('defs'));
+  ['n','c'].forEach((k,i) => {
+    const mk = mkSVG('marker');
+    mk.setAttribute('id',`arr-${k}`);
+    mk.setAttribute('viewBox','0 0 10 10');
+    mk.setAttribute('refX','9'); mk.setAttribute('refY','5');
+    mk.setAttribute('markerWidth','5'); mk.setAttribute('markerHeight','5');
+    mk.setAttribute('orient','auto-start-reverse');
+    const p = mkSVG('path');
+    p.setAttribute('d','M 0 0 L 10 5 L 0 10 z');
+    p.setAttribute('fill', i===0 ? '#444c56' : '#3fb950');
+    mk.appendChild(p); defs.appendChild(mk);
+  });
+
+  EDGES.forEach(([sid,tid,lbl,type]) => {
+    const s = MODS[sid], t = MODS[tid];
+    if (!s || !t) return;
+
+    const dx = t.x - s.x, dy = t.y - s.y;
+    const len = Math.sqrt(dx*dx + dy*dy);
+    if (len < 1) return;
+    const nx = dx/len, ny = dy/len;
+
+    const [sx,sy] = boxExit(s,  nx,  ny);
+    const [ex,ey] = boxExit(t, -nx, -ny);
+
+    // Slight perpendicular offset for curve aesthetics
+    const off = 0.12;
+    const cpx = (sx+ex)/2 + (-ny)*len*off;
+    const cpy = (sy+ey)/2 + ( nx)*len*off;
+
+    const g = svg.appendChild(mkSVG('g'));
+    g.classList.add('edge');
+    g.dataset.s = sid; g.dataset.t = tid;
+
+    const path = g.appendChild(mkSVG('path'));
+    path.setAttribute('d', `M${sx},${sy} Q${cpx},${cpy} ${ex},${ey}`);
+    path.setAttribute('fill','none');
+    path.setAttribute('stroke', type==='cb' ? '#3fb950' : '#2d333b');
+    path.setAttribute('stroke-width', type==='cb' ? '1.8' : '1.3');
+    if (type==='cb') path.setAttribute('stroke-dasharray','5 3');
+    path.setAttribute('marker-end', `url(#arr-${type==='cb'?'c':'n'})`);
+    path.setAttribute('opacity','0.7');
+  });
+}
+
+function mkSVG(tag) {
+  return document.createElementNS('http://www.w3.org/2000/svg', tag);
+}
+
+// ── Interaction ──────────────────────────────────────────────────────────────
+function pick(id) {
+  if (sel) {
+    document.getElementById(`b-${sel}`)?.classList.remove('sel');
+  }
+  if (sel === id) {
+    sel = null;
+    resetEdges();
+    document.getElementById('empty-state').style.display = '';
+    document.getElementById('detail').style.display = 'none';
+    return;
+  }
+  sel = id;
+  document.getElementById(`b-${id}`)?.classList.add('sel');
+  highlightEdges(id);
+  renderDetail(MODS[id]);
+}
+
+function highlightEdges(id) {
+  document.querySelectorAll('.edge').forEach(g => {
+    const p = g.querySelector('path');
+    if (g.dataset.s === id || g.dataset.t === id) {
+      p.setAttribute('opacity','1');
+      const isCb = p.getAttribute('stroke-dasharray') === '5 3';
+      const isOut = g.dataset.s === id;
+      p.setAttribute('stroke', isOut ? '#58a6ff' : (isCb ? '#3fb950' : '#ffa657'));
+      p.setAttribute('stroke-width','2');
+    } else {
+      p.setAttribute('opacity','0.08');
+    }
+  });
+}
+
+function resetEdges() {
+  document.querySelectorAll('.edge path').forEach(p => {
+    const isCb = p.getAttribute('stroke-dasharray') === '5 3';
+    p.setAttribute('stroke', isCb ? '#3fb950' : '#2d333b');
+    p.setAttribute('stroke-width', isCb ? '1.8' : '1.3');
+    p.setAttribute('opacity','0.7');
+  });
+}
+
+// ── Detail panel ─────────────────────────────────────────────────────────────
+function renderDetail(m) {
+  document.getElementById('empty-state').style.display = 'none';
+  const panel = document.getElementById('detail');
+  panel.style.display = '';
+
+  const lm = LAYER_META[m.layer];
+  const out = EDGES.filter(e => e[0] === m.id);
+  const inn = EDGES.filter(e => e[1] === m.id);
+
+  const cls = m.classes.map(c => `
+    <div class="cls">
+      <div class="cname">${c.n}</div>
+      <div class="cdesc">${c.d}</div>
+    </div>`).join('');
+
+  const feats = m.features.map(f =>
+    `<div class="feat"><span class="feat-dot">◆</span>${f}</div>`
+  ).join('');
+
+  const pats = m.patterns.map(p =>
+    `<span class="ptag">${p}</span>`
+  ).join('');
+
+  const outHtml = out.length ? `
+    <div class="slabel">Outgoing Dependencies</div>
+    <div class="int-list">${out.map(([s,t,lbl]) => `
+      <div class="int-item" onclick="pick('${t}')">
+        <span class="arr out">→</span>
+        <div><span class="iname">${MODS[t]?.label}</span><span class="ilbl"> · ${lbl}</span></div>
+      </div>`).join('')}</div>` : '';
+
+  const inHtml = inn.length ? `
+    <div class="slabel">Used By</div>
+    <div class="int-list">${inn.map(([s,t,lbl]) => `
+      <div class="int-item" onclick="pick('${s}')">
+        <span class="arr in">←</span>
+        <div><span class="iname">${MODS[s]?.label}</span><span class="ilbl"> · ${lbl}</span></div>
+      </div>`).join('')}</div>` : '';
+
+  panel.innerHTML = `
+    <div class="mtitle">${m.label}</div>
+    <div class="lbadge" style="background:${lm.color}18;border:1px solid ${lm.color}40;color:${lm.color}">
+      <span class="dot6" style="background:${lm.color}"></span>${lm.label}
+    </div>
+
+    <div class="slabel">Purpose</div>
+    <div class="desc">${m.desc}</div>
+
+    <div class="slabel">Key Classes</div>
+    <div class="cls-list">${cls}</div>
+
+    <div class="slabel">Features</div>
+    <div class="feat-list">${feats}</div>
+
+    <div class="slabel">Design Patterns</div>
+    <div class="tag-row">${pats}</div>
+
+    ${outHtml}${inHtml}
+  `;
+}
+
+// ── Layer band backgrounds ────────────────────────────────────────────────────
+function renderBands() {
+  const svg = document.getElementById('edge-svg');
+  const bands = [
+    {y1:18,  y2:112, color:'#3fb950', label:'Entry'},
+    {y1:148, y2:247, color:'#58a6ff', label:'Orchestration'},
+    {y1:283, y2:392, color:'#ffa657', label:'Business Logic'},
+    {y1:416, y2:517, color:'#d2a8ff', label:'Infrastructure'},
+    {y1:546, y2:645, color:'#79c0ff', label:'Foundation'},
+  ];
+  bands.forEach(b => {
+    const rect = mkSVG('rect');
+    rect.setAttribute('x','0');
+    rect.setAttribute('y', b.y1);
+    rect.setAttribute('width','1150');
+    rect.setAttribute('height', b.y2 - b.y1);
+    rect.setAttribute('fill', b.color);
+    rect.setAttribute('opacity','0.03');
+    rect.setAttribute('rx','4');
+    svg.insertBefore(rect, svg.firstChild);
+
+    const txt = mkSVG('text');
+    txt.setAttribute('x','8');
+    txt.setAttribute('y', b.y1 + 14);
+    txt.setAttribute('fill', b.color);
+    txt.setAttribute('opacity','0.35');
+    txt.setAttribute('font-size','10');
+    txt.setAttribute('font-weight','700');
+    txt.setAttribute('letter-spacing','1');
+    txt.setAttribute('font-family','system-ui,sans-serif');
+    txt.textContent = b.label.toUpperCase();
+    svg.insertBefore(txt, svg.firstChild);
+  });
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+renderBoxes();
+renderEdges();
+renderBands();
+</script>
+</body>
+</html>
