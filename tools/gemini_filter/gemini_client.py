@@ -61,13 +61,17 @@ def generate_json_score(
     contents: Any,
     use_google_search: bool,
 ) -> dict[str, Any]:
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema=SCORE_SCHEMA,
-    )
     if use_google_search:
-        config.tools = [types.Tool(google_search=types.GoogleSearch())]
-
+        # Google Search grounding is incompatible with JSON schema output mode.
+        # Request plain text with grounding; the model is still prompted to return JSON.
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())]
+        )
+    else:
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=SCORE_SCHEMA,
+        )
     response = client.models.generate_content(
         model=model,
         contents=contents,
