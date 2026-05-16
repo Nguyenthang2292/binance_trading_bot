@@ -1,10 +1,6 @@
-Strategies 233
-
 and how holistically each does it according to their interpretation of the three golden tenets. As you have reviewed each strategy I hope you have made a mental note of all the individual ideas that have resonated. They may come in handy when you start to develop your own strategy.
 
 Now that you have a better insight into what trend trading is and have a reasonable understanding of several strategies, it's time to give consideration to an approach you may like to follow. However, before we move further long the pathway towards trading a sensible and sustainable trading methodology, I want to first talk about the importance of measuring strategy performance within a risk-adjusted context.
-
----
 
 ### CHAPTER 7
 
@@ -12,24 +8,15 @@ Now that you have a better insight into what trend trading is and have a reasona
 
 Before you can achieve sustainable trading you first need to survive the markets.
 
-I’m only in the fortunate position to trade, and to continue to trade, because I have survived. And I’ve survived only because I’ve been effective at limiting my risk. I focus on managing it well. I’m a good risk manager. Not perfect. But good enough to survive the markets and be actively engaged every day so I’m present and in position to take advantage of the good opportunities when they arrive. I can only enter and adjust my orders and manage my open positions because I have first survived. Believe me. Survival comes before profit. So, my first objective in trading is to survive and I do this by ensuring I trade with a 0% ROR.
+I'm only in the fortunate position to trade, and to continue to trade, because I have survived. And I've survived only because I've been effective at limiting my risk. I focus on managing it well. I'm a good risk manager. Not perfect. But good enough to survive the markets and be actively engaged every day so I'm present and in position to take advantage of the good opportunities when they arrive. I can only enter and adjust my orders and manage my open positions because I have first survived. Believe me. Survival comes before profit. So, my first objective in trading is to survive and I do this by ensuring I trade with a 0% ROR.
 
-My second objective is to maximize my returns. For this I need a robust positive expectancy methodology. As I’ll share later there are a number of tools that I use to help me review, develop and select worthy strategies to trade. One obvious desirable attribute of a good strategy is healthy returns. We all want profitable strategies. However, it’s not a simple question of selecting the most profitable. It’s not that easy. As traders we need to know the level of risk that was taken to earn the profit achieved.
+My second objective is to maximize my returns. For this I need a robust positive expectancy methodology. As I'll share later there are a number of tools that I use to help me review, develop and select worthy strategies to trade. One obvious desirable attribute of a good strategy is healthy returns. We all want profitable strategies. However, it's not a simple question of selecting the most profitable. It's not that easy. As traders we need to know the level of risk that was taken to earn the profit achieved.
 
 In this chapter I want to discuss the importance of measuring strategy performance within the context of risk-adjusted returns rather than blindly focusing on maximum returns alone.
 
 ### HOW TO MEASURE STRATEGY PERFORMANCE
 
-A simple measure of performance would be net profit after brokerage and slippage, or a strategy’s compound annual growth rate (CAGR).
-
-234
-
-*The Universal Tactics of Successful Trend Trading: Finding Opportunity in Uncertainty*, First Edition. Brent Penfold.
-© 2021 John Wiley & Sons, Ltd. Published 2021 by John Wiley & Sons, Ltd.
-
----
-
-Measuring Risk 235
+A simple measure of performance would be net profit after brokerage and slippage, or a strategy's compound annual growth rate (CAGR).
 
 As you know I highly rate the CAGR, or annualized return, as a key performance metric. However, it and net profit only provide a single dimensional view. They only describe the destination, not the journey of how profits or returns were derived. They make no mention of, or they do not address, what keeps us awake at nights, risk.
 
@@ -47,13 +34,7 @@ Now I don't want to scare you, or overly confuse myself, by going too deep into 
 
 ## RISK-ADJUSTED RETURN MEASUREMENTS
 
-As I've alluded to, there are many risk-adjusted return measurements. The more popular ones divide a strategy's annual return by their
-
----
-
-236 THE UNIVERSAL TACTICS OF SUCCESSFUL TREND TRADING
-
-preferred measurement of risk. Their objective is to measure a strategy's return per unit of risk.
+As I've alluded to, there are many risk-adjusted return measurements. The more popular ones divide a strategy's annual return by their preferred measurement of risk. Their objective is to measure a strategy's return per unit of risk.
 
 Normalizing return by risk results in a return value per unit of risk (Figure 7.1). A strategy with a higher return value per unit of risk is superior, on a risk-adjusted basis, to another strategy with a lower return value per unit of risk.
 
@@ -74,11 +55,7 @@ Risk Adjusted Returns = Annual Returns / Annual Risk
 
 **FIGURE 7.2** Methodology B, on a risk-adjusted return basis, is superior to methodology A.
 
----
-
-Measuring Risk          237
-
-As I’ve mentioned, there are quite a few tools that exist within the universe of risk-adjusted measurements. Two of the more popular ones are the Sharpe and Sortino ratios, while a third, less accepted one, is the Ulcer Performance Index (UPI).
+As I've mentioned, there are quite a few tools that exist within the universe of risk-adjusted measurements. Two of the more popular ones are the Sharpe and Sortino ratios, while a third, less accepted one, is the Ulcer Performance Index (UPI).
 
 These measures are almost identical. They all agree on the same numerator, using the annual excess returns generated by a strategy over a risk-free rate. And they all evaluate dispersion of the annual excess returns around a baseline. Where they differ is in the proxy they use for their risk denominator. Each of these measures normalizes returns with a denominator that represents their own proxy for risk. By doing this they each scale a strategy's performance down to a return figure per unit of risk (volatility). A strategy with a higher return per unit of risk is superior on a risk-adjusted basis.
 
@@ -90,29 +67,25 @@ The Sortino ratio (Figure 7.4) uses the standard deviation of only the downside,
 
 The Ulcer Performance Index (Figure 7.5) uses the Ulcer Index (UI), which measures a methodology's average percentage drawdown.
 
-```text
+```
                              Annual Excess Returns
           Sharpe     =  -------------------------------
-          Ratio               Standard Deviation 
+          Ratio               Standard Deviation
                              Annual Excess Returns
 ```
 
 **FIGURE 7.3** The Sharpe ratio is the industry standard for risk-adjusted returns.
 
-```text
+```
                              Annual Excess Returns
           Sortino    =  -------------------------------
-          Ratio               Standard Deviation 
+          Ratio               Standard Deviation
                             Annual Negative Returns
 ```
 
 **FIGURE 7.4** The Sortino ratio improves on the Sharpe ratio by only focusing on downside risk.
 
----
-
-238 THE UNIVERSAL TACTICS OF SUCCESSFUL TREND TRADING
-
-```text
+```
 Ulcer                  Annual Excess Returns
 Perf.       =       ─────────────────────────
 Index                        Ulcer Index
@@ -138,32 +111,24 @@ The standard deviation simply measures the dispersion of returns from its averag
 4. Calculate average of the squared differences.
 5. Calculate square root of the average of squared differences.
 
-If a strategy's returns follow a normal distribution (and as we know, that 'if' is questionable) then one would expect 68% of returns to fall within ±1 standard deviation from the average return. For example, if a strategy's average annual return was 10% and the dispersion of
+If a strategy's returns follow a normal distribution (and as we know, that 'if' is questionable) then one would expect 68% of returns to fall within ±1 standard deviation from the average return. For example, if a strategy's average annual return was 10% and the dispersion of returns around the average was 30%, then one would expect in 68% of years that the strategy's annual return will fall within a range of −20% (10% − 30%) to +40% (10% + 30%).
 
----
-
-Measuring Risk 239
-
+```
 99.7% of the data are within 3 standard deviations of the mean
 95% within 2 standard deviations
 68% within 1 standard deviation
 
 μ − 3σ | μ − 2σ | μ − σ | μ | μ + σ | μ + 2σ | μ + 3σ
 
-μ = Average 
+μ = Average
 σ = Standard Deviation
+```
 
 **FIGURE 7.6** Standard deviation measures the dispersion of returns from the average and is the industry proxy for measuring risk.
-
-returns around the average was 30%, then one would expect in 68% of years that the strategy's annual return will fall within a range of −20% (10% − 30%) to +40% (10% + 30%).
 
 ## STANDARD DEVIATION—ADVANTAGES
 
 Using standard deviation as the proxy for risk has two advantages. Firstly, it's easy to calculate and understand. Armed with historical return data and a spreadsheet it's a straight forward calculation. Secondly, it provides traders with a predictive model they can use to estimate future annual returns. Whether they wish to use a single standard deviation (68%), two standard deviations (95%) or three standard deviations (99.7%) traders can estimate the likely range their annual returns will fall within. It provides them with a looking glass into the future.
-
----
-
-240 THE UNIVERSAL TACTICS OF SUCCESSFUL TREND TRADING
 
 ## STANDARD DEVIATION—IS IT THE BEST PROXY?
 
@@ -176,10 +141,6 @@ Although standard deviation is the industry standard for measuring risk, it suff
 ### It Ignores Market Reality—Prices are not Normally Distributed
 
 The effectiveness of standard deviation as a measure of risk depends on the assumptions of the statistical properties of market prices. Standard deviation assumes changes in market prices or returns follow a bell-shaped curve, or normal distribution. So, for standard deviation to be an accurate measure of risk we have to assume market prices follow a normal (random) distribution. Unfortunately, as we now know from Chapter 3, market prices do not follow a normal distribution (remember those high kurtosis fat tails). If that wasn't bad enough, strategy returns also don't follow a normal distribution. In particular, trend trading strategies suffer from positive skewness where they experience a higher percentage of small losses and a lower percentage of profits. In addition, they enjoy an abnormally high kurtosis, or fat tails, where they record lovely large profits. Skewness and fat tails distorts the distribution curve from what a normal 'bell-shape' curve should look like. Consequently, the distribution of strategy results is not constant through time, they do not fall symmetrically either side of an average, and half the results are not positive and the other half negative. Strategy results do not follow a normal (random) distribution.
-
----
-
-Measuring Risk        241
 
 With these realities it becomes obvious that standard deviation can't accurately measure risk. To use a risk measure that relies on results following a normal distribution when in actual fact they don't is nonsensical and bewildering as to why so many still persist with it.
 
@@ -200,10 +161,6 @@ Let's take a closer look.
 
 Risk is defined as volatility in returns, both positive and negative. The standard deviation does a perfect job of capturing all dispersions. However, traders are generally not worried about upside profit volatility. They are more worried about the downside loss volatility. Traders are only concerned about avoiding downside risk (or the potential for losses). Upside return volatility, aka profits, is what we traders want!
 
----
-
-242         THE UNIVERSAL TACTICS OF SUCCESSFUL TREND TRADING
-
 So, standard deviation does not discern between upside (good profits) and downside (bad losses) volatility. It focuses solely on volatility but not its direction.
 
 The consequence of this is that using standard deviation as the proxy for risk penalizes strategies that generate upside volatility (big positive results) even if their drawdowns are small.
@@ -221,10 +178,6 @@ Given that most trading strategy's result distributions display positive skewnes
 ## Ignores Drawdowns
 
 The other major practical consideration standard deviation ignores is the sequence of results and their resultant drawdowns. While standard deviation ignores them, traders don't. We are particularly sensitive to drawdowns. Although we know they are as inevitable as the sun rising each day, it's our preference to trade strategies that have historically had manageable drawdowns. It's the major risk we face, trading through a huge accumulative loss, so it is in our interest that we use a risk measure that takes into account drawdowns.
-
----
-
-Measuring Risk 243
 
 Unfortunately, the standard deviation calculation is not affected by the sequence in which profits and losses occur. Consequently, it does not recognize strings of losses and their resultant drawdowns. As a result, it cannot distinguish drawdown riskiness between strategies. For example, take the three strategies summarized in Figure 7.7. All three strategies produce the same net profit, while suffering three completely different drawdowns. Despite their different drawdowns, standard deviation sees them as all having the same risk.
 
@@ -254,43 +207,29 @@ While the sequence of returns and the resultant drawdowns have a huge impact on 
 
 **FIGURE 7.7** Standard deviation cannot distinguish riskiness between strategies.
 
----
-
-244 THE UNIVERSAL TACTICS OF SUCCESSFUL TREND TRADING
-
 **FIGURE 7.8** Despite three very different looking equity curves, all three strategies have the same standard deviation.
 
-‘real’ traders’ risk. The risk of downside volatility (losses), both the individual and sequential and their resulting drawdowns. It’s extraordinary and nonsensical that the standard deviation continues to be the industry proxy for risk.
+'real' traders' risk. The risk of downside volatility (losses), both the individual and sequential and their resulting drawdowns. It's extraordinary and nonsensical that the standard deviation continues to be the industry proxy for risk.
 
-*Let me say it one more time. Standard deviation ignores a trader’s reality. Traders care deeply about downside losses, their sequence and the resultant drawdowns.*
+*Let me say it one more time. Standard deviation ignores a trader's reality. Traders care deeply about downside losses, their sequence and the resultant drawdowns.*
 
 ## Can't Identify Low Drawdown Strategies
 
-Another drawback of ignoring drawdowns is that standard deviation can’t help you and I in identifying strategies that manage to avoid deep drawdowns, a very desirable attribute that traders value. Its blindness to sequences and drawdowns cuts both ways, not correctly measuring a strategy’s real risk-adjusted return and not helping traders identify low drawdown strategies.
+Another drawback of ignoring drawdowns is that standard deviation can't help you and I in identifying strategies that manage to avoid deep drawdowns, a very desirable attribute that traders value. Its blindness to sequences and drawdowns cuts both ways, not correctly measuring a strategy's real risk-adjusted return and not helping traders identify low drawdown strategies.
 
 ## Fails Everyone—the Market and the Trader
 
-Well you’d think two strikes and standard deviation would be out. But due to incumbency it remains the industry standard for measuring
+Well you'd think two strikes and standard deviation would be out. But due to incumbency it remains the industry standard for measuring risk. However, as traders we don't need to follow the herd this time. There is another more appropriate measure of risk, one that reflects the reality of trading, focusing on and measuring the relative pain of downside volatility, its sequence and resultant drawdowns. It's appropriately called the UI.
 
----
+The UI, as you'll see, is a superior measurement of risk.
 
-Measuring Risk 245
-
-Ulcer Index - The Donchian 4 Week Rule
+*[Image: Ulcer Index — The Donchian 4 Week Rule]*
 
 **FIGURE 7.9** The UI measures the depth and breadth of historical drawdowns as represented by the dark regions.
 
-risk. However, as traders we don’t need to follow the herd this time. There is another more appropriate measure of risk, one that reflects the reality of trading, focusing on and measuring the relative pain of downside volatility, its sequence and resultant drawdowns. It’s appropriately called the UI.
-
-The UI, as you’ll see, is a superior measurement of risk.
-
 ## THE ULCER INDEX—A SUPERIOR RISK PROXY
 
-The Ulcer Index (UI) was developed by Peter Martin in 1987 and first published in his book, co-authored with Byron McCann, *The Investor’s Guide to Fidelity Funds* (Wiley, 1989). As its name appropriately implies, the UI measures and identifies the average drawdown traders can expect to stomach if they trade a particular strategy. As you’ll see, the UI reflects the reality of trading, measuring the depth and breadth of negative downside volatility, making it the superior proxy for ‘real’ risk. The UI can be calculated on any investment that fluctuates in value, whether it’s an individual security, index, fund or trading strategy.
-
----
-
-246     THE UNIVERSAL TACTICS OF SUCCESSFUL TREND TRADING
+The Ulcer Index (UI) was developed by Peter Martin in 1987 and first published in his book, co-authored with Byron McCann, *The Investor's Guide to Fidelity Funds* (Wiley, 1989). As its name appropriately implies, the UI measures and identifies the average drawdown traders can expect to stomach if they trade a particular strategy. As you'll see, the UI reflects the reality of trading, measuring the depth and breadth of negative downside volatility, making it the superior proxy for 'real' risk. The UI can be calculated on any investment that fluctuates in value, whether it's an individual security, index, fund or trading strategy.
 
 ## THE ULCER PERFORMANCE INDEX—A SUPERIOR RISK-ADJUSTED RETURN MEASUREMENT
 
@@ -313,13 +252,9 @@ The UI requires the following calculations:
 1. Select your preferred period (day, week, month, quarterly or yearly).
 2. Calculate the period drawdown from the period equity high.
 
----
-
-Measuring Risk 247
-
 > Percentage Drawdown Per Period (DPP) = [ (Current Period Equity Value – Current Period Equity High) / Current Period Equity High ] × 100
 
-> Ulcer Index = √ [ (DPP₁^2 + DPP₂^2 + ... DPP_N^2) / N ]
+> Ulcer Index = √ [ (DPP₁² + DPP₂² + ... DPP_N²) / N ]
 
 **FIGURE 7.10** The UI measures a strategy's average percentage drawdown.
 
@@ -339,15 +274,13 @@ Measuring Risk 247
 
 Table 7.1 illustrates how to calculate the UI for the SP 500. It shows that between 1992 and 2019 the SP 500's average percentage yearly drawdown was 14.5%.
 
-Note that when calculating the UI for a trading strategy it's important when measuring historical drawdowns to reset the equity curve to zero at the start of each year. Or, in other words, commence each year with just your starting account balance. If you don't, then using the accumulative equity curve penalizes earlier drawdowns, when there
-
----
+Note that when calculating the UI for a trading strategy it's important when measuring historical drawdowns to reset the equity curve to zero at the start of each year. Or, in other words, commence each year with just your starting account balance. If you don't, then using the accumulative equity curve penalizes earlier drawdowns, when there is less accumulative profit built up, while favouring later drawdowns, when there is plenty of accumulative profit in the bank. It's best to reset the equity curve at the start of each year.
 
 ### TABLE 7.1 Armed with a spreadsheet it's straight forward to calculate the UI.
 
 **Calculating Ulcer Index for SP500 1992–2019**
 
-| | Year | Close | Max Close | Percentage Drawdown | Percentage Drawdown Squared | Sum Percentage Drawdown Squared | Average Sum Percentage Drawdown Squared | Square Root Average Sum Percentage Drawdown Squared (Ulcer Index) |
+| | Year | Close | Max Close | % Drawdown | % Drawdown Squared | Sum % DD Squared | Avg Sum % DD Squared | Ulcer Index |
 |---|---|---|---|---|---|---|---|---|
 | 1 | 1992 | 435.70 | 435.7 | 0.00% | 0.00% | | | |
 | 2 | 1993 | 466.40 | 466.4 | 0.00% | 0.00% | | | |
@@ -364,17 +297,6 @@ Note that when calculating the UI for a trading strategy it's important when mea
 | 13 | 2004 | 1211.90 | 1,469.2 | -17.51% | 3.07% | | | |
 | 14 | 2005 | 1248.30 | 1,469.2 | -15.04% | 2.26% | | | |
 | 15 | 2006 | 1418.30 | 1,469.2 | -3.46% | 0.12% | | | |
-
-248
-
----
-
-### **TABLE 7.1** continued
-
-**Calculating Ulcer Index for SP500 1992–2019**
-
-| | Year | Close | Max Close | Percentage Drawdown | Percentage Drawdown Squared | Sum Percentage Drawdown Squared | Average Sum Percentage Drawdown Squared | Square Root Average Sum Percentage Drawdown Squared (Ulcer Index) |
-|---|---|---|---|---|---|---|---|---|
 | 16 | 2007 | 1468.40 | 1,469.2 | -0.05% | 0.00% | | | |
 | 17 | 2008 | 903.20 | 1,469.2 | -38.52% | 14.84% | | | |
 | 18 | 2009 | 1115.10 | 1,469.2 | -24.10% | 5.81% | | | |
@@ -389,30 +311,21 @@ Note that when calculating the UI for a trading strategy it's important when mea
 | 27 | 2018 | 2506.80 | 2,673.6 | -6.24% | 0.39% | | | |
 | 28 | 2019 | 2986.20 | 2,986.2 | 0.00% | 0.00% | 58.6% | 2.09% | **14.5%** |
 
-249
-
----
-
-250 THE UNIVERSAL TACTICS OF SUCCESSFUL TREND TRADING
-
-is less accumulative profit built up, while favouring later drawdowns, when there is plenty of accumulative profit in the bank. It’s best to reset the equity curve at the start of each year.
-
 ## The UI—Interpretation
 
-The UI measures the depth and breadth of percentage drawdowns from equity highs (Table 7.2). It shows a strategy’s average historical percentage drawdown. A strategy with a higher percentage UI suggests higher drawdowns ahead. A strategy with a lower percentage UI suggests lower drawdowns ahead. The idea is to prefer strategies with a low UI.
+The UI measures the depth and breadth of percentage drawdowns from equity highs (Table 7.2). It shows a strategy's average historical percentage drawdown. A strategy with a higher percentage UI suggests higher drawdowns ahead. A strategy with a lower percentage UI suggests lower drawdowns ahead. The idea is to prefer strategies with a low UI.
 
 So, a perfect theoretical strategy, such as the Holy Grail that never loses money, would have a UI value of 0%. A nasty theoretical strategy, such as the Perpetual Drawdown (DD) strategy that always loses money, would have an UI value of +100%.
 
 Basically, the higher the UI, the more painful the historical average drawdown has been.
 
-The UI is ideal for comparing the relative pain of competing shares, indices, funds, markets and trading strategies. For example,
+The UI is ideal for comparing the relative pain of competing shares, indices, funds, markets and trading strategies. For example, according to the UI, the SP500 between 1992 and 2019 has been one of the less painful share markets to invest in, the Shanghai Stock Exchange one of the most painful to possess while ten-year treasury notes have lived up to their risk-free status as being the least painful market to own.
 
 **TABLE 7.2 The UI measures the average percentage drawdown.**
 
 | Ulcer Index | |
 | :--- | :--- |
-| The Average Percentage Drawdown | |
-| *Yearly Performance: 1992–2019* | |
+| *The Average Percentage Drawdown — Yearly Performance: 1992–2019* | |
 | Strategy: Holy Grail | 0% |
 | 10 Year Treasury Notes | 6% |
 | SP500 | 15% |
@@ -427,19 +340,13 @@ The UI is ideal for comparing the relative pain of competing shares, indices, fu
 | Shanghai SSE | 36% |
 | Strategy: Perpetual DD | 100% |
 
----
-
-Measuring Risk          251
-
-according to the UI, the SP500 between 1992 and 2019 has been one of the less painful share markets to invest in, the Shanghai Stock Exchange one of the most painful to possess while ten-year treasury notes have lived up to their risk-free status as being the least painful market to own.
-
 ## The UI—Advantages
 
 The UI has many advantages.
 
 ### *Focuses on Practical Risk that Matters to Traders*
 
-The UI overcomes the main criticism of standard deviation, as it distinguishes between good (upside profits) and bad (downside loss) risk. By focusing only on downside losses, their sequences and resultant drawdowns, the UI gives the best indication of real historical risk. It gives the best indication of how it’s going to feel, real world, when trading a particular strategy.
+The UI overcomes the main criticism of standard deviation, as it distinguishes between good (upside profits) and bad (downside loss) risk. By focusing only on downside losses, their sequences and resultant drawdowns, the UI gives the best indication of real historical risk. It gives the best indication of how it's going to feel, real world, when trading a particular strategy.
 
 ### *Measures 100% of Negative Returns*
 
@@ -447,15 +354,11 @@ By measuring from equity highs rather than an average like the standard deviatio
 
 ### *Captures More Than Maximum Drawdown*
 
-The UI, by measuring the depth and breadth of all drawdowns, regardless of the degree, contains much more information than the maximum drawdown alone. By focusing on the complete depth and breadth of all drawdowns the UI is able to capture much of a strategy’s nonlinearities.
+The UI, by measuring the depth and breadth of all drawdowns, regardless of the degree, contains much more information than the maximum drawdown alone. By focusing on the complete depth and breadth of all drawdowns the UI is able to capture much of a strategy's nonlinearities.
 
 ### *Helps to Identify Low Drawdown Strategies*
 
 Unlike the standard deviation the UI is able to identify low downside volatility strategies that are good at avoiding excessive drawdowns. This is terribly important due to the asymmetrical nature of losses and drawdowns. Remember as I discussed in *UPST* a 50% loss requires a 100% gain to recover. Avoiding deep drawdowns is as good as enjoying a rising equity curve.
-
----
-
-252 THE UNIVERSAL TACTICS OF SUCCESSFUL TREND TRADING
 
 ### *Consistent across all Periods*
 
@@ -469,42 +372,32 @@ So, neither approach to measuring risk has any predictive powers that traders ca
 
 **TABLE 7.3 UI is consistent across all periods.**
 
-| Ulcer Index | |
+| Ulcer Index — SP500 (1992–2019) | |
 | :--- | :--- |
-| **SP500** | |
-| ***1992–2019*** | |
 | Weekly | 17.3% |
 | Monthly | 16.9% |
 | Quarterly | 16.4% |
 | Yearly | 14.5% |
 
----
-
-Measuring Risk          253
-
 ## UPI—A SUPERIOR RISK-ADJUSTED RETURN MEASUREMENT
 
-Just as standard deviation is a poor proxy for risk, so are the risk-adjusted return measures that use it, like the industry standard Sharpe ratio and the popular Sortino ratio. By using the standard deviation as their risk proxy, they also fall victim to the same criticisms directed towards standard deviation.
-As already discussed, to overcome the standard deviation problem Martin created his own risk-adjusted return measurement and called it the UPI.
+Just as standard deviation is a poor proxy for risk, so are the risk-adjusted return measures that use it, like the industry standard Sharpe ratio and the popular Sortino ratio. By using the standard deviation as their risk proxy, they also fall victim to the same criticisms directed towards standard deviation. As already discussed, to overcome the standard deviation problem Martin created his own risk-adjusted return measurement and called it the UPI.
 
 ## UPI—CALCULATION
 
-By dividing excess returns over a risk-free rate by his UI Martin has created a far more accurate measurement of ‘real’ risk-adjusted returns. By measuring a strategy’s return per unit of average drawdown risk it focuses on what matters to traders. What has been the unit of reward for per unit of average drawdown pain?
+By dividing excess returns over a risk-free rate by his UI Martin has created a far more accurate measurement of 'real' risk-adjusted returns. By measuring a strategy's return per unit of average drawdown risk it focuses on what matters to traders. What has been the unit of reward for per unit of average drawdown pain?
 
 ## UPI—AN EXAMPLE
 
-Let’s circle back to the three strategies. Despite three very different looking equity curves and drawdowns, they appeared identical according to their net profit and standard deviation. Let’s see how Martin’s UPI measures up against the popular risk-adjusted measures such as the Sharpe and Sortino ratios.
-As a recap, the Sharpe ratio divides the annual excess return over a risk-free rate by the standard deviation of all annual excess returns. Sharpe does not distinguish between downside or upside risk, treating all volatility the same. The Sortino ratio is identical to the Sharpe ratio except they use the standard deviation of the annual downside volatility as their proxy for risk. It does not penalize upside volatility.
-Table 7.4 calculates the UPI for five strategies.
-For the risk-free rate I have used the ten-year treasury note yield.
-Beside the three original strategies I’ve included two additional methodologies, Retracement Trend Trader (RTT; from Chapter 5) and Richard Donchian’s Four-Week Rule (from Chapter 6). These methodologies represent five very different strategies, with varying
+Let's circle back to the three strategies. Despite three very different looking equity curves and drawdowns, they appeared identical according to their net profit and standard deviation. Let's see how Martin's UPI measures up against the popular risk-adjusted measures such as the Sharpe and Sortino ratios.
 
----
+As a recap, the Sharpe ratio divides the annual excess return over a risk-free rate by the standard deviation of all annual excess returns. Sharpe does not distinguish between downside or upside risk, treating all volatility the same. The Sortino ratio is identical to the Sharpe ratio except they use the standard deviation of the annual downside volatility as their proxy for risk. It does not penalize upside volatility.
+
+Table 7.4 calculates the UPI for five strategies. For the risk-free rate I have used the ten-year treasury note yield. Beside the three original strategies I've included two additional methodologies, Retracement Trend Trader (RTT; from Chapter 5) and Richard Donchian's Four-Week Rule (from Chapter 6). These methodologies represent five very different strategies, with varying profitability, with five very diverse equity curves and historical risk profiles. They couldn't be more different.
 
 ### TABLE 7.4 The UPI measures the amount of excess return per unit of average drawdown risk.
 
-The Ulcer Performance Index
-*A Superior Risk-Adjusted Return Measurement*
+**The Ulcer Performance Index — A Superior Risk-Adjusted Return Measurement**
 
 | | Strategy A | Strategy B | Strategy C | Retracement Trend Trader | Donchian 4-Week Rule |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -518,14 +411,6 @@ The Ulcer Performance Index
 | Ulcer Index (Avg % DD) | 19.50% | 19.70% | 49.3% | 22.7% | 50.0% |
 | **Ulcer Performance Index** | **0.2** | **0.2** | **0.1** | **0.3** | **1.4** |
 
-254
-
----
-
-Measuring Risk 255
-
-profitability, with five very diverse equity curves and historical risk profiles. They couldn't be more different.
-
 Examining Table 7.4 shows us that all three measures rightfully acknowledge RTT and the Four-Week Rule as being superior to strategies A, B and C on a risk-adjusted basis, with the Four-Week Rule being the best.
 
 Let's look at each metric individually.
@@ -538,11 +423,9 @@ The UPI, on a risk-adjusted drawdown basis, records the largest distinction betw
 
 Let's review the trend-trading strategies I discussed in Chapter 6. Apart from the losing Hearne 1% Rule strategy, I've summarized and ranked the methodologies in Table 7.5. I first rank them according to their straight profitability, with no consideration given to the risk incurred, and then by their risk-adjusted performance according to the UPI.
 
----
+### TABLE 7.5 The UPI offers a superior risk-adjusted return measurement.
 
-**TABLE 7.5 The UPI offers a superior risk-adjusted return measurement.**
-
-| Rank | Model's Ranked by Profitability | Net Profit | Rank | Model's Ranked by Risk-adjusted Performance | UPI |
+| Rank | Models Ranked by Profitability | Net Profit | Rank | Models Ranked by Risk-adjusted Performance | UPI |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | 1 | Golden 50- and 200-Day Crossover | $1,715,940 | 1 | Turtle Trading | 2.2 |
 | 2 | Donchian 4-Week Rule | $1,601,223 | 2 | Bollinger Bands | 1.7 |
@@ -563,12 +446,6 @@ Let's review the trend-trading strategies I discussed in Chapter 6. Apart from t
 | 17 | Darvas Box | $136,731 | 17 | Darvas Box | 0.1 |
 | 18 | Livermore Reaction | $35,136 | 18 | Livermore Reaction | 0.1 |
 
-256
-
----
-
-Measuring Risk 257
-
 As you can see, the UPI offers a different ranking to profitability. Although the Golden 50- and 200-day crossover strategy was the most profitable, it only ranked third when it was measured on a risk-adjusted basis. Turtle Trading managed to move from fifth position on the profitability table to number one on a risk-adjusted basis, earning 2.2 units of excess returns for every unit of average drawdown risk. Turtle Trading, Bollinger Bands, Golden 50- and 200-day crossover, Four-Week Rule and Dow Theory were the most efficient at earning excess returns given the level of average drawdown risk incurred. According to the UPI they are the superior risk-adjusted performing trend-trading methodologies. On the UPI criterion alone, traders would prefer Turtle Trading over the others.
 
 ## NOT ALL STRATEGIES ARE CREATED EQUAL
@@ -585,42 +462,25 @@ Trend trading attempts to capture long sustainable movements. Some trend-trading
 
 So not all strategies are the same and accordingly they should not have their UPI values compared to each other. It's important to compare apples with apples (Figure 7.12).
 
----
+```
+Not All Strategies Are Created Equal
+Different strategies attempt to capture different parts of market structure.
 
-258 THE UNIVERSAL TACTICS OF SUCCESSFUL TREND TRADING
+         Counter-Trend: Trend Termination (Top Picking)
+                              ↑
+    Retracement          Breakout
+    Mean-reversion  ←    Trend Trading
+    Trend Trading
+                              ↓
+    Counter-Trend:       Retracement
+    Mean-reversion       Trend Trading
+                              ↓
+         Counter-Trend: Trend Termination (Bottom Picking)
+```
 
-### Not All Strategies Are Created Equal
+**FIGURE 7.12** When comparing UPI values it's important you are comparing similar strategies types to each other.
 
-*Different strategies attempt to capture different parts of market structure.*
-
-Counter-Trend:
-Trend Termination
-(Top Picking)
-
-Retracement
-Mean-reversion
-Trend Trading
-
-Breakout
-Trend Trading
-
-Counter-Trend:
-Mean-reversion
-
-Retracement
-Trend Trading
-
-Counter-Trend:
-Trend Termination
-(Bottom Picking)
-
-**FIGURE 7.12** When comparing UPI values it’s important you are comparing similar strategies types to each other.
-
-I personally trade strategies with UPI values ranging between 2.8 to less than 1. Less than 1 may not sound significant; however, for those strategies they are the best I have for the particular part of market structure I’m attempting to capture. On an apples-vs-apples basis they are my best.
-
----
-
-Measuring Risk 259
+I personally trade strategies with UPI values ranging between 2.8 to less than 1. Less than 1 may not sound significant; however, for those strategies they are the best I have for the particular part of market structure I'm attempting to capture. On an apples-vs-apples basis they are my best.
 
 As a rule of thumb, an UPI over 2 is very good. A value less than 0.5 is low. However, the important point is to ensure you compare like with like. And the real magic occurs when you bundle up your uncorrelated but complimentary strategies—where you will enjoy risk-adjusted UPI values of over 3 as the combined strategies start smoothing out your equity curve and dampening average historical drawdown risk.
 
@@ -629,8 +489,6 @@ As a rule of thumb, an UPI over 2 is very good. A value less than 0.5 is low. Ho
 Although the UPI is a superior risk-adjusted return measurement, it is not a silver bullet for identifying or selecting the best trading strategy. As I'll discuss later, there is no single magic metric that can be relied upon to select the best strategy. In my opinion, and as I'll later show, strategy review and selection require a mixture of robustness and performance analysis. I tend to lend more weight to the former, and how much weight depends more on experience, or art, then science. However, for a single risk-adjusted return measurement, Martin's UPI is an improvement on the popular Sharpe and Sortino ratios.
 
 Now that you're forearmed about the importance of measuring strategy performance within the context of 'real' drawdown risk, it's almost time to move you forward towards developing a sensible trading solution. But before I do, I want to arm you with a suitable trader's toolkit that will help you in the nuts and bolts of strategy review, development and selection.
-
----
 
 ### CHAPTER 8
 
@@ -651,8 +509,3 @@ A proper toolkit will hopefully delivery you safely to a sensible and sustainabl
 * strategy review,
 * strategy benchmark and
 * strategy development.
-
-260
-
-*The Universal Tactics of Successful Trend Trading: Finding Opportunity in Uncertainty*, First Edition. Brent Penfold.
-© 2021 John Wiley & Sons, Ltd. Published 2021 by John Wiley & Sons, Ltd.
