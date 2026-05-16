@@ -316,6 +316,15 @@ ssh -i ".\infra\binance-bot-key.pem" `
   -o ServerAliveCountMax=3 `
   ubuntu@47.131.185.59</code></pre>
 
+        <h3>Terminal 1 alternative: absolute path on this local machine</h3>
+        <pre><code>ssh -i "C:\Users\Admin\Desktop\binance_trading_bot\infra\binance-bot-key.pem" `
+  -D 1080 `
+  -N `
+  -o ExitOnForwardFailure=yes `
+  -o ServerAliveInterval=30 `
+  -o ServerAliveCountMax=3 `
+  ubuntu@47.131.185.59</code></pre>
+
         <h3>Terminal 2: run the bot through the tunnel</h3>
         <pre><code>cd "&lt;repo-root&gt;"
 
@@ -328,6 +337,16 @@ $env:BINANCE_REQUIRE_SOCKS5_PROXY="1"
 
         <h3>Terminal 2 alternative: absolute path on TVKT-TAC</h3>
         <pre><code>cd "D:\NGUYEN QUANG THANG\binance_trading_bot"
+
+$env:BINANCE_API_KEY="&lt;your_api_key&gt;"
+$env:BINANCE_SECRET_KEY="&lt;your_secret_key&gt;"
+$env:BINANCE_SOCKS5_PROXY="socks5://127.0.0.1:1080"
+$env:BINANCE_REQUIRE_SOCKS5_PROXY="1"
+
+.\build\windows-msvc-debug\bin\Debug\binance_trading_bot.exe</code></pre>
+
+        <h3>Terminal 2 alternative: absolute path on this local machine</h3>
+        <pre><code>cd "C:\Users\Admin\Desktop\binance_trading_bot"
 
 $env:BINANCE_API_KEY="&lt;your_api_key&gt;"
 $env:BINANCE_SECRET_KEY="&lt;your_secret_key&gt;"
