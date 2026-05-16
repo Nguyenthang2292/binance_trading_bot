@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 
 # Env
 .env
@@ -16,6 +19,31 @@ Thumbs.db
 
 # Build output
 build/
+tmp/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+cmake_test_discovery_*.json
+_deps/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+x64/
+plugins/*.dll
+plugins/*.pdb
+plugins/*.lib
+plugins/*.exp
+plugins/*.ilk
+
+# Generated review/report output
+docs/comprehensive-reviews/
+
+# Local IDE metadata
+.vs/
+.idea/
 
 # Local assistant worktrees
 .claude/worktrees/

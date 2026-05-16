@@ -4,6 +4,7 @@
 #include "catalog/strategy_catalog.h"
 #include "context.h"
 #include "engine/exposure_controller.h"
+#include "engine/gemini_filter.h"
 #include "engine/signal_engine.h"
 #include "logger.h"
 #include "orders/orders.h"
@@ -27,11 +28,14 @@
 #include <cstdlib>
 #include <exception>
 #include <fstream>
+#include <iomanip>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 std::atomic<bool> g_running{true};
@@ -84,6 +88,12 @@ std::string lowerCopy(std::string value) {
         return static_cast<char>(std::tolower(c));
     });
     return value;
+}
+
+std::string quoteString(std::string_view value) {
+    std::ostringstream out;
+    out << std::quoted(std::string(value));
+    return out.str();
 }
 
 std::optional<Socks5ProxyConfig> parseSocks5Proxy(std::string_view raw, std::string& error) {
@@ -158,6 +168,110 @@ std::optional<Socks5ProxyConfig> parseSocks5Proxy(std::string_view raw, std::str
     return Socks5ProxyConfig{.host = host, .port = static_cast<std::uint16_t>(parsedPort)};
 }
 
+engine::GeminiFilterMode parseGeminiFilterMode(std::string modeRaw) {
+    const std::string mode = lowerCopy(trimCopy(std::move(modeRaw)));
+    if (mode == "disabled") {
+        return engine::GeminiFilterMode::Disabled;
+    }
+    if (mode == "enforce") {
+        return engine::GeminiFilterMode::Enforce;
+    }
+    if (mode == "shadow") {
+        Logger::instance().log(LogLevel::Warning, "gemini_filter.mode=shadow has been removed; forcing enforce");
+        return engine::GeminiFilterMode::Enforce;
+    }
+    Logger::instance().log(
+        LogLevel::Warning,
+        "unsupported gemini_filter.mode=" + quoteString(mode) + "; forcing enforce");
+    return engine::GeminiFilterMode::Enforce;
+}
+
+std::vector<std::string> strategyIntervals(const nlohmann::json& strategyCfg) {
+    const auto type = strategyCfg.value("type", std::string{});
+    auto intervals = strategyCfg.value("intervals", std::vector<std::string>{});
+    if (!intervals.empty()) {
+        return intervals;
+    }
+    if (type == "trend_breakout") {
+        return {"30m", "1h", "4h"};
+    }
+    if (type == "gartley_day_crossover") {
+        return {"1d", "4h", "1h", "30m"};
+    }
+    return intervals;
+}
+
+int minWarmupCandles(const nlohmann::json& strategyCfg) {
+    int atrPeriod = strategyCfg.value("atr_period", 14);
+    if (atrPeriod <= 0) {
+        atrPeriod = 14;
+    }
+    int minCandles = atrPeriod + 1;
+
+    const auto type = strategyCfg.value("type", std::string{});
+    if (type == "trend_breakout") {
+        int breakoutPeriod = 20;
+        if (strategyCfg.contains("params") && strategyCfg.at("params").is_object()) {
+            breakoutPeriod = strategyCfg.at("params").value("breakout_period", 20);
+        }
+        if (breakoutPeriod <= 0) {
+            breakoutPeriod = 20;
+        }
+        minCandles = std::max(minCandles, breakoutPeriod + 2);
+    } else if (type == "gartley_day_crossover") {
+        int fastPeriod = 3;
+        int slowPeriod = 6;
+        int offset = 2;
+        if (strategyCfg.contains("params") && strategyCfg.at("params").is_object()) {
+            const auto& params = strategyCfg.at("params");
+            fastPeriod = params.value("fast_period", 3);
+            slowPeriod = params.value("slow_period", 6);
+            offset = params.value("offset", 2);
+        }
+        if (fastPeriod <= 0) {
+            fastPeriod = 3;
+        }
+        if (slowPeriod <= 0) {
+            slowPeriod = 6;
+        }
+        if (offset < 0) {
+            offset = 2;
+        }
+        minCandles = std::max(minCandles, std::max(fastPeriod + 1, 1 + offset + slowPeriod));
+    }
+
+    return std::max(1, minCandles);
+}
+
+void logScannerCoverageWarnings(
+    const std::vector<nlohmann::json>& strategiesConfig,
+    const std::vector<std::string>& scannerIntervals,
+    size_t warmupInitialLimit) {
+    const std::unordered_set<std::string> scannerSet(scannerIntervals.begin(), scannerIntervals.end());
+    for (const auto& strategyCfg : strategiesConfig) {
+        const auto strategyName = strategyCfg.value("name", strategyCfg.value("type", std::string("unknown")));
+        const auto intervals = strategyIntervals(strategyCfg);
+        const auto requiredCandles = minWarmupCandles(strategyCfg);
+
+        for (const auto& interval : intervals) {
+            if (scannerSet.find(interval) == scannerSet.end()) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "strategy interval not scanned strategy=" + quoteString(strategyName) +
+                        " interval=" + interval);
+            }
+            if (warmupInitialLimit < static_cast<size_t>(requiredCandles)) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "strategy warmup insufficient strategy=" + quoteString(strategyName) +
+                        " interval=" + interval +
+                        " warmup_initial_limit=" + std::to_string(warmupInitialLimit) +
+                        " min_candles=" + std::to_string(requiredCandles));
+            }
+        }
+    }
+}
+
 struct StrategyRegistryCleanup {
     strategy::StrategyRegistry& registry;
 
@@ -182,12 +296,24 @@ int main(int argc, char* argv[]) {
         Logger::instance().log(LogLevel::Warning, std::string("Failed to parse config.json: ") + e.what());
     }
 
-    const auto pluginsDir = config.value("catalog", nlohmann::json::object()).value("plugins_dir", "plugins");
+    const auto catalogJson = config.value("catalog", nlohmann::json::object());
+    const auto pluginsDir = catalogJson.value("plugins_dir", "plugins");
+    const bool enforceSha256Allowlist = catalogJson.value("enforce_sha256_allowlist", false);
+    const auto sha256AllowlistFile = catalogJson.value("sha256_allowlist_file", "");
+    const auto strategyConfigs = toStrategyConfigs(config);
     strategy::StrategyRegistry registry;
-    catalog::PluginLoader pluginLoader({.pluginsDir = pluginsDir});
-    catalog::StrategyCatalog strategyCatalog({.pluginsDir = pluginsDir}, registry, std::move(pluginLoader));
+    catalog::PluginLoader pluginLoader(
+        {.pluginsDir = pluginsDir,
+         .enforceSha256Allowlist = enforceSha256Allowlist,
+         .sha256AllowlistFile = sha256AllowlistFile});
+    catalog::StrategyCatalog strategyCatalog(
+        {.pluginsDir = pluginsDir,
+         .enforceSha256Allowlist = enforceSha256Allowlist,
+         .sha256AllowlistFile = sha256AllowlistFile},
+        registry,
+        std::move(pluginLoader));
     StrategyRegistryCleanup registryCleanup{registry};
-    const auto catalogSummary = strategyCatalog.initialize(toStrategyConfigs(config));
+    const auto catalogSummary = strategyCatalog.initialize(strategyConfigs);
 
     if (argc > 1 && std::string_view(argv[1]) == "--list-strategies") {
         catalog::CatalogReporter::printList(
@@ -214,6 +340,8 @@ int main(int argc, char* argv[]) {
     const auto scannerJson = config.value("scanner", nlohmann::json::object());
     const auto engineJson = config.value("engine", nlohmann::json::object());
     const auto exposureJson = config.value("exposure_control", nlohmann::json::object());
+    const auto orderCapJson = config.value("order_cap", nlohmann::json::object());
+    const auto geminiJson = config.value("gemini_filter", nlohmann::json::object());
 
     engine::ExposureConfig exposureConfig;
     exposureConfig.enabled = exposureJson.value("enabled", false);
@@ -232,10 +360,22 @@ int main(int argc, char* argv[]) {
         exposureConfig.failureMode = engine::ExposureFailureMode::Closed;
     }
 
+    engine::OrderCapConfig orderCapConfig;
+    orderCapConfig.enabled = orderCapJson.value("enabled", orderCapConfig.enabled);
+    orderCapConfig.maxTotalNotionalPct =
+        orderCapJson.value("max_total_notional_pct", orderCapConfig.maxTotalNotionalPct);
+    const auto orderCapFailureMode = orderCapJson.value("failure_mode", std::string("closed"));
+    if (orderCapFailureMode == "open") {
+        orderCapConfig.failureMode = engine::OrderCapFailureMode::Open;
+    } else {
+        orderCapConfig.failureMode = engine::OrderCapFailureMode::Closed;
+    }
+
     const bool betaDailyEnabled = scannerJson.value("beta_daily_klines_enabled", exposureConfig.enabled);
     const auto betaDailyInterval = scannerJson.value("beta_daily_interval", std::string("1d"));
     const int betaDailyLimit =
         scannerJson.value("beta_daily_limit", std::max(2, exposureConfig.betaWindowDays + 1));
+    const auto scannerIntervals = scannerJson.value("intervals", std::vector<std::string>{"30m", "1h", "4h"});
     const size_t scannerBufferSize = static_cast<size_t>(scannerJson.value("kline_buffer_size", 200));
     const size_t warmupInitialLimitRaw = static_cast<size_t>(scannerJson.value("warmup_initial_limit", 99));
     const size_t warmupInitialLimit = std::max<size_t>(1, std::min(warmupInitialLimitRaw, scannerBufferSize));
@@ -243,6 +383,142 @@ int main(int argc, char* argv[]) {
     const bool backfillEnabled = scannerJson.value("backfill_enabled", true);
     const size_t backfillConcurrency =
         std::max<size_t>(1, static_cast<size_t>(scannerJson.value("backfill_concurrency", 1)));
+    logScannerCoverageWarnings(strategyConfigs, scannerIntervals, warmupInitialLimit);
+
+    engine::GeminiFilterConfig geminiConfig;
+    geminiConfig.enabled = geminiJson.value("enabled", geminiConfig.enabled);
+    geminiConfig.mode = parseGeminiFilterMode(geminiJson.value("mode", std::string("enforce")));
+    geminiConfig.pythonPath = geminiJson.value("python_path", geminiConfig.pythonPath);
+    geminiConfig.moduleName = geminiJson.value("module_name", geminiConfig.moduleName);
+    geminiConfig.workingDirectory = geminiJson.value("working_directory", geminiConfig.workingDirectory);
+    geminiConfig.runtimeDir = geminiJson.value("runtime_dir", geminiConfig.runtimeDir);
+    geminiConfig.sentimentModel = geminiJson.value("sentiment_model", geminiConfig.sentimentModel);
+    geminiConfig.visionModel = geminiJson.value("vision_model", geminiConfig.visionModel);
+    const auto modelResolutionJson = geminiJson.value("model_resolution", nlohmann::json::object());
+    geminiConfig.modelResolutionEnabled =
+        modelResolutionJson.value("enabled", geminiConfig.modelResolutionEnabled);
+    geminiConfig.modelResolutionMode =
+        modelResolutionJson.value("mode", geminiConfig.modelResolutionMode);
+    geminiConfig.modelResolutionFallbackOnError =
+        modelResolutionJson.value("fallback_on_error", geminiConfig.modelResolutionFallbackOnError);
+    geminiConfig.modelResolutionAllowPreview =
+        modelResolutionJson.value("allow_preview", geminiConfig.modelResolutionAllowPreview);
+    geminiConfig.sentimentSearchThenScore =
+        geminiJson.value("sentiment_search_then_score", geminiConfig.sentimentSearchThenScore);
+    geminiConfig.sentimentWeight = geminiJson.value("sentiment_weight", geminiConfig.sentimentWeight);
+    geminiConfig.visionWeight = geminiJson.value("vision_weight", geminiConfig.visionWeight);
+    geminiConfig.confidenceThreshold = geminiJson.value("confidence_threshold", geminiConfig.confidenceThreshold);
+    geminiConfig.timeoutSeconds = geminiJson.value("timeout_seconds", geminiConfig.timeoutSeconds);
+    geminiConfig.maxEvaluationsPerScanCycle =
+        geminiJson.value("max_evaluations_per_scan_cycle", geminiConfig.maxEvaluationsPerScanCycle);
+    geminiConfig.staleRuntimeTtlHours =
+        geminiJson.value("stale_runtime_ttl_hours", geminiConfig.staleRuntimeTtlHours);
+    geminiConfig.resultCacheTtlSeconds =
+        geminiJson.value("result_cache_ttl_seconds", geminiConfig.resultCacheTtlSeconds);
+    geminiConfig.sentimentCacheTtlSeconds =
+        geminiJson.value("sentiment_cache_ttl_seconds", geminiConfig.sentimentCacheTtlSeconds);
+    geminiConfig.sentimentCacheMaxStaleSeconds =
+        geminiJson.value("sentiment_cache_max_stale_seconds", geminiConfig.sentimentCacheMaxStaleSeconds);
+    geminiConfig.modelResolutionTtlSeconds =
+        geminiJson.value("model_resolution_ttl_seconds", geminiConfig.modelResolutionTtlSeconds);
+    geminiConfig.modelResolutionMaxStaleSeconds =
+        geminiJson.value("model_resolution_max_stale_seconds", geminiConfig.modelResolutionMaxStaleSeconds);
+    geminiConfig.blockOnError = geminiJson.value("block_on_error", geminiConfig.blockOnError);
+    geminiConfig.blockOnBudgetExhausted =
+        geminiJson.value("block_on_budget_exhausted", geminiConfig.blockOnBudgetExhausted);
+    geminiConfig.closeGateOnBudgetExhausted =
+        geminiJson.value("close_gate_on_budget_exhausted", geminiConfig.closeGateOnBudgetExhausted);
+    geminiConfig.closeGateOnQuotaExhausted =
+        geminiJson.value("close_gate_on_quota_exhausted", geminiConfig.closeGateOnQuotaExhausted);
+    const auto modelRoutingJson = geminiJson.value("model_routing", nlohmann::json::object());
+    geminiConfig.modelRoutingEnabled = modelRoutingJson.value("enabled", geminiConfig.modelRoutingEnabled);
+    const auto modelRoutingSentimentJson = modelRoutingJson.value("sentiment", nlohmann::json::object());
+    geminiConfig.sentimentModelCandidates =
+        modelRoutingSentimentJson.value("candidates", geminiConfig.sentimentModelCandidates);
+    const auto modelRoutingVisionJson = modelRoutingJson.value("vision", nlohmann::json::object());
+    geminiConfig.visionModelCandidates =
+        modelRoutingVisionJson.value("candidates", geminiConfig.visionModelCandidates);
+    geminiConfig.visionProEscalationEnabled =
+        modelRoutingVisionJson.value("pro_escalation_enabled", geminiConfig.visionProEscalationEnabled);
+    geminiConfig.visionProEscalationMinScore =
+        modelRoutingVisionJson.value("pro_escalation_min_score", geminiConfig.visionProEscalationMinScore);
+    geminiConfig.visionProEscalationMaxScore =
+        modelRoutingVisionJson.value("pro_escalation_max_score", geminiConfig.visionProEscalationMaxScore);
+    const auto quotaJson = geminiJson.value("quota", nlohmann::json::object());
+    geminiConfig.quotaEnabled = quotaJson.value("enabled", geminiConfig.quotaEnabled);
+    geminiConfig.quotaSafetyFactor = quotaJson.value("safety_factor", geminiConfig.quotaSafetyFactor);
+    geminiConfig.quotaCooldownSecondsOn429 =
+        quotaJson.value("cooldown_seconds_on_429", geminiConfig.quotaCooldownSecondsOn429);
+    geminiConfig.quotaDefaultRpm = quotaJson.value("default_rpm", geminiConfig.quotaDefaultRpm);
+    geminiConfig.quotaDefaultRpd = quotaJson.value("default_rpd", geminiConfig.quotaDefaultRpd);
+    geminiConfig.quotaModelLimits.clear();
+    if (quotaJson.contains("models") && quotaJson.at("models").is_object()) {
+        for (const auto& [modelName, value] : quotaJson.at("models").items()) {
+            if (!value.is_object()) {
+                continue;
+            }
+            const int rpm = value.value("rpm", 0);
+            const int rpd = value.value("rpd", 0);
+            if (rpm <= 0 || rpd <= 0) {
+                continue;
+            }
+            geminiConfig.quotaModelLimits.push_back(engine::GeminiFilterConfig::QuotaModelLimit{
+                .model = modelName,
+                .rpm = rpm,
+                .rpd = rpd,
+            });
+        }
+    }
+    geminiConfig.extraTfs = geminiJson.value("extra_tfs", geminiConfig.extraTfs);
+
+    if (!geminiConfig.enabled) {
+        geminiConfig.mode = engine::GeminiFilterMode::Disabled;
+    }
+    if (geminiConfig.timeoutSeconds <= 0) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "gemini timeout_seconds is invalid; force to 10");
+        geminiConfig.timeoutSeconds = 10;
+    }
+    if (geminiConfig.maxEvaluationsPerScanCycle < 0) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "gemini max_evaluations_per_scan_cycle is invalid; force to 0");
+        geminiConfig.maxEvaluationsPerScanCycle = 0;
+    }
+    if (geminiConfig.sentimentWeight < 0.0 || geminiConfig.visionWeight < 0.0 ||
+        (geminiConfig.sentimentWeight + geminiConfig.visionWeight) <= 0.0) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "gemini weights are invalid; fallback to 0.5/0.5");
+        geminiConfig.sentimentWeight = 0.5;
+        geminiConfig.visionWeight = 0.5;
+    }
+    geminiConfig.confidenceThreshold = std::clamp(geminiConfig.confidenceThreshold, 0.0, 1.0);
+    geminiConfig.visionProEscalationMinScore = std::clamp(geminiConfig.visionProEscalationMinScore, 0.0, 1.0);
+    geminiConfig.visionProEscalationMaxScore = std::clamp(geminiConfig.visionProEscalationMaxScore, 0.0, 1.0);
+    if (geminiConfig.visionProEscalationMinScore > geminiConfig.visionProEscalationMaxScore) {
+        std::swap(geminiConfig.visionProEscalationMinScore, geminiConfig.visionProEscalationMaxScore);
+    }
+    if (geminiConfig.quotaSafetyFactor <= 0.0) {
+        geminiConfig.quotaSafetyFactor = 0.7;
+    }
+    geminiConfig.quotaSafetyFactor = std::min(1.0, geminiConfig.quotaSafetyFactor);
+    if (geminiConfig.quotaDefaultRpm <= 0) {
+        geminiConfig.quotaDefaultRpm = 8;
+    }
+    if (geminiConfig.quotaDefaultRpd <= 0) {
+        geminiConfig.quotaDefaultRpd = 250;
+    }
+
+    const std::unordered_set<std::string> scannerIntervalSet(scannerIntervals.begin(), scannerIntervals.end());
+    for (const auto& tf : geminiConfig.extraTfs) {
+        if (scannerIntervalSet.find(tf) == scannerIntervalSet.end()) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "gemini extra_tf not present in scanner intervals tf=" + quoteString(tf));
+        }
+    }
 
     ContextConfig contextConfig;
     contextConfig.apiKey = apiKey;
@@ -305,7 +581,7 @@ int main(int argc, char* argv[]) {
         rest,
         ctx,
         scanner::MarketScanner::Config{
-            .intervals = scannerJson.value("intervals", std::vector<std::string>{"15m", "30m"}),
+            .intervals = scannerIntervals,
             .klineBufferSize = scannerBufferSize,
             .maxStreamsPerConnection = static_cast<size_t>(scannerJson.value("max_streams_per_connection", 512)),
             .warmupRequestDelay = std::chrono::milliseconds(scannerJson.value("warmup_request_delay_ms", 0)),
@@ -345,14 +621,64 @@ int main(int argc, char* argv[]) {
         exposureController = std::make_unique<engine::ExposureController>(exposureConfig, scanner.cache());
         exposurePort = exposureController.get();
     }
+
+    engine::NoOpOrderCapPort noOpOrderCap;
+    std::unique_ptr<engine::TotalNotionalGuard> orderCapController;
+    engine::IOrderCapPort* orderCapPort = &noOpOrderCap;
+    if (orderCapConfig.enabled) {
+        orderCapController = std::make_unique<engine::TotalNotionalGuard>(orderCapConfig);
+        orderCapPort = orderCapController.get();
+    }
+
+    engine::NoOpGeminiFilterPort noOpGemini;
+    std::unique_ptr<engine::GeminiFilterController> geminiController;
+    engine::IGeminiFilterPort* geminiPort = &noOpGemini;
+    if (geminiConfig.enabled && geminiConfig.mode != engine::GeminiFilterMode::Disabled) {
+        try {
+            geminiController = std::make_unique<engine::GeminiFilterController>(geminiConfig);
+            geminiPort = geminiController.get();
+            Logger::instance().log(
+                LogLevel::Info,
+                std::string("Gemini filter enabled mode=enforce") +
+                    " python=" + quoteString(geminiConfig.pythonPath) +
+                    " module=" + quoteString(geminiConfig.moduleName) +
+                    " model_resolution=" +
+                    (geminiConfig.modelResolutionEnabled ? geminiConfig.modelResolutionMode : "pinned") +
+                    " timeout_seconds=" + std::to_string(geminiConfig.timeoutSeconds) +
+                    " max_evaluations_per_scan_cycle=" +
+                    std::to_string(geminiConfig.maxEvaluationsPerScanCycle) +
+                    " result_cache_ttl_seconds=" + std::to_string(geminiConfig.resultCacheTtlSeconds) +
+                    " sentiment_cache_ttl_seconds=" + std::to_string(geminiConfig.sentimentCacheTtlSeconds) +
+                    " model_resolution_ttl_seconds=" + std::to_string(geminiConfig.modelResolutionTtlSeconds) +
+                    " block_on_error=" + (geminiConfig.blockOnError ? "true" : "false") +
+                    " block_on_budget_exhausted=" + (geminiConfig.blockOnBudgetExhausted ? "true" : "false") +
+                    " close_gate_on_budget_exhausted=" +
+                    (geminiConfig.closeGateOnBudgetExhausted ? "true" : "false") +
+                    " close_gate_on_quota_exhausted=" +
+                    (geminiConfig.closeGateOnQuotaExhausted ? "true" : "false") +
+                    " model_routing=" + (geminiConfig.modelRoutingEnabled ? "enabled" : "disabled") +
+                    " quota=" + (geminiConfig.quotaEnabled ? "enabled" : "disabled"));
+        } catch (const std::exception& e) {
+            Logger::instance().log(LogLevel::Error, std::string("Gemini filter init failed: ") + e.what());
+            return 1;
+        }
+    } else {
+        Logger::instance().log(LogLevel::Info, "Gemini filter disabled");
+    }
+
     engine::SignalEngine signalEngine(
         scannerPort,
         registry,
         accountPort,
         ordersPort,
+        *orderCapPort,
         *exposurePort,
+        *geminiPort,
+        geminiConfig,
         engine::SignalEngine::Config{
             .minNotional = engineJson.value("min_notional", 1.0),
+            .maxPositionNotionalXAvailableBalance =
+                engineJson.value("max_position_notional_x_available_balance", 0.5),
             .positionCheckInterval = std::chrono::seconds(engineJson.value("position_check_interval_seconds", 60)),
             .trailingCheckInterval = std::chrono::seconds(engineJson.value("trailing_check_interval_seconds", 300)),
             .placeStopLoss = engineJson.value("place_stop_loss", true),

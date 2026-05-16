@@ -33,17 +33,19 @@ public:
     PluginHandle& operator=(const PluginHandle&) = delete;
     ~PluginHandle();
 
-    CreateFn createFn{nullptr};
-    DestroyFn destroyFn{nullptr};
-    TypeFn typeFn{nullptr};
-    VersionFn versionFn{nullptr};
-
     std::filesystem::path path;
     std::string type;
     std::string version;
+    [[nodiscard]] bool hasFactory() const;
+    [[nodiscard]] strategy::IStrategy* create(const char* configJson) const;
+    [[nodiscard]] DestroyFn destroyFunction() const;
 
 private:
     explicit PluginHandle(void* handle) : m_handle(handle) {}
+    CreateFn m_createFn{nullptr};
+    DestroyFn m_destroyFn{nullptr};
+    TypeFn m_typeFn{nullptr};
+    VersionFn m_versionFn{nullptr};
     void* m_handle{nullptr};
 };
 

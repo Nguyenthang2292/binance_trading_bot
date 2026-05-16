@@ -4,11 +4,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <utility>
 
 namespace account::mql4 {
 
 namespace {
+constexpr double kMinMarginEpsilon = 1e-8;
 
 std::string toUpper(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
@@ -17,7 +19,22 @@ std::string toUpper(std::string value) {
     return value;
 }
 
+bool isMultiAssetsMarginEnabled(const AccountSnapshot& snapshot) {
+    return snapshot.multiAssetsMargin.has_value() && *snapshot.multiAssetsMargin;
+}
+
+AccountMappingResult<void> requireSingleAssetMode(const AccountSnapshot& snapshot) {
+    if (isMultiAssetsMarginEnabled(snapshot)) {
+        return std::unexpected(AccountMappingError::Unsupported);
+    }
+    return {};
+}
+
 AccountMappingResult<const Balance*> displayAssetBalance(const AccountSnapshot& snapshot) {
+    if (auto mode = requireSingleAssetMode(snapshot); !mode) {
+        return std::unexpected(mode.error());
+    }
+
     if (snapshot.compatibility.displayAsset.empty()) {
         return std::unexpected(AccountMappingError::NotConfigured);
     }
@@ -38,6 +55,25 @@ AccountMappingResult<const Balance*> displayAssetBalance(const AccountSnapshot& 
     }
 
     return std::unexpected(AccountMappingError::SnapshotIncomplete);
+}
+
+const std::vector<Position>& positionsForMapping(const AccountSnapshot& snapshot) {
+    if (snapshot.positions) {
+        return *snapshot.positions;
+    }
+    return snapshot.account.positions;
+}
+
+double positionsInitialMargin(const std::vector<Position>& positions) {
+    double total = 0.0;
+    for (const auto& position : positions) {
+        total += position.initialMargin;
+    }
+    return total;
+}
+
+bool matchesSymbolInsensitive(const std::string& left, const std::string& right) {
+    return toUpper(left) == toUpper(right);
 }
 
 } // namespace
@@ -64,7 +100,7 @@ AccountMappingResult<double> Mql4AccountAdapter::accountInfoDouble(AccountDouble
             if (!margin) {
                 return std::unexpected(margin.error());
             }
-            if (*margin == 0.0) {
+            if (std::abs(*margin) < kMinMarginEpsilon) {
                 return 0.0;
             }
             auto equity = accountEquity();
@@ -152,11 +188,18 @@ AccountMappingResult<double> Mql4AccountAdapter::accountEquity() const {
 }
 
 AccountMappingResult<double> Mql4AccountAdapter::accountFreeMargin() const {
+    if (auto mode = requireSingleAssetMode(m_snapshot); !mode) {
+        return std::unexpected(mode.error());
+    }
+
     const auto balance = displayAssetBalance(m_snapshot);
     if (!balance) {
         return std::unexpected(balance.error());
     }
-    return (*balance)->availableBalance;
+
+    // MQL4 FreeMargin maps to Equity - Margin (positions only).
+    // Binance availableBalance subtracts open-order initial margin, so avoid using it here.
+    return (*balance)->marginBalance - (*balance)->initialMargin;
 }
 
 AccountMappingResult<int64_t> Mql4AccountAdapter::accountLeverage(std::string symbol) const {
@@ -164,15 +207,17 @@ AccountMappingResult<int64_t> Mql4AccountAdapter::accountLeverage(std::string sy
         return std::unexpected(AccountMappingError::AmbiguousSymbol);
     }
 
+    const auto requested = toUpper(std::move(symbol));
+
     if (m_snapshot.positions) {
         for (const auto& position : *m_snapshot.positions) {
-            if (position.symbol == symbol) {
+            if (matchesSymbolInsensitive(position.symbol, requested)) {
                 return position.leverage;
             }
         }
     }
     for (const auto& position : m_snapshot.account.positions) {
-        if (position.symbol == symbol) {
+        if (matchesSymbolInsensitive(position.symbol, requested)) {
             return position.leverage;
         }
     }
@@ -180,9 +225,18 @@ AccountMappingResult<int64_t> Mql4AccountAdapter::accountLeverage(std::string sy
 }
 
 AccountMappingResult<double> Mql4AccountAdapter::accountMargin() const {
+    if (auto mode = requireSingleAssetMode(m_snapshot); !mode) {
+        return std::unexpected(mode.error());
+    }
+
     const auto balance = displayAssetBalance(m_snapshot);
     if (!balance) {
         return std::unexpected(balance.error());
+    }
+
+    const auto& positions = positionsForMapping(m_snapshot);
+    if (!positions.empty()) {
+        return positionsInitialMargin(positions);
     }
     return (*balance)->initialMargin;
 }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <numeric>
 
 namespace engine {
@@ -30,19 +31,46 @@ std::optional<double> BetaCalculator::calculate(
         return std::nullopt;
     }
 
-    std::vector<double> coinReturns;
-    std::vector<double> btcReturns;
-    const size_t klineLimit = std::min(coinKlines->size(), btcKlines->size());
-    if (klineLimit < 2) {
+    std::map<int64_t, double> coinCloseByOpenTime;
+    std::map<int64_t, double> btcCloseByOpenTime;
+    for (const auto& k : *coinKlines) {
+        coinCloseByOpenTime[k.openTime] = k.close;
+    }
+    for (const auto& k : *btcKlines) {
+        btcCloseByOpenTime[k.openTime] = k.close;
+    }
+
+    std::vector<int64_t> commonTimes;
+    commonTimes.reserve(std::min(coinCloseByOpenTime.size(), btcCloseByOpenTime.size()));
+    auto coinIt = coinCloseByOpenTime.begin();
+    auto btcIt = btcCloseByOpenTime.begin();
+    while (coinIt != coinCloseByOpenTime.end() && btcIt != btcCloseByOpenTime.end()) {
+        if (coinIt->first == btcIt->first) {
+            commonTimes.push_back(coinIt->first);
+            ++coinIt;
+            ++btcIt;
+        } else if (coinIt->first < btcIt->first) {
+            ++coinIt;
+        } else {
+            ++btcIt;
+        }
+    }
+
+    if (commonTimes.size() < 2) {
         return std::nullopt;
     }
-    coinReturns.reserve(klineLimit - 1);
-    btcReturns.reserve(klineLimit - 1);
-    for (size_t i = 1; i < klineLimit; ++i) {
-        const double coinPrev = (*coinKlines)[i - 1].close;
-        const double coinNow = (*coinKlines)[i].close;
-        const double btcPrev = (*btcKlines)[i - 1].close;
-        const double btcNow = (*btcKlines)[i].close;
+
+    std::vector<double> coinReturns;
+    std::vector<double> btcReturns;
+    coinReturns.reserve(commonTimes.size() - 1);
+    btcReturns.reserve(commonTimes.size() - 1);
+    for (size_t i = 1; i < commonTimes.size(); ++i) {
+        const auto prevTime = commonTimes[i - 1];
+        const auto nowTime = commonTimes[i];
+        const double coinPrev = coinCloseByOpenTime[prevTime];
+        const double coinNow = coinCloseByOpenTime[nowTime];
+        const double btcPrev = btcCloseByOpenTime[prevTime];
+        const double btcNow = btcCloseByOpenTime[nowTime];
         if (coinPrev <= 0.0 || coinNow <= 0.0 || btcPrev <= 0.0 || btcNow <= 0.0) {
             continue;
         }

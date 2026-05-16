@@ -3,7 +3,7 @@
     "plugins_dir": "plugins"
   },
   "scanner": {
-    "intervals": ["15m", "30m", "4h"],
+    "intervals": ["1d", "4h", "1h", "30m"],
     "kline_buffer_size": 200,
     "max_streams_per_connection": 512,
     "warmup_request_delay_ms": 0,
@@ -15,10 +15,16 @@
   },
   "engine": {
     "min_notional": 1.0,
+    "max_position_notional_x_available_balance": 0.5,
     "position_check_interval_seconds": 60,
     "trailing_check_interval_seconds": 300,
     "monitor_trailing_stops": true,
     "place_stop_loss": false
+  },
+  "order_cap": {
+    "enabled": true,
+    "max_total_notional_pct": 8.0,
+    "failure_mode": "closed"
   },
   "exposure_control": {
     "enabled": true,
@@ -31,12 +37,78 @@
     "beta_window_days": 30,
     "failure_mode": "closed"
   },
+  "gemini_filter": {
+    "enabled": true,
+    "mode": "enforce",
+    "python_path": "python",
+    "module_name": "tools.gemini_filter.gemini_filter",
+    "working_directory": ".",
+    "runtime_dir": "tmp/gemini_filter",
+    "sentiment_model": "gemini-3.1-pro-preview",
+    "vision_model": "gemini-3.1-pro-preview",
+    "model_resolution": {
+      "enabled": true,
+      "mode": "latest_pro",
+      "fallback_on_error": true,
+      "allow_preview": true
+    },
+    "sentiment_search_then_score": false,
+    "sentiment_weight": 0.5,
+    "vision_weight": 0.5,
+    "confidence_threshold": 0.6,
+    "timeout_seconds": 45,
+    "max_evaluations_per_scan_cycle": 3,
+    "stale_runtime_ttl_hours": 24,
+    "result_cache_ttl_seconds": 1800,
+    "sentiment_cache_ttl_seconds": 3600,
+    "sentiment_cache_max_stale_seconds": 21600,
+    "model_resolution_ttl_seconds": 3600,
+    "model_resolution_max_stale_seconds": 86400,
+    "block_on_error": true,
+    "block_on_budget_exhausted": true,
+    "close_gate_on_budget_exhausted": true,
+    "close_gate_on_quota_exhausted": true,
+    "model_routing": {
+      "enabled": true,
+      "sentiment": {
+        "candidates": [
+          "gemini-2.5-flash-lite",
+          "gemini-2.5-flash",
+          "gemini-3.1-pro-preview"
+        ]
+      },
+      "vision": {
+        "candidates": [
+          "gemini-3.1-flash-lite",
+          "gemini-2.5-flash",
+          "gemini-3.1-pro-preview"
+        ],
+        "pro_escalation_enabled": true,
+        "pro_escalation_min_score": 0.45,
+        "pro_escalation_max_score": 0.65
+      }
+    },
+    "quota": {
+      "enabled": true,
+      "safety_factor": 0.7,
+      "cooldown_seconds_on_429": 300,
+      "default_rpm": 10,
+      "default_rpd": 500,
+      "models": {
+        "gemini-2.5-flash-lite": { "rpm": 20, "rpd": 1000 },
+        "gemini-2.5-flash": { "rpm": 10, "rpd": 500 },
+        "gemini-3.1-flash-lite": { "rpm": 10, "rpd": 500 },
+        "gemini-3.1-pro-preview": { "rpm": 2, "rpd": 50 }
+      }
+    },
+    "extra_tfs": ["1h", "4h"]
+  },
   "strategies": [
     {
       "name": "Trend Breakout Trader",
       "type": "trend_breakout",
-      "intervals": ["4h"],
-      "scan_interval_seconds": 14400,
+      "intervals": ["30m", "1h", "4h"],
+      "scan_interval_seconds": 900,
       "max_hold_duration_seconds": 604800,
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
@@ -47,9 +119,44 @@
       "params": {
         "breakout_period": 20,
         "trailing_enabled": true,
-        "trailing_interval": "4h",
         "trailing_candles": 42,
         "trailing_check_interval_seconds": 300
+      }
+    },
+    {
+      "name": "Gartley 3&6 Candle Crossover",
+      "type": "gartley_day_crossover",
+      "intervals": ["1d", "4h", "1h", "30m"],
+      "scan_interval_seconds": 900,
+      "max_hold_duration_seconds": 86400,
+      "risk_pct": 0.01,
+      "sl_multiplier": 1.5,
+      "tp_multiplier": 3.0,
+      "min_notional": 1.0,
+      "atr_period": 14,
+      "min_confidence": 0.5,
+      "params": {
+        "fast_period": 3,
+        "slow_period": 6,
+        "offset": 2,
+        "conf_threshold": 0.02
+      }
+    },
+    {
+      "name": "Donchian 5 and 20-Day Crossover (Crypto MTF State Variant)",
+      "type": "donchian_5_20_crossover",
+      "intervals": ["1d", "4h", "1h", "30m"],
+      "scan_interval_seconds": 900,
+      "max_hold_duration_seconds": 86400,
+      "risk_pct": 0.01,
+      "sl_multiplier": 1.5,
+      "tp_multiplier": 3.0,
+      "min_notional": 1.0,
+      "atr_period": 14,
+      "min_confidence": 0.5,
+      "params": {
+        "short_period": 5,
+        "long_period": 20
       }
     }
   ],

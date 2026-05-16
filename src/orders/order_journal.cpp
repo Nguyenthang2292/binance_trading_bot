@@ -1,5 +1,8 @@
 #include "orders/order_journal.h"
 
+#include "orders/order_journal.h"
+#include "orders/order_service_utils.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
@@ -242,20 +245,20 @@ std::expected<void, BinanceError> DurableOrderJournal::appendRecord(const std::s
             out << *entry->binanceOrderId;
         }
         out << '\t';
-        if (entry->metadata.has_value()) {
-            if (entry->metadata->magic.has_value()) {
-                out << *entry->metadata->magic;
-            }
-            out << '\t';
-            if (entry->metadata->comment.has_value()) {
-                out << sanitizeToken(*entry->metadata->comment);
-            }
-            out << '\t';
-            if (entry->metadata->strategyTag.has_value()) {
-                out << sanitizeToken(*entry->metadata->strategyTag);
-            }
-        } else {
-            out << "\t\t";
+        if (entry->metadata.has_value() && entry->metadata->magic.has_value()) {
+            out << *entry->metadata->magic;
+        }
+        out << '\t';
+        if (entry->metadata.has_value() && entry->metadata->comment.has_value()) {
+            out << sanitizeToken(*entry->metadata->comment);
+        }
+        out << '\t';
+        if (entry->metadata.has_value() && entry->metadata->strategyTag.has_value()) {
+            out << sanitizeToken(*entry->metadata->strategyTag);
+        }
+        out << '\t';
+        if (entry->metadata.has_value() && entry->metadata->timeframe.has_value()) {
+            out << sanitizeToken(*entry->metadata->timeframe);
         }
         out << '\n';
     } else {
@@ -326,6 +329,16 @@ std::expected<void, BinanceError> DurableOrderJournal::loadFromFile() {
                 if (parts.size() > 16 && !parts[16].empty()) {
                     metadata.strategyTag = parts[16];
                     hasMetadata = true;
+                }
+                if (parts.size() > 17 && !parts[17].empty()) {
+                    metadata.timeframe = parts[17];
+                    hasMetadata = true;
+                } else if (!metadata.timeframe.has_value()) {
+                    if (const auto derived = orders::detail::extractTimeframe(std::optional<OrderMetadata>{metadata});
+                        derived.has_value()) {
+                        metadata.timeframe = *derived;
+                        hasMetadata = true;
+                    }
                 }
                 if (hasMetadata) {
                     entry.metadata = metadata;

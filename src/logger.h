@@ -10,6 +10,7 @@
 enum class LogLevel {
     Debug,
     Info,
+    Subprocess,
     Warning,
     Error,
     Trade

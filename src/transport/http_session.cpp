@@ -5,6 +5,7 @@
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/version.hpp>
 #include <openssl/ssl.h>
@@ -21,6 +22,53 @@ HttpSession::HttpSession(asio::io_context& ioc,
                          Socks5ProxyConfig proxy)
     : m_ioc(ioc), m_ssl(sslContext), m_host(std::move(host)), m_proxy(std::move(proxy)) {
     resetStream();
+}
+
+void HttpSession::RequestGate::Lock::release() {
+    if (!m_gate) {
+        return;
+    }
+    m_gate->unlock();
+    m_gate = nullptr;
+}
+
+asio::awaitable<HttpSession::RequestGate::Lock> HttpSession::RequestGate::lock(asio::io_context& ioc) {
+    auto waiter = std::make_shared<asio::steady_timer>(ioc);
+    waiter->expires_at(asio::steady_timer::time_point::max());
+
+    bool acquired = false;
+    {
+        std::lock_guard guard(m_mutex);
+        if (!m_locked) {
+            m_locked = true;
+            acquired = true;
+        } else {
+            m_waiters.push_back(waiter);
+        }
+    }
+
+    if (!acquired) {
+        boost::system::error_code ec;
+        co_await waiter->async_wait(asio::redirect_error(asio::use_awaitable, ec));
+    }
+
+    co_return Lock(*this);
+}
+
+void HttpSession::RequestGate::unlock() {
+    std::shared_ptr<asio::steady_timer> next;
+    {
+        std::lock_guard guard(m_mutex);
+        if (m_waiters.empty()) {
+            m_locked = false;
+            return;
+        }
+        next = m_waiters.front();
+        m_waiters.pop_front();
+    }
+
+    boost::system::error_code ec;
+    next->cancel(ec);
 }
 
 void HttpSession::resetStream() {
@@ -122,6 +170,9 @@ asio::awaitable<HttpSession::Result> HttpSession::del(std::string_view path,
 }
 
 asio::awaitable<HttpSession::Result> HttpSession::execute(http::request<http::string_body> req) {
+    // Beast streams allow only one in-flight operation chain per connection.
+    auto requestLock = co_await m_requestGate.lock(m_ioc);
+
     if (auto connected = co_await ensureConnected(); !connected) {
         co_return std::unexpected(connected.error());
     }

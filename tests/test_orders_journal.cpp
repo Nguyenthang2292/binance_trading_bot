@@ -3,6 +3,7 @@
 #include "orders/order_journal.h"
 
 #include <filesystem>
+#include <fstream>
 
 TEST(OrderJournalTest, DurableJournalPersistsEntryAcrossInstances) {
     const auto path = std::filesystem::temp_directory_path() / "orders_journal_test.log";
@@ -37,6 +38,30 @@ TEST(OrderJournalTest, DurableJournalPersistsEntryAcrossInstances) {
         ASSERT_TRUE(found->value().binanceOrderId.has_value());
         EXPECT_EQ(*found->value().binanceOrderId, 12345);
     }
+
+    std::filesystem::remove(path);
+}
+
+TEST(OrderJournalTest, LoadsLegacyMetadataAndDerivesTimeframeFromComment) {
+    const auto path = std::filesystem::temp_directory_path() / "orders_journal_legacy_metadata_test.log";
+    std::filesystem::remove(path);
+
+    {
+        std::ofstream out(path.string(), std::ios::trunc);
+        ASSERT_TRUE(out.is_open());
+        out << "R\tcorr-legacy\tBTCUSDT\tcid-legacy\tnormal\t0\t1\t0\t0.01\t0\tsymbol=BTCUSDT\t1700000000000\t2\t\t42\t"
+            << "tf=15m reason=legacy\tlegacy-tag\n";
+    }
+
+    DurableOrderJournal journal(path.string());
+    auto found = journal.findByClientOrderId("cid-legacy");
+    ASSERT_TRUE(found.has_value());
+    ASSERT_TRUE(found->has_value());
+    ASSERT_TRUE(found->value().metadata.has_value());
+    EXPECT_EQ(found->value().metadata->magic, 42);
+    EXPECT_EQ(found->value().metadata->comment, "tf=15m reason=legacy");
+    EXPECT_EQ(found->value().metadata->strategyTag, "legacy-tag");
+    EXPECT_EQ(found->value().metadata->timeframe, "15m");
 
     std::filesystem::remove(path);
 }

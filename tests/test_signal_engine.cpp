@@ -50,6 +50,21 @@ public:
         meta.stepSize = step;
         m_meta[meta.symbol] = meta;
     }
+    void setRules(std::string symbol, double step, double tick) {
+        ExchangeSymbol meta;
+        meta.symbol = std::move(symbol);
+        meta.stepSize = step;
+        meta.tickSize = tick;
+        m_meta[meta.symbol] = meta;
+    }
+    void setRules(std::string symbol, double step, double tick, double minNotional) {
+        ExchangeSymbol meta;
+        meta.symbol = std::move(symbol);
+        meta.stepSize = step;
+        meta.tickSize = tick;
+        meta.minNotional = minNotional;
+        m_meta[meta.symbol] = meta;
+    }
     void push(std::string_view symbol, std::string_view interval, const Kline& kline) {
         m_cache.update(symbol, interval, kline);
     }
@@ -191,24 +206,77 @@ public:
     }
 };
 
+class MockOrderCapPort final : public engine::IOrderCapPort {
+public:
+    engine::OrderCapResult nextResult{
+        .decision = engine::OrderCapDecision::Allow,
+        .reason = "ok",
+    };
+    engine::OrderCapFailureMode mode{engine::OrderCapFailureMode::Closed};
+    bool throwOnCheck{false};
+    int checkCalls{0};
+
+    engine::OrderCapResult check(
+        double,
+        const account::AccountSnapshot&,
+        const engine::PositionTracker&) const override {
+        ++const_cast<MockOrderCapPort*>(this)->checkCalls;
+        if (throwOnCheck) {
+            throw std::runtime_error("mock order cap failure");
+        }
+        return nextResult;
+    }
+
+    engine::OrderCapFailureMode failureMode() const override {
+        return mode;
+    }
+};
+
+class MockGeminiFilterPort final : public engine::IGeminiFilterPort {
+public:
+    engine::GeminiFilterResult nextResult{
+        .decision = engine::GeminiDecision::Allow,
+        .confidence = 1.0,
+        .sentimentScore = 1.0,
+        .visionScore = 1.0,
+        .reason = "ok",
+    };
+    int evaluateCalls{0};
+    std::string lastInterval;
+
+    engine::GeminiFilterResult evaluate(
+        std::string_view,
+        strategy::Signal::Direction,
+        std::string_view signalInterval,
+        const scanner::KlineCache&) const override {
+        ++const_cast<MockGeminiFilterPort*>(this)->evaluateCalls;
+        const_cast<MockGeminiFilterPort*>(this)->lastInterval = std::string(signalInterval);
+        return nextResult;
+    }
+};
+
 class MockStrategy final : public strategy::IStrategy {
 public:
     explicit MockStrategy(strategy::StrategyConfig cfg) : m_cfg(std::move(cfg)) {}
     const strategy::StrategyConfig& config() const override { return m_cfg; }
-    strategy::Signal evaluate(std::string_view, std::string_view, const std::vector<Kline>&) const override {
+    strategy::Signal evaluate(std::string_view, std::string_view interval, const std::vector<Kline>&) const override {
+        ++evaluateCalls;
+        lastInterval = std::string(interval);
         return nextSignal;
     }
 
+    mutable int evaluateCalls{0};
+    mutable std::string lastInterval;
     mutable strategy::Signal nextSignal;
 
 private:
     strategy::StrategyConfig m_cfg;
 };
 
-engine::WorkItem singleWork(const strategy::IStrategy* strategy) {
+engine::WorkItem singleWork(const strategy::IStrategy* strategy, std::string interval = "15m") {
     return engine::WorkItem{
         .symbol = "BTCUSDT",
-        .interval = "15m",
+        .interval = std::move(interval),
         .strategy = strategy,
     };
 }
@@ -284,14 +352,34 @@ TEST(SignalEngineTest, CoversNoSignalLowConfidenceAtrZeroExistingAndSuccess) {
         .direction = strategy::Signal::Direction::Long,
         .confidence = 0.9,
         .atr = 5.0,
+        .reason = "15m Donchian breakout long: close=100 > high20=99",
     };
     runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
     EXPECT_EQ(orders.marketCalls, 1);
     EXPECT_TRUE(account.lastRequest.includePositions);
+    ASSERT_TRUE(orders.lastMarketDraft.has_value());
     ASSERT_TRUE(orders.lastLimitDraft.has_value());
     ASSERT_TRUE(orders.lastProtectionDraft.has_value());
+    ASSERT_TRUE(orders.lastMarketDraft->metadata.has_value());
+    ASSERT_TRUE(orders.lastLimitDraft->metadata.has_value());
+    ASSERT_TRUE(orders.lastProtectionDraft->metadata.has_value());
+    EXPECT_EQ(orders.lastMarketDraft->metadata->strategyTag.value_or(""), "mock");
+    EXPECT_EQ(orders.lastLimitDraft->metadata->strategyTag.value_or(""), "mock");
+    EXPECT_EQ(orders.lastProtectionDraft->metadata->strategyTag.value_or(""), "mock");
+    EXPECT_EQ(orders.lastMarketDraft->metadata->timeframe.value_or(""), "15m");
+    EXPECT_EQ(orders.lastLimitDraft->metadata->timeframe.value_or(""), "15m");
+    EXPECT_EQ(orders.lastProtectionDraft->metadata->timeframe.value_or(""), "15m");
+    EXPECT_EQ(
+        orders.lastMarketDraft->metadata->comment.value_or(""),
+        "tf=15m reason=15m Donchian breakout long: close=100 > high20=99");
     EXPECT_DOUBLE_EQ(orders.lastLimitDraft->price.toDouble(), 120.0);
     EXPECT_DOUBLE_EQ(orders.lastProtectionDraft->triggerPrice.toDouble(), 97.5);
+    const auto tracked = engine.tracker().bySymbol("BTCUSDT");
+    ASSERT_TRUE(tracked.has_value());
+    EXPECT_EQ(tracked->strategyName, "mock");
+    EXPECT_EQ(tracked->signalInterval, "15m");
+    EXPECT_EQ(tracked->signalReason, "15m Donchian breakout long: close=100 > high20=99");
+    EXPECT_EQ(tracked->trailingInterval, "15m");
 
     ioc.restart();
     runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
@@ -402,10 +490,118 @@ TEST(SignalEngineTest, CanDisableStopLossPlacement) {
     EXPECT_EQ(tracked->slOrderId, 0);
 }
 
+TEST(SignalEngineTest, TakeProfitPriceIsRoundedToSymbolTickSize) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 2600 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    orders.marketResult->avgPrice = "105.003";
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    cfg.tpMultiplier = 1.0;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 0.123456,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(
+        scanner,
+        registry,
+        account,
+        orders,
+        exposure,
+        engine::SignalEngine::Config{.placeStopLoss = false});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    ASSERT_TRUE(orders.lastLimitDraft.has_value());
+    EXPECT_EQ(orders.lastLimitDraft->price.value(), "105.12");
+}
+
+TEST(SignalEngineTest, MarketQuantityUsesSymbolMinNotional) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.01, 0.01, 5.0);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 2700 + i;
+        k.high = 350.0;
+        k.low = 320.0;
+        k.close = 333.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 100.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    cfg.minNotional = 1.0;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 100.0,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    exposure.minNotional = 0.5;
+    engine::SignalEngine engine(
+        scanner,
+        registry,
+        account,
+        orders,
+        exposure,
+        engine::SignalEngine::Config{.minNotional = 1.0, .placeStopLoss = false});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    ASSERT_TRUE(orders.lastMarketDraft.has_value());
+    EXPECT_EQ(orders.lastMarketDraft->quantity.value(), "0.02");
+    EXPECT_DOUBLE_EQ(orders.lastMarketDraft->quantity.toDouble(), 0.02);
+}
+
 TEST(SignalEngineTest, TimeExitCancelsExitsClosesPositionAndRemovesTracker) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
     MockAccountPort account;
+    account::AccountSnapshot liveSnapshot;
+    Position livePosition;
+    livePosition.symbol = "BTCUSDT";
+    livePosition.positionAmt = 0.01;
+    liveSnapshot.positions = std::vector<Position>{livePosition};
+    account.nextSnapshot = liveSnapshot;
     MockOrdersPort orders;
     strategy::StrategyRegistry registry;
     MockExposurePort exposure;
@@ -429,6 +625,121 @@ TEST(SignalEngineTest, TimeExitCancelsExitsClosesPositionAndRemovesTracker) {
     ASSERT_TRUE(orders.lastCloseDraft.has_value());
     EXPECT_EQ(orders.lastCloseDraft->side, OrderSide::Sell);
     EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
+TEST(SignalEngineTest, TimeExitRemovesTrackerWithoutCloseWhenLivePositionAlreadyFlat) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    MockAccountPort account;
+    account::AccountSnapshot flatSnapshot;
+    Position flatPosition;
+    flatPosition.symbol = "BTCUSDT";
+    flatPosition.positionAmt = 0.0;
+    flatSnapshot.positions = std::vector<Position>{flatPosition};
+    account.nextSnapshot = flatSnapshot;
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+
+    engine::TrackedPosition pos;
+    pos.symbol = "BTCUSDT";
+    pos.direction = strategy::Signal::Direction::Long;
+    pos.openedAt = std::chrono::system_clock::now() - std::chrono::hours(2);
+    pos.maxHoldDuration = std::chrono::hours(1);
+    pos.quantity = 0.01;
+    pos.tpOrderId = 10;
+    pos.slOrderId = 20;
+    engine.tracker().add(pos);
+
+    runAwaitable(ioc, engine.processExpiredPositions(std::chrono::system_clock::now()));
+
+    EXPECT_EQ(orders.cancelNormalByOrderIdCalls, 0);
+    EXPECT_EQ(orders.cancelAlgoByAlgoIdCalls, 0);
+    EXPECT_EQ(orders.closeCalls, 0);
+    EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
+TEST(SignalEngineTest, ReconcileTrackedPositionsRemovesStaleTrackerEntry) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    MockAccountPort account;
+    account::AccountSnapshot flatSnapshot;
+    Position flatPosition;
+    flatPosition.symbol = "BTCUSDT";
+    flatPosition.positionAmt = 0.0;
+    flatSnapshot.positions = std::vector<Position>{flatPosition};
+    account.nextSnapshot = flatSnapshot;
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+
+    engine::TrackedPosition pos;
+    pos.symbol = "BTCUSDT";
+    pos.direction = strategy::Signal::Direction::Long;
+    pos.openedAt = std::chrono::system_clock::now() - std::chrono::minutes(10);
+    pos.maxHoldDuration = std::chrono::hours(24);
+    pos.quantity = 0.02;
+    engine.tracker().add(pos);
+    ASSERT_TRUE(engine.tracker().has("BTCUSDT"));
+
+    runAwaitable(ioc, engine.reconcileTrackedPositions());
+
+    EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
+TEST(SignalEngineTest, EvaluatesSignalBeforeTrackedPositionSkip) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 2400 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "1h", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"1h"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+        .reason = "1h Donchian breakout long",
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+
+    engine::TrackedPosition tracked;
+    tracked.symbol = "BTCUSDT";
+    tracked.direction = strategy::Signal::Direction::Long;
+    tracked.quantity = 0.01;
+    tracked.trailingEnabled = true;
+    tracked.trailingInterval = "1h";
+    engine.tracker().add(tracked);
+
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "1h")));
+
+    EXPECT_EQ(strategyPtr->evaluateCalls, 1);
+    EXPECT_EQ(strategyPtr->lastInterval, "1h");
+    EXPECT_EQ(orders.marketCalls, 0);
 }
 
 TEST(SignalEngineTest, ProcessTrailingStopsMovesLongStopAndUpdatesTracker) {
@@ -528,6 +839,88 @@ TEST(SignalEngineTest, ExposureBlockSkipsOpen) {
     EXPECT_EQ(orders.marketCalls, 0);
 }
 
+TEST(SignalEngineTest, TakeProfitRejectTriggersEmergencyCloseAndSkipsTracking) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 3500 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    NormalPlacementResult rejectedTp;
+    rejectedTp.state = PlacementState::Rejected;
+    rejectedTp.binanceCode = -2010;
+    rejectedTp.binanceMessage = "Order would immediately trigger";
+    orders.limitResult = rejectedTp;
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    EXPECT_EQ(orders.marketCalls, 1);
+    EXPECT_EQ(orders.limitCalls, 1);
+    EXPECT_EQ(orders.closeCalls, 1);
+    EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
+TEST(SignalEngineTest, PartialExitFillReducesTrackedQuantity) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    MockAccountPort account;
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+
+    engine::TrackedPosition tracked;
+    tracked.symbol = "BTCUSDT";
+    tracked.direction = strategy::Signal::Direction::Long;
+    tracked.quantity = 1.0;
+    tracked.tpClientOrderId = "tp-partial";
+    engine.tracker().add(tracked);
+
+    OrderUpdateEvent partial;
+    partial.symbol = "BTCUSDT";
+    partial.orderStatus = "PARTIALLY_FILLED";
+    partial.clientOrderId = "tp-partial";
+    partial.lastFilledQty = 0.4;
+    engine.onUserDataEvent(partial);
+
+    const auto afterPartial = engine.tracker().bySymbol("BTCUSDT");
+    ASSERT_TRUE(afterPartial.has_value());
+    EXPECT_NEAR(afterPartial->quantity, 0.6, 1e-12);
+
+    partial.lastFilledQty = 0.6;
+    engine.onUserDataEvent(partial);
+    EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
 TEST(SignalEngineTest, ExposureScaleDownReducesQuantity) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
@@ -573,7 +966,107 @@ TEST(SignalEngineTest, ExposureScaleDownReducesQuantity) {
     engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
     runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
     ASSERT_TRUE(orders.lastMarketDraft.has_value());
-    EXPECT_NEAR(orders.lastMarketDraft->quantity.toDouble(), 0.006, 1e-9);
+    EXPECT_NEAR(orders.lastMarketDraft->quantity.toDouble(), 0.666, 1e-9);
+}
+
+TEST(SignalEngineTest, OrderCapBlockSkipsOpenAndExposure) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 4100 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    MockOrderCapPort orderCap;
+    orderCap.nextResult = {
+        .decision = engine::OrderCapDecision::Block,
+        .reason = "cap reached",
+    };
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    engine::SignalEngine engine(scanner, registry, account, orders, orderCap, exposure, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+    EXPECT_EQ(orderCap.checkCalls, 1);
+    EXPECT_EQ(exposure.checkCalls, 0);
+    EXPECT_EQ(orders.marketCalls, 0);
+}
+
+TEST(SignalEngineTest, OrderCapExceptionHonorsFailureMode) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 4200 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    MockOrderCapPort orderCap;
+    orderCap.throwOnCheck = true;
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    orderCap.mode = engine::OrderCapFailureMode::Closed;
+    engine::SignalEngine engineClosed(scanner, registry, account, orders, orderCap, exposure, {});
+    runAwaitable(ioc, engineClosed.processItem(singleWork(strategyPtr)));
+    EXPECT_EQ(orders.marketCalls, 0);
+    EXPECT_EQ(exposure.checkCalls, 0);
+
+    ioc.restart();
+    orderCap.mode = engine::OrderCapFailureMode::Open;
+    engine::SignalEngine engineOpen(scanner, registry, account, orders, orderCap, exposure, {});
+    runAwaitable(ioc, engineOpen.processItem(singleWork(strategyPtr)));
+    EXPECT_EQ(orders.marketCalls, 1);
+    EXPECT_EQ(exposure.checkCalls, 1);
 }
 
 TEST(SignalEngineTest, ExposureExceptionHonorsFailureMode) {
@@ -623,4 +1116,458 @@ TEST(SignalEngineTest, ExposureExceptionHonorsFailureMode) {
     engine::SignalEngine engineOpen(scanner, registry, account, orders, exposure, {});
     runAwaitable(ioc, engineOpen.processItem(singleWork(strategyPtr)));
     EXPECT_EQ(orders.marketCalls, 1);
+}
+
+TEST(SignalEngineTest, GeminiEnforceBlockSkipsOrderPlacement) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 8000 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "1h", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    MockGeminiFilterPort gemini;
+    gemini.nextResult = {
+        .decision = engine::GeminiDecision::Block,
+        .confidence = 0.2,
+        .sentimentScore = 0.3,
+        .visionScore = 0.1,
+        .reason = "blocked by mock",
+        .errorCode = "",
+        .hasError = false,
+    };
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"1h"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    engine::GeminiFilterConfig geminiCfg;
+    geminiCfg.enabled = true;
+    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
+    geminiCfg.maxEvaluationsPerScanCycle = 3;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "1h")));
+
+    EXPECT_EQ(gemini.evaluateCalls, 1);
+    EXPECT_EQ(gemini.lastInterval, "1h");
+    EXPECT_EQ(orders.marketCalls, 0);
+}
+
+TEST(SignalEngineTest, GeminiEnforceBlockWithoutErrorSkipsOrderPlacement) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 9000 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "4h", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    MockGeminiFilterPort gemini;
+    gemini.nextResult = {
+        .decision = engine::GeminiDecision::Block,
+        .confidence = 0.2,
+        .sentimentScore = 0.3,
+        .visionScore = 0.1,
+        .reason = "blocked by model confidence",
+        .errorCode = "",
+        .hasError = false,
+    };
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"4h"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    engine::GeminiFilterConfig geminiCfg;
+    geminiCfg.enabled = true;
+    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
+    geminiCfg.maxEvaluationsPerScanCycle = 3;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "4h")));
+
+    EXPECT_EQ(gemini.evaluateCalls, 1);
+    EXPECT_EQ(orders.marketCalls, 0);
+}
+
+TEST(SignalEngineTest, GeminiEnforceComponentErrorBlocksOrderPlacement) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 9500 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "4h", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    MockGeminiFilterPort gemini;
+    gemini.nextResult = {
+        .decision = engine::GeminiDecision::Block,
+        .confidence = 0.0,
+        .sentimentScore = 0.0,
+        .visionScore = 0.0,
+        .reason = "Gemini component failure",
+        .errorCode = "component_error",
+        .hasError = true,
+    };
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"4h"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    engine::GeminiFilterConfig geminiCfg;
+    geminiCfg.enabled = true;
+    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
+    geminiCfg.blockOnError = true;
+    geminiCfg.maxEvaluationsPerScanCycle = 3;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "4h")));
+
+    EXPECT_EQ(gemini.evaluateCalls, 1);
+    EXPECT_EQ(orders.marketCalls, 0);
+}
+
+TEST(SignalEngineTest, GeminiComponentErrorCanFailOpenWhenConfigured) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 9550 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "4h", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    MockGeminiFilterPort gemini;
+    gemini.nextResult = {
+        .decision = engine::GeminiDecision::Block,
+        .confidence = 0.0,
+        .sentimentScore = 0.0,
+        .visionScore = 0.0,
+        .reason = "Gemini component failure",
+        .errorCode = "component_error",
+        .hasError = true,
+    };
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"4h"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    engine::GeminiFilterConfig geminiCfg;
+    geminiCfg.enabled = true;
+    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
+    geminiCfg.blockOnError = false;
+    geminiCfg.maxEvaluationsPerScanCycle = 3;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "4h")));
+
+    EXPECT_EQ(gemini.evaluateCalls, 1);
+    EXPECT_EQ(orders.marketCalls, 1);
+}
+
+TEST(SignalEngineTest, GeminiBudgetEnforceBlocksBeforeEvaluateByDefault) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 9700 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "30m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    MockGeminiFilterPort gemini;
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"30m"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    engine::GeminiFilterConfig geminiCfg;
+    geminiCfg.enabled = true;
+    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
+    geminiCfg.maxEvaluationsPerScanCycle = 0;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "30m")));
+
+    EXPECT_EQ(gemini.evaluateCalls, 0);
+    EXPECT_EQ(orders.marketCalls, 0);
+}
+
+TEST(SignalEngineTest, GeminiDisabledDoesNotEvaluateAndAllowsOrderPlacement) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 9800 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "30m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    MockGeminiFilterPort gemini;
+    gemini.nextResult = {
+        .decision = engine::GeminiDecision::Block,
+        .confidence = 0.0,
+        .sentimentScore = 0.0,
+        .visionScore = 0.0,
+        .reason = "should not be evaluated",
+        .errorCode = "component_error",
+        .hasError = true,
+    };
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"30m"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    engine::GeminiFilterConfig geminiCfg;
+    geminiCfg.enabled = false;
+    geminiCfg.mode = engine::GeminiFilterMode::Disabled;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "30m")));
+
+    EXPECT_EQ(gemini.evaluateCalls, 0);
+    EXPECT_EQ(orders.marketCalls, 1);
+}
+
+TEST(SignalEngineTest, GeminiBudgetEnforceBlocksBeforeEvaluate) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 10000 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "30m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    MockGeminiFilterPort gemini;
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"30m"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    engine::GeminiFilterConfig geminiCfg;
+    geminiCfg.enabled = true;
+    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
+    geminiCfg.maxEvaluationsPerScanCycle = 0;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "30m")));
+
+    EXPECT_EQ(gemini.evaluateCalls, 0);
+    EXPECT_EQ(orders.marketCalls, 0);
+}
+
+TEST(SignalEngineTest, GeminiBudgetEnforceClosesGateForFollowingItemsInCycle) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT", "ETHUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    scanner.setStep("ETHUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline btc;
+        btc.openTime = 11000 + i;
+        btc.high = 110.0;
+        btc.low = 90.0;
+        btc.close = 100.0;
+        scanner.push("BTCUSDT", "30m", btc);
+
+        Kline eth;
+        eth.openTime = 12000 + i;
+        eth.high = 55.0;
+        eth.low = 45.0;
+        eth.close = 50.0;
+        scanner.push("ETHUSDT", "30m", eth);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    MockGeminiFilterPort gemini;
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"30m"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    engine::GeminiFilterConfig geminiCfg;
+    geminiCfg.enabled = true;
+    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
+    geminiCfg.maxEvaluationsPerScanCycle = 0;
+    geminiCfg.closeGateOnBudgetExhausted = true;
+    engine::SignalEngine signalEngine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
+
+    runAwaitable(ioc, signalEngine.processItem(singleWork(strategyPtr, "30m")));
+    EXPECT_EQ(strategyPtr->evaluateCalls, 1);
+    EXPECT_EQ(gemini.evaluateCalls, 0);
+    EXPECT_EQ(orders.marketCalls, 0);
+
+    ioc.restart();
+    runAwaitable(
+        ioc,
+        signalEngine.processItem(engine::WorkItem{
+            .symbol = "ETHUSDT",
+            .interval = "30m",
+            .strategy = strategyPtr,
+        }));
+
+    EXPECT_EQ(strategyPtr->evaluateCalls, 1);
+    EXPECT_EQ(gemini.evaluateCalls, 0);
+    EXPECT_EQ(orders.marketCalls, 0);
 }

@@ -19,12 +19,12 @@ AccountService::AccountService(RestClient& rest, AccountCompatibilityConfig comp
 
 boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> AccountService::snapshot(AccountSnapshotRequest request) {
     if (request.includeAccountConfig) {
-        co_return std::unexpected(AccountMappingError::Unsupported);
+        co_return std::unexpected(AccountServiceError{AccountMappingError::Unsupported});
     }
 
     auto acc_res = co_await m_rest.account();
     if (!acc_res) {
-        co_return std::unexpected(acc_res.error());
+        co_return std::unexpected(AccountServiceError{acc_res.error()});
     }
 
     AccountSnapshot snapshot;
@@ -39,11 +39,12 @@ boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> AccountService::sn
             snapshot.balances = std::move(*bal_res);
             snapshot.completeness = AccountSnapshotCompleteness::AccountAndBalance;
         } else {
-            co_return std::unexpected(bal_res.error());
+            co_return std::unexpected(AccountServiceError{bal_res.error()});
         }
     }
 
-    if (request.includePositions) {
+    const bool includePositions = request.includePositions || request.positionFilter.has_value();
+    if (includePositions) {
         auto pos_res = co_await m_rest.positions(request.positionFilter);
         if (pos_res) {
             snapshot.positions = std::move(*pos_res);
@@ -53,7 +54,7 @@ boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> AccountService::sn
                 snapshot.completeness = AccountSnapshotCompleteness::AccountAndPositions;
             }
         } else {
-            co_return std::unexpected(pos_res.error());
+            co_return std::unexpected(AccountServiceError{pos_res.error()});
         }
     }
 
@@ -61,18 +62,15 @@ boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> AccountService::sn
 }
 
 boost::asio::awaitable<AccountServiceResult<MarginCheckResult>> AccountService::checkFreeMargin(MarginCheckDraft draft) {
-    // Phase C stub: return success with Unavailable completeness
-    MarginCheckResult result;
-    result.symbol = std::move(draft.symbol);
-    result.side = draft.side;
-    result.quantity = draft.quantity;
-    result.completeness = MarginCheckCompleteness::Unavailable;
-    co_return result;
+    (void)draft;
+    // Phase C stub: keep failure contract explicit until real implementation is available.
+    co_return std::unexpected(AccountServiceError{AccountMappingError::Unsupported});
 }
 
 boost::asio::awaitable<AccountServiceResult<LiquidationRiskView>> AccountService::liquidationRisk(std::optional<std::string> symbol) {
+    (void)symbol;
     // Phase C stub: return Unsupported mapping error
-    co_return std::unexpected(AccountMappingError::Unsupported);
+    co_return std::unexpected(AccountServiceError{AccountMappingError::Unsupported});
 }
 
 } // namespace account

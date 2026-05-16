@@ -48,3 +48,13 @@ TEST(StrategyInterfaceTest, RegistryFiltersByInterval) {
     EXPECT_EQ(by30[0]->config().name, "b");
 }
 
+TEST(StrategyInterfaceTest, RegistryIgnoresNullStrategies) {
+    strategy::StrategyRegistry registry;
+
+    registry.add(nullptr);
+    registry.addShared(nullptr);
+
+    EXPECT_TRUE(registry.all().empty());
+    EXPECT_TRUE(registry.forInterval("1h").empty());
+}
+

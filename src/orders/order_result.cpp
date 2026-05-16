@@ -1,4 +1,6 @@
 #include "orders/order_result.h"
+#include "orders/order_result.h"
+
 #include <algorithm>
 #include <sstream>
 
@@ -56,8 +58,11 @@ std::string formatOrderView(const OrderView& view, bool includeMetadata) {
             if (view.metadata->strategyTag) {
                 out << " tag=\"" << *view.metadata->strategyTag << "\"";
             }
+            if (view.metadata->timeframe) {
+                out << " tf=\"" << *view.metadata->timeframe << "\"";
+            }
         } else {
-            if (view.metadata->comment || view.metadata->strategyTag) {
+            if (view.metadata->comment || view.metadata->strategyTag || view.metadata->timeframe) {
                 out << " metadata=[REDACTED]";
             }
         }

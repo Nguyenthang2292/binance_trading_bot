@@ -1,5 +1,6 @@
 #include "engine/signal_engine.h"
 
+#include "engine/price_filter.h"
 #include "engine/sizing_policy.h"
 #include "logger.h"
 
@@ -10,11 +11,14 @@
 #include <boost/asio/use_awaitable.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <exception>
+#include <future>
 #include <iomanip>
 #include <sstream>
 #include <type_traits>
+#include <unordered_map>
 
 namespace engine {
 
@@ -50,7 +54,242 @@ OrderSide closeSide(strategy::Signal::Direction direction) {
     return direction == strategy::Signal::Direction::Long ? OrderSide::Sell : OrderSide::Buy;
 }
 
+std::string directionToString(strategy::Signal::Direction direction) {
+    switch (direction) {
+        case strategy::Signal::Direction::Long:
+            return "Long";
+        case strategy::Signal::Direction::Short:
+            return "Short";
+        case strategy::Signal::Direction::None:
+            return "None";
+    }
+    return "None";
+}
+
+std::string geminiDecisionToString(GeminiDecision decision) {
+    return decision == GeminiDecision::Allow ? "Allow" : "Block";
+}
+
+bool shouldBlockGeminiError(const GeminiFilterConfig& config, const GeminiFilterResult& result) {
+    return config.blockOnError && (result.hasError || !result.errorCode.empty());
+}
+
+bool isQuotaExhaustedGeminiError(const GeminiFilterResult& result) {
+    if (result.errorCode == "quota_exhausted") {
+        return true;
+    }
+    std::string lowered = result.reason;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return lowered.find("resource_exhausted") != std::string::npos ||
+        lowered.find("rate limit") != std::string::npos ||
+        lowered.find("quota") != std::string::npos;
+}
+
+NoOpGeminiFilterPort& defaultGeminiPort() {
+    static NoOpGeminiFilterPort port;
+    return port;
+}
+
+NoOpOrderCapPort& defaultOrderCapPort() {
+    static NoOpOrderCapPort port;
+    return port;
+}
+
+std::string fmt6(double value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(6) << value;
+    return out.str();
+}
+
+std::string quoteString(std::string_view value) {
+    std::ostringstream out;
+    out << std::quoted(std::string(value));
+    return out.str();
+}
+
+std::optional<OrderMetadata> buildOrderMetadata(
+    std::string_view strategyName,
+    std::string_view signalInterval,
+    std::string_view signalReason) {
+    OrderMetadata metadata;
+    if (!strategyName.empty()) {
+        metadata.strategyTag = std::string(strategyName);
+    }
+    if (!signalInterval.empty()) {
+        metadata.timeframe = std::string(signalInterval);
+    }
+    if (!signalInterval.empty() || !signalReason.empty()) {
+        std::string comment;
+        if (!signalInterval.empty()) {
+            comment = "tf=" + std::string(signalInterval);
+        }
+        if (!signalReason.empty()) {
+            if (!comment.empty()) {
+                comment += " ";
+            }
+            comment += "reason=" + std::string(signalReason);
+        }
+        metadata.comment = std::move(comment);
+    }
+    if (!metadata.strategyTag.has_value() && !metadata.timeframe.has_value() && !metadata.comment.has_value()) {
+        return std::nullopt;
+    }
+    return metadata;
+}
+
 } // namespace
+
+bool SignalEngine::shouldSkipForClosedGeminiGate() const {
+    return m_geminiConfig.enabled &&
+        m_geminiConfig.mode == GeminiFilterMode::Enforce &&
+        m_geminiCycleGate.closed;
+}
+
+void SignalEngine::closeGeminiGateForCycle(std::string reason, std::string_view symbol, std::string_view tf) {
+    if (m_geminiCycleGate.closed) {
+        return;
+    }
+    m_geminiCycleGate.closed = true;
+    m_geminiCycleGate.reason = std::move(reason);
+    m_geminiCycleGate.firstSymbol = std::string(symbol);
+    m_geminiCycleGate.firstTf = std::string(tf);
+    Logger::instance().log(
+        LogLevel::Warning,
+        "gemini gate closed for cycle reason=" + quoteString(m_geminiCycleGate.reason) +
+            " first_symbol=" + m_geminiCycleGate.firstSymbol +
+            " first_tf=" + m_geminiCycleGate.firstTf +
+            " policy=fail_closed");
+}
+
+std::string SignalEngine::accountErrorToString(const account::AccountServiceError& error) {
+    return std::visit(
+        [](const auto& err) -> std::string {
+            using T = std::decay_t<decltype(err)>;
+            if constexpr (std::is_same_v<T, BinanceError>) {
+                return err.toString();
+            } else {
+                return "mapping_error=" + std::to_string(static_cast<int>(err));
+            }
+        },
+        error);
+}
+
+bool SignalEngine::isFlatPositionQty(double quantity) {
+    return std::abs(quantity) <= 1e-10;
+}
+
+boost::asio::awaitable<std::optional<double>> SignalEngine::livePositionQuantity(std::string_view symbol) {
+    account::AccountSnapshotRequest request;
+    request.includePositions = true;
+    request.positionFilter = std::string(symbol);
+    const auto snapshotResult = co_await m_account.snapshot(request);
+    if (!snapshotResult) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "position snapshot failed symbol=" + std::string(symbol) +
+                " reason=" + quoteString(accountErrorToString(snapshotResult.error())));
+        co_return std::nullopt;
+    }
+
+    double netQty = 0.0;
+    if (snapshotResult->positions.has_value()) {
+        for (const auto& position : *snapshotResult->positions) {
+            if (position.symbol == symbol) {
+                netQty += position.positionAmt;
+            }
+        }
+        co_return std::abs(netQty);
+    }
+
+    for (const auto& position : snapshotResult->account.positions) {
+        if (position.symbol == symbol) {
+            netQty += position.positionAmt;
+        }
+    }
+    co_return std::abs(netQty);
+}
+
+boost::asio::awaitable<GeminiFilterResult> SignalEngine::evaluateGeminiNonBlocking(
+    std::string symbol,
+    strategy::Signal::Direction direction,
+    std::string signalInterval) {
+    auto evalFuture = std::async(
+        std::launch::async,
+        [this, symbol = std::move(symbol), direction, signalInterval = std::move(signalInterval)]() {
+            return m_geminiFilter.evaluate(symbol, direction, signalInterval, m_scanner.cache());
+        });
+
+    boost::asio::steady_timer waitTimer(m_scanner.ioContext());
+    while (evalFuture.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+        waitTimer.expires_after(std::chrono::milliseconds(25));
+        boost::system::error_code ec;
+        co_await waitTimer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+    }
+
+    co_return evalFuture.get();
+}
+
+SignalEngine::SignalEngine(
+    IScannerPort& scanner,
+    strategy::StrategyRegistry& registry,
+    IAccountPort& account,
+    IOrdersPort& orders,
+    IOrderCapPort& orderCap,
+    IExposurePort& exposure,
+    IGeminiFilterPort& geminiFilter,
+    GeminiFilterConfig geminiConfig,
+    Config config)
+    : m_scanner(scanner),
+      m_registry(registry),
+      m_account(account),
+      m_orders(orders),
+      m_orderCap(orderCap),
+      m_exposure(exposure),
+      m_geminiFilter(geminiFilter),
+      m_geminiConfig(std::move(geminiConfig)),
+      m_config(config),
+      m_scanSleepTimer(m_scanner.ioContext()),
+      m_timeExitTimer(m_scanner.ioContext()),
+      m_trailingTimer(m_scanner.ioContext()) {}
+
+SignalEngine::SignalEngine(
+    IScannerPort& scanner,
+    strategy::StrategyRegistry& registry,
+    IAccountPort& account,
+    IOrdersPort& orders,
+    IExposurePort& exposure,
+    IGeminiFilterPort& geminiFilter,
+    GeminiFilterConfig geminiConfig,
+    Config config)
+    : SignalEngine(
+          scanner,
+          registry,
+          account,
+          orders,
+          defaultOrderCapPort(),
+          exposure,
+          geminiFilter,
+          std::move(geminiConfig),
+          config) {}
+
+SignalEngine::SignalEngine(
+    IScannerPort& scanner,
+    strategy::StrategyRegistry& registry,
+    IAccountPort& account,
+    IOrdersPort& orders,
+    IOrderCapPort& orderCap,
+    IExposurePort& exposure,
+    Config config)
+    : SignalEngine(
+          scanner,
+          registry,
+          account,
+          orders,
+          orderCap,
+          exposure,
+          defaultGeminiPort(),
+          GeminiFilterConfig{.enabled = false, .mode = GeminiFilterMode::Disabled},
+          config) {}
 
 SignalEngine::SignalEngine(
     IScannerPort& scanner,
@@ -59,12 +298,16 @@ SignalEngine::SignalEngine(
     IOrdersPort& orders,
     IExposurePort& exposure,
     Config config)
-    : m_scanner(scanner),
-      m_registry(registry),
-      m_account(account),
-      m_orders(orders),
-      m_exposure(exposure),
-      m_config(config) {}
+    : SignalEngine(
+          scanner,
+          registry,
+          account,
+          orders,
+          defaultOrderCapPort(),
+          exposure,
+          defaultGeminiPort(),
+          GeminiFilterConfig{.enabled = false, .mode = GeminiFilterMode::Disabled},
+          config) {}
 
 boost::asio::awaitable<void> SignalEngine::run() {
     if (m_running.exchange(true)) {
@@ -123,17 +366,45 @@ boost::asio::awaitable<void> SignalEngine::run() {
 
 void SignalEngine::stop() {
     m_running = false;
+    boost::system::error_code ec;
+    m_scanSleepTimer.cancel(ec);
+    m_timeExitTimer.cancel(ec);
+    m_trailingTimer.cancel(ec);
 }
 
 boost::asio::awaitable<void> SignalEngine::runScanCycle() {
     const auto symbols = m_scanner.symbols();
+    const auto allStrategies = m_registry.all();
     const auto queue = WorkQueue::build(symbols, m_registry);
+    m_geminiEvaluationsThisCycle = 0;
+    m_geminiCycleGate = {};
+
+    if (!symbols.empty() && allStrategies.size() > symbols.size()) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "strategy scheduling warning policy=zip_strategy_symbol skipped_strategies=" +
+                std::to_string(allStrategies.size() - symbols.size()) +
+                " symbols=" + std::to_string(symbols.size()) +
+                " strategies=" + std::to_string(allStrategies.size()) +
+                " reason=\"strategies exceed symbols\"");
+    }
 
     for (const auto& item : queue) {
         if (!m_running) {
             co_return;
         }
+        if (shouldSkipForClosedGeminiGate()) {
+            ++m_geminiCycleGate.skippedItems;
+            continue;
+        }
         co_await processItem(item);
+    }
+
+    if (m_geminiCycleGate.closed) {
+        Logger::instance().log(
+            LogLevel::Info,
+            "gemini gate cycle summary closed=true reason=" + quoteString(m_geminiCycleGate.reason) +
+                " skipped_items=" + std::to_string(m_geminiCycleGate.skippedItems));
     }
 
     co_await logExposureMetrics();
@@ -142,7 +413,6 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
         m_scanCycleStatusCb(static_cast<int>(queue.size()), static_cast<int>(m_tracker.all().size()));
     }
     std::chrono::seconds minScanInterval{3600};
-    const auto allStrategies = m_registry.all();
     if (allStrategies.empty()) {
         minScanInterval = std::chrono::seconds{60};
     } else {
@@ -151,20 +421,20 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
         }
     }
 
-    boost::asio::steady_timer timer(m_scanner.ioContext());
-    timer.expires_after(minScanInterval);
+    m_scanSleepTimer.expires_after(minScanInterval);
     boost::system::error_code ec;
-    co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+    co_await m_scanSleepTimer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
     if (ec) {
         co_return;
     }
 }
 
 boost::asio::awaitable<void> SignalEngine::processItem(const WorkItem& item) {
-    if (!item.strategy) {
+    if (shouldSkipForClosedGeminiGate()) {
+        ++m_geminiCycleGate.skippedItems;
         co_return;
     }
-    if (m_tracker.has(item.symbol)) {
+    if (!item.strategy) {
         co_return;
     }
 
@@ -206,17 +476,40 @@ boost::asio::awaitable<void> SignalEngine::processItem(const WorkItem& item) {
         co_return;
     }
 
-    (void)co_await openPosition(item.symbol, signal.direction, atr, currentPrice, cfg);
+    Logger::instance().log(
+        LogLevel::Info,
+        "strategy candidate signal strategy=" + quoteString(cfg.name) +
+            " tf=" + item.interval +
+            " symbol=" + item.symbol +
+            " direction=" + directionToString(signal.direction) +
+            " confidence=" + fmt2(signal.confidence) +
+            " atr=" + fmt6(atr) +
+            " reason=" + quoteString(signal.reason));
+
+    if (m_tracker.has(item.symbol)) {
+        Logger::instance().log(
+            LogLevel::Info,
+            "signal skipped strategy=" + quoteString(cfg.name) +
+                " tf=" + item.interval +
+                " symbol=" + item.symbol +
+                " reason=" + quoteString("position already tracked"));
+        co_return;
+    }
+
+    (void)co_await openPosition(item.symbol, item.interval, signal.direction, atr, currentPrice, cfg, signal.reason);
 }
 
 boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     std::string_view symbol,
+    std::string_view signalInterval,
     strategy::Signal::Direction direction,
     double atr,
     double currentPrice,
-    const strategy::StrategyConfig& cfg) {
+    const strategy::StrategyConfig& cfg,
+    std::string_view signalReason) {
     const auto symbolMeta = m_scanner.symbolInfo(symbol);
     const double stepSize = symbolMeta.has_value() && symbolMeta->stepSize > 0.0 ? symbolMeta->stepSize : 0.001;
+    const double tickSize = symbolMeta.has_value() ? symbolMeta->tickSize : 0.0;
     account::AccountSnapshot snapshot;
     double balance = 0.0;
     account::AccountSnapshotRequest request;
@@ -233,12 +526,59 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             .atr = atr,
             .riskPct = cfg.riskPct,
             .slMultiplier = cfg.slMultiplier,
-            .minNotional = std::max(cfg.minNotional, m_config.minNotional),
+            .minNotional = std::max(
+                {cfg.minNotional,
+                 m_config.minNotional,
+                 symbolMeta.has_value() ? symbolMeta->minNotional : 0.0}),
+            .maxNotional = m_config.maxPositionNotionalXAvailableBalance > 0.0
+                ? balance * m_config.maxPositionNotionalXAvailableBalance
+                : 0.0,
         },
         currentPrice,
         stepSize);
+    if (size.quantity <= 0.0 && m_config.maxPositionNotionalXAvailableBalance > 0.0) {
+        const double configuredMinNotional = std::max(
+            {cfg.minNotional, m_config.minNotional, symbolMeta.has_value() ? symbolMeta->minNotional : 0.0});
+        const double configuredMaxNotional = balance * m_config.maxPositionNotionalXAvailableBalance;
+        if (configuredMaxNotional > 0.0 && configuredMaxNotional < configuredMinNotional) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "sizing config inversion symbol=" + std::string(symbol) +
+                    " min_notional=" + fmt2(configuredMinNotional) +
+                    " max_notional=" + fmt2(configuredMaxNotional) +
+                    " action=skip");
+        }
+    }
     if (size.quantity <= 0.0) {
         co_return std::unexpected(BinanceError::fromApiResponse(-91000, "quantity is zero after sizing"));
+    }
+
+    OrderCapResult orderCapResult;
+    try {
+        orderCapResult = m_orderCap.check(size.notional, snapshot, m_tracker);
+    } catch (const std::exception& e) {
+        Logger::instance().log(
+            LogLevel::Error,
+            "order cap check exception symbol=" + std::string(symbol) + " reason=" + e.what());
+        if (m_orderCap.failureMode() == OrderCapFailureMode::Closed) {
+            co_return Result<void>{};
+        }
+        orderCapResult = {OrderCapDecision::Allow, "order cap check failed fail-open"};
+    } catch (...) {
+        Logger::instance().log(
+            LogLevel::Error,
+            "order cap check unknown exception symbol=" + std::string(symbol));
+        if (m_orderCap.failureMode() == OrderCapFailureMode::Closed) {
+            co_return Result<void>{};
+        }
+        orderCapResult = {OrderCapDecision::Allow, "order cap check failed fail-open"};
+    }
+
+    if (orderCapResult.decision == OrderCapDecision::Block) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "order cap blocked symbol=" + std::string(symbol) + " reason=" + orderCapResult.reason);
+        co_return Result<void>{};
     }
 
     ExposureCheckResult exposureResult;
@@ -295,22 +635,132 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         }
     }
 
-    const auto qty = toDecimal(size.quantity);
+    if (m_geminiConfig.enabled && m_geminiConfig.mode != GeminiFilterMode::Disabled) {
+        if (m_geminiEvaluationsThisCycle >= m_geminiConfig.maxEvaluationsPerScanCycle) {
+            if (m_geminiConfig.mode == GeminiFilterMode::Enforce || m_geminiConfig.blockOnBudgetExhausted) {
+                if (m_geminiConfig.mode == GeminiFilterMode::Enforce && m_geminiConfig.closeGateOnBudgetExhausted) {
+                    closeGeminiGateForCycle("budget_exhausted", symbol, signalInterval);
+                }
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "gemini budget exhausted symbol=" + std::string(symbol) + " tf=" + std::string(signalInterval) +
+                        " decision=Block");
+                co_return Result<void>{};
+            }
+            Logger::instance().log(
+                LogLevel::Info,
+                "gemini budget exhausted symbol=" + std::string(symbol) + " tf=" + std::string(signalInterval) +
+                    " policy=allow");
+        } else {
+            ++m_geminiEvaluationsThisCycle;
+            Logger::instance().log(
+                LogLevel::Info,
+                "gemini evaluation requested symbol=" + std::string(symbol) +
+                    " tf=" + std::string(signalInterval) +
+                    " mode=enforce" +
+                    " budget_used=" + std::to_string(m_geminiEvaluationsThisCycle) +
+                    "/" + std::to_string(m_geminiConfig.maxEvaluationsPerScanCycle));
+            GeminiFilterResult geminiResult;
+            try {
+                geminiResult = co_await evaluateGeminiNonBlocking(
+                    std::string(symbol),
+                    direction,
+                    std::string(signalInterval));
+            } catch (const std::exception& e) {
+                geminiResult = {
+                    .decision = GeminiDecision::Block,
+                    .confidence = 0.0,
+                    .sentimentScore = 0.0,
+                    .visionScore = 0.0,
+                    .reason = std::string("gemini evaluate exception: ") + e.what(),
+                    .errorCode = "evaluate_exception",
+                    .hasError = true,
+                };
+            } catch (...) {
+                geminiResult = {
+                    .decision = GeminiDecision::Block,
+                    .confidence = 0.0,
+                    .sentimentScore = 0.0,
+                    .visionScore = 0.0,
+                    .reason = "gemini evaluate unknown exception",
+                    .errorCode = "evaluate_unknown_exception",
+                    .hasError = true,
+                };
+            }
+
+            const bool geminiHasError = geminiResult.hasError || !geminiResult.errorCode.empty();
+            if (geminiHasError) {
+                if (m_geminiConfig.mode == GeminiFilterMode::Enforce &&
+                    m_geminiConfig.closeGateOnQuotaExhausted &&
+                    isQuotaExhaustedGeminiError(geminiResult)) {
+                    closeGeminiGateForCycle("quota_exhausted", symbol, signalInterval);
+                }
+                if (shouldBlockGeminiError(m_geminiConfig, geminiResult)) {
+                    Logger::instance().log(
+                        LogLevel::Warning,
+                        "gemini error blocked symbol=" + std::string(symbol) +
+                            " tf=" + std::string(signalInterval) +
+                            " error_code=" + quoteString(geminiResult.errorCode) +
+                            " reason=" + quoteString(geminiResult.reason));
+                    co_return Result<void>{};
+                }
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "gemini error allowed by policy symbol=" + std::string(symbol) +
+                        " tf=" + std::string(signalInterval) +
+                        " error_code=" + quoteString(geminiResult.errorCode) +
+                        " reason=" + quoteString(geminiResult.reason));
+            } else if (geminiResult.decision == GeminiDecision::Block) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "gemini blocked symbol=" + std::string(symbol) +
+                        " tf=" + std::string(signalInterval) +
+                        " confidence=" + fmt2(geminiResult.confidence) +
+                        " reason=" + quoteString(geminiResult.reason));
+                co_return Result<void>{};
+            }
+        }
+    }
+
+    const auto qty = quantityToStepDecimal(size.quantity, stepSize);
     if (!qty) {
         co_return std::unexpected(BinanceError::fromParse("invalid quantity decimal"));
     }
 
+    if (!m_tracker.reserve(std::string(symbol))) {
+        Logger::instance().log(
+            LogLevel::Info,
+            "signal skipped strategy=" + quoteString(cfg.name) +
+                " tf=" + std::string(signalInterval) +
+                " symbol=" + std::string(symbol) +
+                " reason=" + quoteString("position already tracked"));
+        co_return Result<void>{};
+    }
+
+    Logger::instance().log(
+        LogLevel::Info,
+        "opening position strategy=" + quoteString(cfg.name) +
+            " tf=" + std::string(signalInterval) +
+            " symbol=" + std::string(symbol) +
+            " side=" + (direction == strategy::Signal::Direction::Long ? "BUY" : "SELL") +
+            " qty=" + std::string(qty->value()) +
+            " notional=" + fmt2(size.notional));
+
+    const auto metadata = buildOrderMetadata(cfg.name, signalInterval, signalReason);
     const auto side = openSide(direction);
     auto marketResult = co_await m_orders.market(MarketOrderDraft{
         .symbol = std::string(symbol),
         .side = side,
         .quantity = *qty,
         .positionSide = PositionSide::Both,
+        .metadata = metadata,
     });
     if (!marketResult) {
+        m_tracker.remove(symbol);
         co_return std::unexpected(marketResult.error());
     }
     if (marketResult->state != PlacementState::Accepted) {
+        m_tracker.remove(symbol);
         co_return std::unexpected(BinanceError::fromApiResponse(
             marketResult->binanceCode.value_or(-91001),
             marketResult->binanceMessage.value_or("market placement rejected")));
@@ -332,7 +782,10 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     const double tpPriceValue = direction == strategy::Signal::Direction::Long
         ? entryPrice + (atr * cfg.tpMultiplier)
         : entryPrice - (atr * cfg.tpMultiplier);
-    const auto tpPrice = toDecimal(tpPriceValue);
+    const auto tpRounding = direction == strategy::Signal::Direction::Long
+        ? PriceRounding::Down
+        : PriceRounding::Up;
+    const auto tpPrice = priceToTickDecimal(tpPriceValue, tickSize, tpRounding);
     if (!tpPrice) {
         co_return std::unexpected(BinanceError::fromParse("invalid tp decimal"));
     }
@@ -350,7 +803,38 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         .positionSide = PositionSide::Both,
         .reduceOnly = true,
         .clientOrderId = tpClientOrderId,
+        .metadata = metadata,
     });
+    if (!tpResult || tpResult->state != PlacementState::Accepted) {
+        if (tpResult) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "take-profit placement rejected symbol=" + std::string(symbol) +
+                    " state=" + std::to_string(static_cast<int>(tpResult->state)) +
+                    " code=" + std::to_string(tpResult->binanceCode.value_or(-1)) +
+                    " message=" + quoteString(tpResult->binanceMessage.value_or("unknown")));
+        } else {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "take-profit placement failed symbol=" + std::string(symbol) +
+                    " error=" + quoteString(tpResult.error().toString()));
+        }
+
+        if (qty) {
+            (void)co_await m_orders.closeByMarket(CloseByMarketDraft{
+                std::string(symbol),
+                close,
+                *qty,
+            });
+        }
+        m_tracker.remove(symbol);
+        if (tpResult) {
+            co_return std::unexpected(BinanceError::fromApiResponse(
+                tpResult->binanceCode.value_or(-91002),
+                tpResult->binanceMessage.value_or("take-profit placement rejected")));
+        }
+        co_return std::unexpected(tpResult.error());
+    }
     std::optional<NormalPlacementResult> slResult;
     double initialStopLevel = 0.0;
     if (m_config.placeStopLoss) {
@@ -358,7 +842,10 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             ? entryPrice - (atr * cfg.slMultiplier)
             : entryPrice + (atr * cfg.slMultiplier);
         initialStopLevel = slPriceValue;
-        const auto slPrice = toDecimal(slPriceValue);
+        const auto slRounding = direction == strategy::Signal::Direction::Long
+            ? PriceRounding::Up
+            : PriceRounding::Down;
+        const auto slPrice = priceToTickDecimal(slPriceValue, tickSize, slRounding);
         if (!slPrice) {
             co_return std::unexpected(BinanceError::fromParse("invalid sl decimal"));
         }
@@ -371,9 +858,15 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             .triggerPrice = *slPrice,
             .closeQuantity = *qty,
             .clientAlgoId = slClientOrderId,
+            .metadata = metadata,
         });
         if (protectionResult) {
             slResult = *protectionResult;
+        } else {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "stop-loss placement failed symbol=" + std::string(symbol) +
+                    " error=" + quoteString(protectionResult.error().toString()));
         }
     }
 
@@ -384,22 +877,41 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     tracked.maxHoldDuration = cfg.maxHoldDuration;
     tracked.entryPrice = entryPrice;
     tracked.quantity = size.quantity;
+    tracked.strategyName = cfg.name;
+    tracked.signalInterval = std::string(signalInterval);
+    tracked.signalReason = std::string(signalReason);
     tracked.tpClientOrderId = tpClientOrderId;
     tracked.slClientOrderId = slClientOrderId;
     tracked.trailingEnabled = cfg.trailingStop.enabled;
-    tracked.trailingInterval = cfg.trailingStop.interval.empty()
-        ? (cfg.intervals.empty() ? std::string{} : cfg.intervals.front())
-        : cfg.trailingStop.interval;
+    tracked.trailingInterval = signalInterval.empty()
+        ? (cfg.trailingStop.interval.empty()
+              ? (cfg.intervals.empty() ? std::string{} : cfg.intervals.front())
+              : cfg.trailingStop.interval)
+        : std::string(signalInterval);
     tracked.trailingCandles = cfg.trailingStop.candles;
     tracked.trailingCheckInterval = cfg.trailingStop.checkInterval;
     tracked.currentTrailLevel = initialStopLevel;
-    if (tpResult && tpResult->orderId.has_value()) {
+    if (tpResult->orderId.has_value()) {
         tracked.tpOrderId = *tpResult->orderId;
     }
     if (slResult && slResult->orderId.has_value()) {
         tracked.slOrderId = *slResult->orderId;
     }
-    m_tracker.add(std::move(tracked));
+    if (!m_tracker.commitReserved(symbol, std::move(tracked))) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "tracked position commit failed symbol=" + std::string(symbol) +
+                " reason=" + quoteString("tracker state changed during open"));
+        if (qty) {
+            (void)co_await m_orders.closeByMarket(CloseByMarketDraft{
+                std::string(symbol),
+                close,
+                *qty,
+            });
+        }
+        m_tracker.remove(symbol);
+        co_return Result<void>{};
+    }
     co_return Result<void>{};
 }
 
@@ -443,11 +955,10 @@ boost::asio::awaitable<void> SignalEngine::logExposureMetrics() {
 }
 
 boost::asio::awaitable<void> SignalEngine::monitorTimeExit() {
-    boost::asio::steady_timer timer(m_scanner.ioContext());
     while (m_running) {
-        timer.expires_after(m_config.positionCheckInterval);
+        m_timeExitTimer.expires_after(m_config.positionCheckInterval);
         boost::system::error_code ec;
-        co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+        co_await m_timeExitTimer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
         if (ec) {
             co_return;
         }
@@ -455,12 +966,49 @@ boost::asio::awaitable<void> SignalEngine::monitorTimeExit() {
             co_return;
         }
 
+        co_await reconcileTrackedPositions();
         co_await processExpiredPositions(std::chrono::system_clock::now());
     }
 }
 
+boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions() {
+    account::AccountSnapshotRequest request;
+    request.includePositions = true;
+    const auto snapshotResult = co_await m_account.snapshot(request);
+    if (!snapshotResult) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "tracker reconciliation snapshot failed reason=" + quoteString(accountErrorToString(snapshotResult.error())));
+        co_return;
+    }
+
+    std::unordered_map<std::string, double> liveQtyBySymbol;
+    auto collectLive = [&liveQtyBySymbol](const std::vector<Position>& positions) {
+        for (const auto& position : positions) {
+            liveQtyBySymbol[position.symbol] += std::abs(position.positionAmt);
+        }
+    };
+    if (snapshotResult->positions.has_value()) {
+        collectLive(*snapshotResult->positions);
+    } else {
+        collectLive(snapshotResult->account.positions);
+    }
+
+    for (const auto& tracked : m_tracker.all()) {
+        const auto it = liveQtyBySymbol.find(tracked.symbol);
+        const double liveQty = it != liveQtyBySymbol.end() ? it->second : 0.0;
+        if (!isFlatPositionQty(liveQty)) {
+            continue;
+        }
+        if (m_tracker.removeIfOpenedAt(tracked.symbol, tracked.openedAt)) {
+            Logger::instance().log(
+                LogLevel::Info,
+                "tracker reconciliation removed stale symbol=" + tracked.symbol);
+        }
+    }
+}
+
 boost::asio::awaitable<void> SignalEngine::monitorTrailingStops() {
-    boost::asio::steady_timer timer(m_scanner.ioContext());
     while (m_running) {
         const auto interval = m_config.trailingCheckInterval.count() > 0
             ? m_config.trailingCheckInterval
@@ -471,9 +1019,9 @@ boost::asio::awaitable<void> SignalEngine::monitorTrailingStops() {
                 wakeInterval = std::min(wakeInterval, pos.trailingCheckInterval);
             }
         }
-        timer.expires_after(wakeInterval);
+        m_trailingTimer.expires_after(wakeInterval);
         boost::system::error_code ec;
-        co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+        co_await m_trailingTimer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
         if (ec) {
             co_return;
         }
@@ -488,56 +1036,92 @@ boost::asio::awaitable<void> SignalEngine::monitorTrailingStops() {
 boost::asio::awaitable<void> SignalEngine::processExpiredPositions(std::chrono::system_clock::time_point now) {
     const auto expired = m_tracker.expired(now);
     for (const auto& pos : expired) {
+        const auto currentTracked = m_tracker.bySymbol(pos.symbol);
+        if (!currentTracked.has_value() || currentTracked->openedAt != pos.openedAt) {
+            continue;
+        }
+
+        const auto liveQty = co_await livePositionQuantity(pos.symbol);
+        if (liveQty.has_value() && isFlatPositionQty(*liveQty)) {
+            (void)m_tracker.removeIfOpenedAt(pos.symbol, pos.openedAt);
+            continue;
+        }
+
+        bool tpCancelOk = true;
         if (pos.tpOrderId > 0) {
-            (void)co_await m_orders.cancelNormalByOrderId(pos.symbol, pos.tpOrderId);
+            auto cancelTp = co_await m_orders.cancelNormalByOrderId(pos.symbol, pos.tpOrderId);
+            tpCancelOk = cancelTp.has_value();
         } else if (!pos.tpClientOrderId.empty()) {
-            (void)co_await m_orders.cancelNormalByClientOrderId(pos.symbol, pos.tpClientOrderId);
+            auto cancelTp = co_await m_orders.cancelNormalByClientOrderId(pos.symbol, pos.tpClientOrderId);
+            tpCancelOk = cancelTp.has_value();
         }
 
+        if (!tpCancelOk) {
+            if (liveQty.has_value() && isFlatPositionQty(*liveQty)) {
+                (void)m_tracker.removeIfOpenedAt(pos.symbol, pos.openedAt);
+                continue;
+            }
+            Logger::instance().log(
+                LogLevel::Warning,
+                "time-exit skipped close because TP cancel failed symbol=" + pos.symbol);
+            continue;
+        }
+
+        bool slCancelOk = true;
         if (pos.slOrderId > 0) {
-            (void)co_await m_orders.cancelAlgoByAlgoId(pos.symbol, pos.slOrderId);
+            auto cancelSl = co_await m_orders.cancelAlgoByAlgoId(pos.symbol, pos.slOrderId);
+            slCancelOk = cancelSl.has_value();
         } else if (!pos.slClientOrderId.empty()) {
-            (void)co_await m_orders.cancelAlgoByClientAlgoId(pos.symbol, pos.slClientOrderId);
+            auto cancelSl = co_await m_orders.cancelAlgoByClientAlgoId(pos.symbol, pos.slClientOrderId);
+            slCancelOk = cancelSl.has_value();
+        }
+        if (!slCancelOk) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "time-exit stop cancel failed symbol=" + pos.symbol);
+            continue;
         }
 
-        const auto qty = toDecimal(pos.quantity);
+        const double closeQty = liveQty.has_value() && *liveQty > 0.0 ? *liveQty : pos.quantity;
+        const auto qty = toDecimal(closeQty);
+        bool closeSucceeded = false;
         if (qty) {
-            (void)co_await m_orders.closeByMarket(
+            auto closeResult = co_await m_orders.closeByMarket(
                 CloseByMarketDraft{pos.symbol, closeSide(pos.direction), *qty});
+            closeSucceeded = closeResult.has_value();
         }
 
-        m_tracker.remove(pos.symbol);
+        if (closeSucceeded || (liveQty.has_value() && isFlatPositionQty(*liveQty))) {
+            (void)m_tracker.removeIfOpenedAt(pos.symbol, pos.openedAt);
+        } else {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "time-exit close failed symbol=" + pos.symbol);
+        }
     }
 }
 
 boost::asio::awaitable<void> SignalEngine::processTrailingStops() {
     const auto positions = m_tracker.all();
     for (const auto& pos : positions) {
+        const auto latest = m_tracker.bySymbol(pos.symbol);
+        if (!latest.has_value() || latest->openedAt != pos.openedAt) {
+            continue;
+        }
+
         const auto decision = m_trailingStops.evaluate(pos, m_scanner.cache());
         if (!decision) {
             continue;
         }
 
         bool knownStop = false;
-        bool cancelSucceeded = false;
+        bool canCancelOldAfterReplacement = false;
         if (pos.slOrderId > 0) {
             knownStop = true;
-            auto cancel = co_await m_orders.cancelAlgoByAlgoId(pos.symbol, pos.slOrderId);
-            cancelSucceeded = cancel.has_value();
+            canCancelOldAfterReplacement = true;
         } else if (!pos.slClientOrderId.empty()) {
             knownStop = true;
-            auto cancel = co_await m_orders.cancelAlgoByClientAlgoId(pos.symbol, pos.slClientOrderId);
-            cancelSucceeded = cancel.has_value();
-        }
-
-        if (knownStop && !cancelSucceeded) {
-            Logger::instance().log(
-                LogLevel::Warning,
-                "trailing stop cancel failed symbol=" + pos.symbol);
-            continue;
-        }
-        if (knownStop) {
-            m_tracker.updateStopLoss(pos.symbol, 0, {}, 0.0);
+            canCancelOldAfterReplacement = true;
         }
         if (!knownStop && pos.currentTrailLevel > 0.0) {
             Logger::instance().log(
@@ -546,8 +1130,14 @@ boost::asio::awaitable<void> SignalEngine::processTrailingStops() {
             continue;
         }
 
-        const auto qty = toDecimal(pos.quantity);
-        const auto trigger = toDecimal(decision->newLevel);
+        const auto symbolMeta = m_scanner.symbolInfo(pos.symbol);
+        const double stepSize = symbolMeta.has_value() && symbolMeta->stepSize > 0.0 ? symbolMeta->stepSize : 0.0;
+        const auto qty = quantityToStepDecimal(pos.quantity, stepSize);
+        const double tickSize = symbolMeta.has_value() ? symbolMeta->tickSize : 0.0;
+        const auto triggerRounding = pos.direction == strategy::Signal::Direction::Long
+            ? PriceRounding::Up
+            : PriceRounding::Down;
+        const auto trigger = priceToTickDecimal(decision->newLevel, tickSize, triggerRounding);
         if (!qty || !trigger) {
             Logger::instance().log(
                 LogLevel::Warning,
@@ -555,7 +1145,13 @@ boost::asio::awaitable<void> SignalEngine::processTrailingStops() {
             continue;
         }
 
+        const auto stillTracked = m_tracker.bySymbol(pos.symbol);
+        if (!stillTracked.has_value() || stillTracked->openedAt != pos.openedAt) {
+            continue;
+        }
+
         const auto clientOrderId = makeExitClientOrderId(pos.symbol, "sltrail");
+        const auto metadata = buildOrderMetadata(pos.strategyName, pos.signalInterval, pos.signalReason);
         auto protection = co_await m_orders.protection(ProtectionOrderDraft{
             .symbol = pos.symbol,
             .positionSide = PositionSide::Both,
@@ -564,11 +1160,34 @@ boost::asio::awaitable<void> SignalEngine::processTrailingStops() {
             .triggerPrice = *trigger,
             .closeQuantity = *qty,
             .clientAlgoId = clientOrderId,
+            .metadata = metadata,
         });
         if (!protection || protection->state != PlacementState::Accepted) {
             Logger::instance().log(
                 LogLevel::Warning,
                 "trailing stop placement failed symbol=" + pos.symbol);
+            continue;
+        }
+
+        if (canCancelOldAfterReplacement) {
+            bool cancelSucceeded = false;
+            if (pos.slOrderId > 0) {
+                auto cancel = co_await m_orders.cancelAlgoByAlgoId(pos.symbol, pos.slOrderId);
+                cancelSucceeded = cancel.has_value();
+            } else if (!pos.slClientOrderId.empty()) {
+                auto cancel = co_await m_orders.cancelAlgoByClientAlgoId(pos.symbol, pos.slClientOrderId);
+                cancelSucceeded = cancel.has_value();
+            }
+
+            if (!cancelSucceeded) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "trailing stop old-order cancel failed symbol=" + pos.symbol);
+            }
+        }
+
+        const auto trackedAfterPlacement = m_tracker.bySymbol(pos.symbol);
+        if (!trackedAfterPlacement.has_value() || trackedAfterPlacement->openedAt != pos.openedAt) {
             continue;
         }
 
@@ -588,16 +1207,30 @@ void SignalEngine::onUserDataEvent(const UserDataEvent& event) {
     if (!order) {
         return;
     }
-    if (order->orderStatus != "FILLED") {
+
+    const bool isPartial = order->orderStatus == "PARTIALLY_FILLED";
+    const bool isFilled = order->orderStatus == "FILLED";
+    if (!isPartial && !isFilled) {
         return;
     }
+
     if (!order->clientOrderId.empty()) {
-        if (m_tracker.removeByExitOrderClientId(order->clientOrderId)) {
+        if (isPartial && order->lastFilledQty > 0.0 &&
+            m_tracker.applyExitFillByClientId(order->clientOrderId, order->lastFilledQty)) {
+            return;
+        }
+        if (isFilled && m_tracker.removeByExitOrderClientId(order->clientOrderId)) {
             return;
         }
     }
     if (!order->originalClientOrderId.empty()) {
-        (void)m_tracker.removeByExitOrderClientId(order->originalClientOrderId);
+        if (isPartial && order->lastFilledQty > 0.0 &&
+            m_tracker.applyExitFillByClientId(order->originalClientOrderId, order->lastFilledQty)) {
+            return;
+        }
+        if (isFilled) {
+            (void)m_tracker.removeByExitOrderClientId(order->originalClientOrderId);
+        }
     }
 }
 

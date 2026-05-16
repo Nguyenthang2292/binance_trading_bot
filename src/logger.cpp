@@ -28,6 +28,7 @@ std::string Logger::levelToString(LogLevel level) const {
     switch (level) {
         case LogLevel::Debug:   return "DEBUG  ";
         case LogLevel::Info:    return "INFO   ";
+        case LogLevel::Subprocess: return "SUBPROC";
         case LogLevel::Warning: return "WARNING";
         case LogLevel::Error:   return "ERROR  ";
         case LogLevel::Trade:   return "TRADE  ";
@@ -51,6 +52,7 @@ std::string Logger::getColor(LogLevel level) const {
     switch (level) {
         case LogLevel::Debug:   return "\033[36m";
         case LogLevel::Info:    return "\033[32m";
+        case LogLevel::Subprocess: return "\033[36m";
         case LogLevel::Warning: return "\033[33m";
         case LogLevel::Error:   return "\033[31m";
         case LogLevel::Trade:   return "\033[35m";

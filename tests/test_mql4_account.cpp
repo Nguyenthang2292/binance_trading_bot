@@ -28,6 +28,7 @@ protected:
         Position btc;
         btc.symbol = "BTCUSDT";
         btc.leverage = 20;
+        btc.initialMargin = 1000.0;
         acc.positions.push_back(btc);
 
         AccountCompatibilityConfig cfg;
@@ -82,6 +83,7 @@ TEST_F(Mql4AccountAdapterTest, LeverageBySymbol) {
     Mql4AccountAdapter adapter(std::move(snapshot));
 
     EXPECT_EQ(*adapter.accountLeverage("BTCUSDT"), 20);
+    EXPECT_EQ(*adapter.accountLeverage("btcusdt"), 20);
     auto missingSymbol = adapter.accountLeverage("ETHUSDT");
     EXPECT_FALSE(missingSymbol.has_value());
     EXPECT_EQ(missingSymbol.error(), AccountMappingError::SnapshotIncomplete);
@@ -94,6 +96,21 @@ TEST_F(Mql4AccountAdapterTest, LeverageWithoutSymbolIsAmbiguous) {
     auto leverage = adapter.accountLeverage("");
     EXPECT_FALSE(leverage.has_value());
     EXPECT_EQ(leverage.error(), AccountMappingError::AmbiguousSymbol);
+}
+
+TEST_F(Mql4AccountAdapterTest, LeverageUsesPositionRiskSnapshotEvenWhenPositionAmtIsZero) {
+    auto snapshot = createBasicSnapshot();
+    snapshot.account.positions.clear();
+    Position riskOnly;
+    riskOnly.symbol = "ETHUSDT";
+    riskOnly.positionAmt = 0.0;
+    riskOnly.leverage = 25;
+    snapshot.positions = std::vector<Position>{riskOnly};
+
+    Mql4AccountAdapter adapter(std::move(snapshot));
+    auto leverage = adapter.accountLeverage("ethusdt");
+    ASSERT_TRUE(leverage.has_value());
+    EXPECT_EQ(*leverage, 25);
 }
 
 TEST_F(Mql4AccountAdapterTest, UnsupportedProperties) {
@@ -171,6 +188,19 @@ TEST_F(Mql4AccountAdapterTest, UsesDisplayAssetValueInsteadOfAccountTotals) {
     EXPECT_DOUBLE_EQ(*adapter.accountProfit(), 500.0);
 }
 
+TEST_F(Mql4AccountAdapterTest, FreeMarginIgnoresAvailableBalanceReserveWhenNoPositions) {
+    auto snapshot = createBasicSnapshot();
+    snapshot.account.positions.clear();
+    snapshot.account.assets[0].initialMargin = 0.0;
+    snapshot.account.assets[0].availableBalance = 9300.0;
+    snapshot.account.assets[0].marginBalance = 10500.0;
+
+    Mql4AccountAdapter adapter(std::move(snapshot));
+    auto freeMargin = adapter.accountFreeMargin();
+    ASSERT_TRUE(freeMargin.has_value());
+    EXPECT_DOUBLE_EQ(*freeMargin, 10500.0);
+}
+
 TEST_F(Mql4AccountAdapterTest, MultiAssetMode) {
     FuturesAccount acc;
     acc.totalWalletBalance = 20000.0; // Total in USD aggregate
@@ -196,4 +226,18 @@ TEST_F(Mql4AccountAdapterTest, MultiAssetMode) {
     Mql4AccountAdapter adapter(std::move(snapshot));
     EXPECT_EQ(*adapter.accountBalance(), 50.0);
     EXPECT_EQ(*adapter.accountCurrency(), "BNB");
+}
+
+TEST_F(Mql4AccountAdapterTest, MultiAssetsMarginIsUnsupportedForSingleAssetMappings) {
+    auto snapshot = createBasicSnapshot();
+    snapshot.multiAssetsMargin = true;
+    Mql4AccountAdapter adapter(std::move(snapshot));
+
+    auto balance = adapter.accountBalance();
+    EXPECT_FALSE(balance.has_value());
+    EXPECT_EQ(balance.error(), AccountMappingError::Unsupported);
+
+    auto freeMargin = adapter.accountFreeMargin();
+    EXPECT_FALSE(freeMargin.has_value());
+    EXPECT_EQ(freeMargin.error(), AccountMappingError::Unsupported);
 }

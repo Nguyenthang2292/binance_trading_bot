@@ -12,13 +12,28 @@ SizingResult calculateSize(const SizingInput& input, double currentPrice, double
         return out;
     }
 
-    const double rawNotional = input.availableBalance * input.riskPct / (input.atr * input.slMultiplier);
+    const double riskCapital = input.availableBalance * input.riskPct;
+    const double rawQty = riskCapital / (input.atr * input.slMultiplier);
+    const double rawNotional = rawQty * currentPrice;
     out.isMinClamped = rawNotional < input.minNotional;
-    out.notional = std::max(input.minNotional, rawNotional);
+    double targetNotional = std::max(input.minNotional, rawNotional);
+    if (input.maxNotional > 0.0 && targetNotional > input.maxNotional) {
+        targetNotional = input.maxNotional;
+        out.isMaxCapped = true;
+    }
+    if (targetNotional < input.minNotional) {
+        return out;
+    }
+    out.notional = targetNotional;
 
-    const double rawQty = out.notional / currentPrice;
-    const double steps = std::floor(rawQty / stepSize);
+    const double targetQty = out.notional / currentPrice;
+    double steps = std::floor(targetQty / stepSize);
     out.quantity = std::max(0.0, steps * stepSize);
+    if (out.quantity * currentPrice < input.minNotional) {
+        steps = std::ceil((input.minNotional / currentPrice) / stepSize);
+        out.quantity = std::max(0.0, steps * stepSize);
+    }
+    out.notional = out.quantity * currentPrice;
     return out;
 }
 

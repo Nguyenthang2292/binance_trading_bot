@@ -74,7 +74,10 @@ set(LIB_SOURCES
     src/engine/sizing_policy.cpp
     src/engine/work_queue.cpp
     src/engine/beta_calculator.cpp
+    src/engine/order_cap_controller.cpp
     src/engine/exposure_controller.cpp
+    src/engine/gemini_filter.cpp
+    src/engine/price_filter.cpp
     src/engine/trailing_stop_controller.cpp
     src/engine/signal_engine.cpp
     src/catalog/plugin_handle.cpp
@@ -133,7 +136,10 @@ set(LIB_HEADERS
     src/engine/sizing_policy.h
     src/engine/work_queue.h
     src/engine/beta_calculator.h
+    src/engine/order_cap_controller.h
     src/engine/exposure_controller.h
+    src/engine/gemini_filter.h
+    src/engine/price_filter.h
     src/engine/trailing_stop_controller.h
     src/engine/signal_engine.h
     src/catalog/plugin_handle.h
@@ -161,6 +167,9 @@ target_link_libraries(bot_lib PUBLIC
 if(NOT WIN32)
     target_link_libraries(bot_lib PUBLIC pthread)
 endif()
+if(WIN32)
+    target_link_libraries(bot_lib PUBLIC Crypt32)
+endif()
 target_compile_features(bot_lib PUBLIC cxx_std_23)
 target_compile_options(bot_lib PUBLIC $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 target_compile_definitions(bot_lib PUBLIC $<$<CXX_COMPILER_ID:MSVC>:_WIN32_WINNT=0x0A00>)
@@ -172,6 +181,8 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 )
 
 add_subdirectory(plugins/src/trend_breakout)
+add_subdirectory(plugins/src/gartley_day_crossover)
+add_subdirectory(plugins/src/donchian_5_20_crossover)
 
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
 
@@ -198,3 +209,19 @@ set_target_properties(${PROJECT_NAME}_tests PROPERTIES
 
 include(GoogleTest)
 gtest_discover_tests(${PROJECT_NAME}_tests)
+
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} -c "import pytest"
+        RESULT_VARIABLE PYTEST_AVAILABLE
+    )
+    if(PYTEST_AVAILABLE EQUAL 0)
+        add_test(
+            NAME python_gemini_filter_pytests
+            COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_SOURCE_DIR}/tests/python
+        )
+    else()
+        message(WARNING "pytest is not available; skipping python_gemini_filter_pytests")
+    endif()
+endif()

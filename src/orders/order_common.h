@@ -77,6 +77,10 @@ using OrderIdentity = std::variant<NormalOrderIdentity, AlgoOrderIdentity>;
 
 struct OrderMetadata {
     std::optional<int64_t> magic;
+    // Preferred typed field for timeframe tagging (e.g. "1h", "15m").
+    std::optional<std::string> timeframe;
+    // Legacy/fallback contract: when timeframe tagging is embedded in comment,
+    // prefix with "tf=<interval>" and separate subsequent text by space.
     std::optional<std::string> comment;
     std::optional<std::string> strategyTag;
 };

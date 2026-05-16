@@ -119,6 +119,27 @@ TEST(AccountServiceTest, SnapshotWithPositionsOnlyMarksAccountAndPositions) {
     EXPECT_EQ(rest.lastPositionFilter, std::optional<std::string>("BTCUSDT"));
 }
 
+TEST(AccountServiceTest, SnapshotFetchesFilteredPositionsWhenFilterProvided) {
+    StubAccountRestClient rest;
+    rest.accountResult = FuturesAccount{};
+    Position position;
+    position.symbol = "BTCUSDT";
+    rest.positionsResult = std::vector<Position>{position};
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::AccountSnapshotRequest request;
+    request.positionFilter = "BTCUSDT";
+
+    auto result = runAwaitable(service.snapshot(request));
+    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result->positions.has_value());
+    EXPECT_EQ(result->positions->size(), 1u);
+    EXPECT_EQ(rest.positionsCalls, 1);
+    EXPECT_EQ(rest.lastPositionFilter, std::optional<std::string>("BTCUSDT"));
+}
+
 TEST(AccountServiceTest, SnapshotWithBalanceAndPositionsMarksAccountBalanceAndPositions) {
     StubAccountRestClient rest;
     rest.accountResult = FuturesAccount{};
@@ -144,7 +165,7 @@ TEST(AccountServiceTest, SnapshotWithBalanceAndPositionsMarksAccountBalanceAndPo
     EXPECT_EQ(rest.positionsCalls, 1);
 }
 
-TEST(AccountServiceTest, CheckFreeMarginPhaseCStubReturnsUnavailableCompleteness) {
+TEST(AccountServiceTest, CheckFreeMarginPhaseCStubReturnsUnsupported) {
     StubAccountRestClient rest;
     account::AccountCompatibilityConfig cfg;
     account::AccountService service(rest, cfg);
@@ -156,11 +177,9 @@ TEST(AccountServiceTest, CheckFreeMarginPhaseCStubReturnsUnavailableCompleteness
     };
 
     auto result = runAwaitable(service.checkFreeMargin(draft));
-    ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->symbol, "BTCUSDT");
-    EXPECT_EQ(result->completeness, account::MarginCheckCompleteness::Unavailable);
-    ASSERT_TRUE(result->quantity.has_value());
-    EXPECT_EQ(result->quantity->value(), "0.01");
+    ASSERT_FALSE(result.has_value());
+    ASSERT_TRUE(std::holds_alternative<account::AccountMappingError>(result.error()));
+    EXPECT_EQ(std::get<account::AccountMappingError>(result.error()), account::AccountMappingError::Unsupported);
 }
 
 TEST(AccountServiceTest, LiquidationRiskPhaseCStubReturnsUnsupported) {

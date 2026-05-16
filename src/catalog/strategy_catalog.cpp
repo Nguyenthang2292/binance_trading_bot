@@ -10,10 +10,14 @@ StrategyCatalog::StrategyCatalog(Config config, strategy::StrategyRegistry& regi
 StrategyCatalog::StrategyCatalog(Config config, strategy::StrategyRegistry& registry)
     : m_config(std::move(config)),
       m_registry(registry),
-      m_loader(PluginLoader::Config{.pluginsDir = m_config.pluginsDir}) {}
+      m_loader(PluginLoader::Config{
+          .pluginsDir = m_config.pluginsDir,
+          .enforceSha256Allowlist = m_config.enforceSha256Allowlist,
+          .sha256AllowlistFile = m_config.sha256AllowlistFile}) {}
 
 StrategyCatalog::LoadSummary StrategyCatalog::initialize(const std::vector<nlohmann::json>& strategiesConfig) {
     m_info.clear();
+    m_registry.clear();
     LoadSummary summary;
     const auto pluginResults = m_loader.loadAll();
     summary.pluginsFound = static_cast<int>(pluginResults.size());

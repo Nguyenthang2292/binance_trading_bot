@@ -15,6 +15,10 @@ class AccountService {
 public:
     AccountService(IAccountRestClient& rest, AccountCompatibilityConfig compatibility);
     AccountService(RestClient& rest, AccountCompatibilityConfig compatibility);
+    AccountService(const AccountService&) = delete;
+    AccountService& operator=(const AccountService&) = delete;
+    AccountService(AccountService&&) = delete;
+    AccountService& operator=(AccountService&&) = delete;
 
     boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> snapshot(AccountSnapshotRequest request = {});
     boost::asio::awaitable<AccountServiceResult<MarginCheckResult>> checkFreeMargin(MarginCheckDraft draft);

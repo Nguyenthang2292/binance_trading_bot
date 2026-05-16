@@ -11,12 +11,16 @@ namespace {
 using orders::detail::addValidationIssue;
 using orders::detail::attachErrorDetails;
 using orders::detail::errorCategoryToString;
+using orders::detail::extractTimeframe;
 using orders::detail::isAmbiguousPlacementError;
 using orders::detail::mapErrorCategory;
 using orders::detail::stateToString;
 using orders::detail::typeToString;
 
-void logPlacement(const NormalPlacementResult& result, std::chrono::steady_clock::time_point startedAt) {
+void logPlacement(
+    const NormalPlacementResult& result,
+    std::chrono::steady_clock::time_point startedAt,
+    const std::optional<OrderMetadata>& metadata = std::nullopt) {
     const auto latencyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - startedAt).count();
 
@@ -32,6 +36,12 @@ void logPlacement(const NormalPlacementResult& result, std::chrono::steady_clock
         << " binanceCode=" << result.binanceCode.value_or(0);
     if (result.binanceMessage.has_value()) {
         out << " binanceMessage=" << std::quoted(*result.binanceMessage);
+    }
+    if (metadata && metadata->strategyTag.has_value()) {
+        out << " strategy=" << std::quoted(*metadata->strategyTag);
+    }
+    if (const auto timeframe = extractTimeframe(metadata); timeframe.has_value()) {
+        out << " tf=" << *timeframe;
     }
     Logger::instance().log(LogLevel::Info, out.str());
 }
@@ -229,7 +239,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::st
     }
     auto result = std::move(prepared->result);
     if (result.state == PlacementState::Rejected) {
-        logPlacement(result, startedAt);
+        logPlacement(result, startedAt, prepared->metadata);
         co_return result;
     }
 
@@ -237,7 +247,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::st
         result.state = PlacementState::Rejected;
         result.errorCategory = OrderErrorCategory::Journal;
         attachErrorDetails(result, journalResult.error());
-        logPlacement(result, startedAt);
+        logPlacement(result, startedAt, prepared->metadata);
         co_return result;
     }
 
@@ -249,7 +259,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::st
         result.errorCategory = mapErrorCategory(placed.error());
         attachErrorDetails(result, placed.error());
         (void)updateJournal(result.correlationId, result.state, std::nullopt);
-        logPlacement(result, startedAt);
+        logPlacement(result, startedAt, prepared->metadata);
         co_return result;
     }
 
@@ -258,7 +268,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::st
     result.orderStatus = placed->status;
     result.avgPrice = placed->avgPrice;
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
-    logPlacement(result, startedAt);
+    logPlacement(result, startedAt, prepared->metadata);
     co_return result;
 }
 
@@ -270,7 +280,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::pr
     }
     auto result = std::move(prepared->result);
     if (result.state == PlacementState::Rejected) {
-        logPlacement(result, startedAt);
+        logPlacement(result, startedAt, prepared->metadata);
         co_return result;
     }
 
@@ -278,7 +288,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::pr
         result.state = PlacementState::Rejected;
         result.errorCategory = OrderErrorCategory::Journal;
         attachErrorDetails(result, journalResult.error());
-        logPlacement(result, startedAt);
+        logPlacement(result, startedAt, prepared->metadata);
         co_return result;
     }
 
@@ -290,7 +300,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::pr
         result.errorCategory = mapErrorCategory(placed.error());
         attachErrorDetails(result, placed.error());
         (void)updateJournal(result.correlationId, result.state, std::nullopt);
-        logPlacement(result, startedAt);
+        logPlacement(result, startedAt, prepared->metadata);
         co_return result;
     }
 
@@ -299,7 +309,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::pr
     result.orderStatus = placed->status;
     result.avgPrice = placed->avgPrice;
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
-    logPlacement(result, startedAt);
+    logPlacement(result, startedAt, prepared->metadata);
     co_return result;
 }
 

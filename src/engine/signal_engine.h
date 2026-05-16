@@ -2,6 +2,8 @@
 
 #include "account/account_service.h"
 #include "engine/exposure_controller.h"
+#include "engine/order_cap_controller.h"
+#include "engine/gemini_filter.h"
 #include "engine/position_tracker.h"
 #include "engine/trailing_stop_controller.h"
 #include "engine/work_queue.h"
@@ -12,6 +14,7 @@
 #include "types/events.h"
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/steady_timer.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -62,11 +65,42 @@ class SignalEngine {
 public:
     struct Config {
         double minNotional{1.0};
+        double maxPositionNotionalXAvailableBalance{0.5};
         std::chrono::seconds positionCheckInterval{60};
         std::chrono::seconds trailingCheckInterval{300};
         bool placeStopLoss{true};
         bool monitorTrailingStops{true};
     };
+
+    SignalEngine(
+        IScannerPort& scanner,
+        strategy::StrategyRegistry& registry,
+        IAccountPort& account,
+        IOrdersPort& orders,
+        IOrderCapPort& orderCap,
+        IExposurePort& exposure,
+        IGeminiFilterPort& geminiFilter,
+        GeminiFilterConfig geminiConfig,
+        Config config);
+
+    SignalEngine(
+        IScannerPort& scanner,
+        strategy::StrategyRegistry& registry,
+        IAccountPort& account,
+        IOrdersPort& orders,
+        IExposurePort& exposure,
+        IGeminiFilterPort& geminiFilter,
+        GeminiFilterConfig geminiConfig,
+        Config config);
+
+    SignalEngine(
+        IScannerPort& scanner,
+        strategy::StrategyRegistry& registry,
+        IAccountPort& account,
+        IOrdersPort& orders,
+        IOrderCapPort& orderCap,
+        IExposurePort& exposure,
+        Config config);
 
     SignalEngine(
         IScannerPort& scanner,
@@ -83,12 +117,15 @@ public:
     boost::asio::awaitable<void> processItem(const WorkItem& item);
     boost::asio::awaitable<Result<void>> openPosition(
         std::string_view symbol,
+        std::string_view signalInterval,
         strategy::Signal::Direction direction,
         double atr,
         double currentPrice,
-        const strategy::StrategyConfig& cfg);
+        const strategy::StrategyConfig& cfg,
+        std::string_view signalReason);
     boost::asio::awaitable<void> monitorTimeExit();
     boost::asio::awaitable<void> monitorTrailingStops();
+    boost::asio::awaitable<void> reconcileTrackedPositions();
     boost::asio::awaitable<void> processExpiredPositions(std::chrono::system_clock::time_point now);
     boost::asio::awaitable<void> processTrailingStops();
     boost::asio::awaitable<void> logExposureMetrics();
@@ -101,16 +138,42 @@ public:
     void setScanCycleStatusCallback(ScanCycleStatusCb cb);
 
 private:
+    struct GeminiCycleGate {
+        bool closed{false};
+        std::string reason;
+        std::string firstSymbol;
+        std::string firstTf;
+        int skippedItems{0};
+    };
+
+    bool shouldSkipForClosedGeminiGate() const;
+    void closeGeminiGateForCycle(std::string reason, std::string_view symbol, std::string_view tf);
+    boost::asio::awaitable<GeminiFilterResult> evaluateGeminiNonBlocking(
+        std::string symbol,
+        strategy::Signal::Direction direction,
+        std::string signalInterval);
+    boost::asio::awaitable<std::optional<double>> livePositionQuantity(std::string_view symbol);
+    static bool isFlatPositionQty(double quantity);
+    static std::string accountErrorToString(const account::AccountServiceError& error);
+
     IScannerPort& m_scanner;
     strategy::StrategyRegistry& m_registry;
     IAccountPort& m_account;
     IOrdersPort& m_orders;
+    IOrderCapPort& m_orderCap;
     IExposurePort& m_exposure;
+    IGeminiFilterPort& m_geminiFilter;
+    GeminiFilterConfig m_geminiConfig;
+    int m_geminiEvaluationsThisCycle{0};
+    GeminiCycleGate m_geminiCycleGate;
     Config m_config;
     PositionTracker m_tracker;
     TrailingStopController m_trailingStops;
     std::atomic<bool> m_running{false};
     ScanCycleStatusCb m_scanCycleStatusCb;
+    boost::asio::steady_timer m_scanSleepTimer;
+    boost::asio::steady_timer m_timeExitTimer;
+    boost::asio::steady_timer m_trailingTimer;
 };
 
 class ScannerPort final : public IScannerPort {

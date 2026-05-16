@@ -16,6 +16,8 @@ class StrategyCatalog {
 public:
     struct Config {
         std::filesystem::path pluginsDir{"plugins"};
+        bool enforceSha256Allowlist{false};
+        std::filesystem::path sha256AllowlistFile{};
     };
 
     struct LoadSummary {

@@ -6,6 +6,8 @@
 #include <dlfcn.h>
 #endif
 
+#include <system_error>
+
 namespace catalog {
 
 namespace {
@@ -29,32 +31,50 @@ void* loadSymbol(void* handle, const char* name) {
 #endif
 }
 
+std::string windowsErrorMessage(DWORD code) {
+#if defined(_WIN32)
+    return std::system_category().message(static_cast<int>(code));
+#else
+    (void)code;
+    return {};
+#endif
+}
+
 } // namespace
 
 std::expected<PluginHandle, std::string> PluginHandle::load(const std::filesystem::path& dllPath) {
 #if defined(_WIN32)
-    HMODULE module = LoadLibraryA(dllPath.string().c_str());
+    HMODULE module = LoadLibraryExW(
+        dllPath.wstring().c_str(),
+        nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     void* rawHandle = reinterpret_cast<void*>(module);
 #else
-    void* rawHandle = dlopen(dllPath.string().c_str(), RTLD_NOW);
+    void* rawHandle = dlopen(dllPath.string().c_str(), RTLD_NOW | RTLD_LOCAL);
 #endif
     if (!rawHandle) {
-        return std::unexpected("failed to load library");
+#if defined(_WIN32)
+        const DWORD lastError = GetLastError();
+        return std::unexpected("failed to load library: " + windowsErrorMessage(lastError));
+#else
+        const char* err = dlerror();
+        return std::unexpected(std::string("failed to load library: ") + (err ? err : "unknown error"));
+#endif
     }
 
     PluginHandle out(rawHandle);
     out.path = dllPath;
-    out.createFn = reinterpret_cast<CreateFn>(loadSymbol(rawHandle, "createStrategy"));
-    out.destroyFn = reinterpret_cast<DestroyFn>(loadSymbol(rawHandle, "destroyStrategy"));
-    out.typeFn = reinterpret_cast<TypeFn>(loadSymbol(rawHandle, "strategyType"));
-    out.versionFn = reinterpret_cast<VersionFn>(loadSymbol(rawHandle, "pluginVersion"));
-    if (!out.createFn || !out.destroyFn || !out.typeFn || !out.versionFn) {
+    out.m_createFn = reinterpret_cast<CreateFn>(loadSymbol(rawHandle, "createStrategy"));
+    out.m_destroyFn = reinterpret_cast<DestroyFn>(loadSymbol(rawHandle, "destroyStrategy"));
+    out.m_typeFn = reinterpret_cast<TypeFn>(loadSymbol(rawHandle, "strategyType"));
+    out.m_versionFn = reinterpret_cast<VersionFn>(loadSymbol(rawHandle, "pluginVersion"));
+    if (!out.m_createFn || !out.m_destroyFn || !out.m_typeFn || !out.m_versionFn) {
         unloadHandle(rawHandle);
         return std::unexpected("missing required exports");
     }
 
-    const char* type = out.typeFn();
-    const char* version = out.versionFn();
+    const char* type = out.m_typeFn();
+    const char* version = out.m_versionFn();
     if (!type || !version) {
         unloadHandle(rawHandle);
         return std::unexpected("invalid plugin metadata");
@@ -74,29 +94,29 @@ PluginHandle PluginHandle::fromExports(
     std::string versionValue) {
     PluginHandle out;
     out.path = std::move(path);
-    out.createFn = createFnValue;
-    out.destroyFn = destroyFnValue;
-    out.typeFn = typeFnValue;
-    out.versionFn = versionFnValue;
+    out.m_createFn = createFnValue;
+    out.m_destroyFn = destroyFnValue;
+    out.m_typeFn = typeFnValue;
+    out.m_versionFn = versionFnValue;
     out.type = std::move(typeValue);
     out.version = std::move(versionValue);
     return out;
 }
 
 PluginHandle::PluginHandle(PluginHandle&& other) noexcept
-    : createFn(other.createFn),
-      destroyFn(other.destroyFn),
-      typeFn(other.typeFn),
-      versionFn(other.versionFn),
+    : m_createFn(other.m_createFn),
+      m_destroyFn(other.m_destroyFn),
+      m_typeFn(other.m_typeFn),
+      m_versionFn(other.m_versionFn),
       path(std::move(other.path)),
       type(std::move(other.type)),
       version(std::move(other.version)),
       m_handle(other.m_handle) {
     other.m_handle = nullptr;
-    other.createFn = nullptr;
-    other.destroyFn = nullptr;
-    other.typeFn = nullptr;
-    other.versionFn = nullptr;
+    other.m_createFn = nullptr;
+    other.m_destroyFn = nullptr;
+    other.m_typeFn = nullptr;
+    other.m_versionFn = nullptr;
 }
 
 PluginHandle& PluginHandle::operator=(PluginHandle&& other) noexcept {
@@ -104,24 +124,39 @@ PluginHandle& PluginHandle::operator=(PluginHandle&& other) noexcept {
         return *this;
     }
     unloadHandle(m_handle);
-    createFn = other.createFn;
-    destroyFn = other.destroyFn;
-    typeFn = other.typeFn;
-    versionFn = other.versionFn;
+    m_createFn = other.m_createFn;
+    m_destroyFn = other.m_destroyFn;
+    m_typeFn = other.m_typeFn;
+    m_versionFn = other.m_versionFn;
     path = std::move(other.path);
     type = std::move(other.type);
     version = std::move(other.version);
     m_handle = other.m_handle;
     other.m_handle = nullptr;
-    other.createFn = nullptr;
-    other.destroyFn = nullptr;
-    other.typeFn = nullptr;
-    other.versionFn = nullptr;
+    other.m_createFn = nullptr;
+    other.m_destroyFn = nullptr;
+    other.m_typeFn = nullptr;
+    other.m_versionFn = nullptr;
     return *this;
 }
 
 PluginHandle::~PluginHandle() {
     unloadHandle(m_handle);
+}
+
+bool PluginHandle::hasFactory() const {
+    return m_createFn != nullptr && m_destroyFn != nullptr;
+}
+
+strategy::IStrategy* PluginHandle::create(const char* configJson) const {
+    if (!m_createFn) {
+        return nullptr;
+    }
+    return m_createFn(configJson);
+}
+
+PluginHandle::DestroyFn PluginHandle::destroyFunction() const {
+    return m_destroyFn;
 }
 
 } // namespace catalog

@@ -10,7 +10,7 @@ A 'Golden Cross' occurs when a 50-day moving average crosses above a 200-day mov
 A 'Death Cross' occurs when a 50-day moving average crosses below a 200-day moving average and is meant to confirm the existence of a bear market.
 I've summarized the rules here.
 
-<u>Rules</u>
+**Rules**
 
 | | |
 |---|---|
@@ -29,10 +29,6 @@ I've summarized the rules here.
 | Variables—Symmetry: | Same value for both buy and sell setups |
 | Variables—Application: | Same value across all markets |
 | Rules: | 2 |
-
----
-
-Strategies        189
 
 ### Buy Rules
 
@@ -56,11 +52,8 @@ Let's see how this Golden and Death Cross trend-trading strategy has performed o
 
 **FIGURE 6.13** The Golden 50 and 200-day Crossover strategy will stop and reverse positions following a cross over between a 50 and 200-day moving average.
 
----
+**Results**
 
-190 THE UNIVERSAL TACTICS OF SUCCESSFUL TREND TRADING
-
-<u>Results</u>
 Portfolio P24: SB, ZW, CO, SO, HO, LC, GF, BP, SV,
 KC, CT, ZB, GC, HG, JY, LH, SP, TY,
 CL, FV, NG, ND, EC, YM

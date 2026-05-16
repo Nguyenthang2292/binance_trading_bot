@@ -107,4 +107,27 @@ inline bool isAmbiguousPlacementError(const BinanceError& error) {
     return false;
 }
 
+inline std::optional<std::string> extractTimeframe(const std::optional<OrderMetadata>& metadata) {
+    if (!metadata) {
+        return std::nullopt;
+    }
+    if (metadata->timeframe.has_value() && !metadata->timeframe->empty()) {
+        return metadata->timeframe;
+    }
+    if (!metadata->comment.has_value()) {
+        return std::nullopt;
+    }
+    const auto& comment = *metadata->comment;
+    if (!comment.starts_with("tf=")) {
+        return std::nullopt;
+    }
+
+    const auto begin = size_t{3};
+    const auto end = comment.find(' ', begin);
+    if (end == std::string::npos) {
+        return comment.substr(begin);
+    }
+    return comment.substr(begin, end - begin);
+}
+
 } // namespace orders::detail

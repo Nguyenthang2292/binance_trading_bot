@@ -23,6 +23,7 @@ TEST(Mql4PhaseATest, OrderMetadataPersistence) {
 
         OrderMetadata metadata;
         metadata.magic = 42;
+        metadata.timeframe = "1h";
         metadata.comment = "hello tab\tnewline\n";
         metadata.strategyTag = "strategy-A";
         entry.metadata = metadata;
@@ -39,6 +40,7 @@ TEST(Mql4PhaseATest, OrderMetadataPersistence) {
         auto& entry = found->value();
         ASSERT_TRUE(entry.metadata.has_value());
         EXPECT_EQ(entry.metadata->magic, 42);
+        EXPECT_EQ(entry.metadata->timeframe, "1h");
         EXPECT_EQ(entry.metadata->comment, "hello tab newline ");
         EXPECT_EQ(entry.metadata->strategyTag, "strategy-A");
     }
@@ -99,7 +101,7 @@ TEST(Mql4PhaseATest, FormatOrderViewRedaction) {
     view.normal.executedQty = "0.0";
     view.normal.price = "50000";
     
-    view.metadata = OrderMetadata{.magic = 123, .comment = "secret", .strategyTag = "tag-X"};
+    view.metadata = OrderMetadata{.magic = 123, .timeframe = "4h", .comment = "secret", .strategyTag = "tag-X"};
 
     std::string formatted = formatOrderView(view, false);
     EXPECT_TRUE(formatted.find("magic=123") != std::string::npos);
@@ -110,4 +112,5 @@ TEST(Mql4PhaseATest, FormatOrderViewRedaction) {
     std::string formattedFull = formatOrderView(view, true);
     EXPECT_TRUE(formattedFull.find("comment=\"secret\"") != std::string::npos);
     EXPECT_TRUE(formattedFull.find("tag=\"tag-X\"") != std::string::npos);
+    EXPECT_TRUE(formattedFull.find("tf=\"4h\"") != std::string::npos);
 }

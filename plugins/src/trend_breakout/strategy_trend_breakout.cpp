@@ -2,8 +2,7 @@
 // Strategy: Trend Breakout Trader
 // Design: docs/design/strategies/2026-05-15-strategy-trend-breakout-v1.0.md
 //
-// This strategy intentionally trades 20-candle breakouts on the 4H timeframe.
-// It ignores other intervals even if misconfigured.
+// This strategy trades Donchian breakouts across configured timeframes.
 
 #include "strategy/indicators/atr.h"
 #include "strategy/istrategy.h"
@@ -14,6 +13,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -21,7 +22,8 @@
 
 namespace {
 
-constexpr std::string_view kTradingInterval = "4h";
+const std::vector<std::string> kDefaultIntervals{"30m", "1h", "4h"};
+constexpr std::string_view kDefaultTrailingInterval = "4h";
 
 struct TrendBreakoutParams {
     int breakoutPeriod{20};
@@ -45,14 +47,36 @@ TrendBreakoutParams parseParams(const nlohmann::json& j) {
     return p;
 }
 
+std::string formatValue(double value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(6) << value;
+    std::string text = out.str();
+    const auto dotPos = text.find('.');
+    if (dotPos != std::string::npos) {
+        while (!text.empty() && text.back() == '0') {
+            text.pop_back();
+        }
+        if (!text.empty() && text.back() == '.') {
+            text.pop_back();
+        }
+    }
+    if (text.empty() || text == "-0") {
+        return "0";
+    }
+    return text;
+}
+
 strategy::StrategyConfig parseConfig(const nlohmann::json& j) {
     const auto& params = paramsObject(j);
 
     strategy::StrategyConfig cfg;
     cfg.name = j.value("name", "Trend Breakout Trader");
     cfg.type = j.value("type", "trend_breakout");
-    cfg.intervals = j.value("intervals", std::vector<std::string>{std::string(kTradingInterval)});
-    cfg.scanInterval = std::chrono::seconds(j.value("scan_interval_seconds", 14400));
+    cfg.intervals = j.value("intervals", kDefaultIntervals);
+    if (cfg.intervals.empty()) {
+        cfg.intervals = kDefaultIntervals;
+    }
+    cfg.scanInterval = std::chrono::seconds(j.value("scan_interval_seconds", 900));
     cfg.maxHoldDuration = std::chrono::seconds(j.value("max_hold_duration_seconds", 604800));
     cfg.riskPct = j.value("risk_pct", 0.01);
     cfg.slMultiplier = j.value("sl_multiplier", 1.5);
@@ -64,7 +88,7 @@ strategy::StrategyConfig parseConfig(const nlohmann::json& j) {
     cfg.trailingStop.enabled = params.value("trailing_enabled", j.value("trailing_enabled", true));
     cfg.trailingStop.interval = params.value(
         "trailing_interval",
-        j.value("trailing_interval", std::string(kTradingInterval)));
+        j.value("trailing_interval", std::string(kDefaultTrailingInterval)));
     cfg.trailingStop.candles = params.value("trailing_candles", j.value("trailing_candles", 42));
     cfg.trailingStop.checkInterval = std::chrono::seconds(params.value(
         "trailing_check_interval_seconds",
@@ -87,7 +111,7 @@ public:
         const std::vector<Kline>& klines) const override {
         (void)symbol;
 
-        if (interval != kTradingInterval) {
+        if (std::find(m_cfg.intervals.begin(), m_cfg.intervals.end(), interval) == m_cfg.intervals.end()) {
             return {};
         }
 
@@ -120,8 +144,8 @@ public:
                 .direction = strategy::Signal::Direction::Long,
                 .confidence = 1.0,
                 .atr = atr,
-                .reason = "4H Donchian breakout long: close=" + std::to_string(kEval.close) +
-                    " > high20=" + std::to_string(highestHigh),
+                .reason = std::string(interval) + " Donchian breakout long: close=" + formatValue(kEval.close) +
+                    " > high20=" + formatValue(highestHigh),
             };
         }
 
@@ -130,8 +154,8 @@ public:
                 .direction = strategy::Signal::Direction::Short,
                 .confidence = 1.0,
                 .atr = atr,
-                .reason = "4H Donchian breakout short: close=" + std::to_string(kEval.close) +
-                    " < low20=" + std::to_string(lowestLow),
+                .reason = std::string(interval) + " Donchian breakout short: close=" + formatValue(kEval.close) +
+                    " < low20=" + formatValue(lowestLow),
             };
         }
 
@@ -167,7 +191,7 @@ __declspec(dllexport) const char* strategyType() {
 }
 
 __declspec(dllexport) const char* pluginVersion() {
-    return "1.0.0";
+    return "1.1.0";
 }
 
 } // extern "C"

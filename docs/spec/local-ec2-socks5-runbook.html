@@ -287,7 +287,7 @@
         <ul>
           <li>EC2 instance is running and has an Elastic IP.</li>
           <li>Binance API key whitelist includes the EC2 Elastic IP.</li>
-          <li>Local machine has SSH access to EC2 with the private key.</li>
+          <li>Local machine has SSH access to EC2 with the repo-local private key at <code>.\infra\binance-bot-key.pem</code>.</li>
           <li><code>BINANCE_API_KEY</code> and <code>BINANCE_SECRET_KEY</code> are set in the bot terminal.</li>
           <li>For live trading, <code>BINANCE_TESTNET</code> is not set. For testnet, set <code>BINANCE_TESTNET=1</code>.</li>
         </ul>
@@ -296,24 +296,45 @@
       <section id="powershell">
         <h2>PowerShell Run</h2>
 
-        <h3>Terminal 1: open the EC2 SOCKS5 tunnel</h3>
-        <pre><code>ssh -i C:\path\to\key.pem `
+        <h3>Terminal 1: open the EC2 SOCKS5 tunnel with a portable repo-relative path</h3>
+        <pre><code>cd "&lt;repo-root&gt;"
+
+ssh -i ".\infra\binance-bot-key.pem" `
   -D 1080 `
   -N `
   -o ExitOnForwardFailure=yes `
   -o ServerAliveInterval=30 `
   -o ServerAliveCountMax=3 `
-  ubuntu@&lt;EC2_ELASTIC_IP&gt;</code></pre>
+  ubuntu@47.131.185.59</code></pre>
+
+        <h3>Terminal 1 alternative: absolute path on TVKT-TAC</h3>
+        <pre><code>ssh -i "D:\NGUYEN QUANG THANG\binance_trading_bot\infra\binance-bot-key.pem" `
+  -D 1080 `
+  -N `
+  -o ExitOnForwardFailure=yes `
+  -o ServerAliveInterval=30 `
+  -o ServerAliveCountMax=3 `
+  ubuntu@47.131.185.59</code></pre>
 
         <h3>Terminal 2: run the bot through the tunnel</h3>
-        <pre><code>cd C:\Users\Admin\Desktop\binance_trading_bot
+        <pre><code>cd "&lt;repo-root&gt;"
 
 $env:BINANCE_API_KEY="&lt;your_api_key&gt;"
 $env:BINANCE_SECRET_KEY="&lt;your_secret_key&gt;"
 $env:BINANCE_SOCKS5_PROXY="socks5://127.0.0.1:1080"
 $env:BINANCE_REQUIRE_SOCKS5_PROXY="1"
 
-.\build\bin\Release\binance_trading_bot.exe</code></pre>
+.\build\windows-msvc-debug\bin\Debug\binance_trading_bot.exe</code></pre>
+
+        <h3>Terminal 2 alternative: absolute path on TVKT-TAC</h3>
+        <pre><code>cd "D:\NGUYEN QUANG THANG\binance_trading_bot"
+
+$env:BINANCE_API_KEY="&lt;your_api_key&gt;"
+$env:BINANCE_SECRET_KEY="&lt;your_secret_key&gt;"
+$env:BINANCE_SOCKS5_PROXY="socks5://127.0.0.1:1080"
+$env:BINANCE_REQUIRE_SOCKS5_PROXY="1"
+
+.\build\windows-msvc-debug\bin\Debug\binance_trading_bot.exe</code></pre>
 
         <div class="callout ok">
           <code>BINANCE_REQUIRE_SOCKS5_PROXY=1</code> is a safety guard. If the tunnel env var is missing, the bot
@@ -326,7 +347,7 @@ $env:BINANCE_REQUIRE_SOCKS5_PROXY="1"
 
         <h3>Verify the tunnel egress IP</h3>
         <pre><code>curl.exe --socks5-hostname 127.0.0.1:1080 https://api.ipify.org</code></pre>
-        <p>The output must equal the EC2 Elastic IP that is whitelisted in Binance.</p>
+        <p>The output must equal the EC2 Elastic IP that is whitelisted in Binance: <code>47.131.185.59</code>.</p>
 
         <h3>Verify bot environment</h3>
         <pre><code>$env:BINANCE_SOCKS5_PROXY
@@ -353,6 +374,10 @@ $env:BINANCE_REQUIRE_SOCKS5_PROXY</code></pre>
             <tr>
               <td><code>Using SOCKS5 proxy from BINANCE_SOCKS5_PROXY: 127.0.0.1:1080</code></td>
               <td><span class="ok-text">Correct.</span> The bot is configured to use the EC2 tunnel.</td>
+            </tr>
+            <tr>
+              <td><code>Loaded Windows root certificates into OpenSSL store</code></td>
+              <td><span class="ok-text">Correct on Windows.</span> OpenSSL can verify Binance TLS certificates with the Windows root store.</td>
             </tr>
             <tr>
               <td><code>SOCKS5 proxy is not configured</code></td>

@@ -25,10 +25,10 @@ target_link_libraries(strategy_trend_breakout PRIVATE
     nlohmann_json::nlohmann_json
 )
 
-set(PLUGIN_DEPLOY_DIR "${CMAKE_CURRENT_LIST_DIR}/../..")
+set(SAFE_COPY_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/../../../cmake/safe_copy_if_different.cmake")
 add_custom_command(TARGET strategy_trend_breakout POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${PLUGIN_DEPLOY_DIR}"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "$<TARGET_FILE:strategy_trend_breakout>"
-        "${PLUGIN_DEPLOY_DIR}/$<TARGET_FILE_NAME:strategy_trend_breakout>"
+    COMMAND "${CMAKE_COMMAND}"
+        -Dsrc="$<TARGET_FILE:strategy_trend_breakout>"
+        -Ddst="$<TARGET_FILE_DIR:binance_trading_bot>/plugins/$<TARGET_FILE_NAME:strategy_trend_breakout>"
+        -P "${SAFE_COPY_SCRIPT}"
 )
