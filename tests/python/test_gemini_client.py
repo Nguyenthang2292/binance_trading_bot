@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pytest
+from unittest.mock import MagicMock
+from google.genai import types
 
 from tools.gemini_filter.gemini_client import parse_score_text
 
@@ -14,10 +16,6 @@ def test_parse_score_text_valid() -> None:
 def test_parse_score_text_invalid_raises() -> None:
     with pytest.raises(Exception):
         parse_score_text('{"score": 5, "analysis": "bad"}')
-
-
-from unittest.mock import MagicMock, patch, call
-from google.genai import types
 
 
 def _make_fake_response(text: str) -> MagicMock:
@@ -43,6 +41,8 @@ def test_generate_json_score_without_search_uses_json_schema() -> None:
     assert result["score"] == 0.8
     config_used = fake_client.models.generate_content.call_args.kwargs["config"]
     assert config_used.response_mime_type == "application/json"
+    from tools.gemini_filter.gemini_client import SCORE_SCHEMA
+    assert config_used.response_schema == SCORE_SCHEMA
     assert config_used.tools is None or config_used.tools == []
 
 
@@ -67,6 +67,7 @@ def test_generate_json_score_with_search_omits_json_schema() -> None:
     # Search tool must be present
     tools = getattr(config_used, "tools", None) or []
     assert len(tools) == 1
+    assert hasattr(tools[0], "google_search")
 
 
 def test_generate_json_score_config_built_in_single_call() -> None:
@@ -92,5 +93,32 @@ def test_generate_json_score_config_built_in_single_call() -> None:
     assert len(configs_captured) == 1
     # The config passed must already have tools set (not None), proving no post-construction mutation
     cfg = configs_captured[0]
-    assert (getattr(cfg, "tools", None) or [])  # non-empty tools list
+    assert len(getattr(cfg, "tools", None) or []) == 1
+
+
+def test_generate_json_score_no_search_config_built_in_single_call() -> None:
+    """Config for no-search path must be built in single call with schema fields."""
+    configs_captured: list = []
+
+    def fake_generate(**kwargs):
+        configs_captured.append(kwargs["config"])
+        resp = MagicMock()
+        resp.text = '{"score": 0.5, "analysis": "x"}'
+        return resp
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = fake_generate
+    from tools.gemini_filter.gemini_client import generate_json_score, SCORE_SCHEMA
+
+    generate_json_score(
+        client=fake_client,
+        model="gemini-2.0-flash",
+        contents="prompt",
+        use_google_search=False,
+    )
+    assert len(configs_captured) == 1
+    cfg = configs_captured[0]
+    assert cfg.response_mime_type == "application/json"
+    assert cfg.response_schema == SCORE_SCHEMA
+    assert len(getattr(cfg, "tools", None) or []) == 0
 
