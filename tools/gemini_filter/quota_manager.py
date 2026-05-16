@@ -4,7 +4,7 @@ import json
 import math
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -137,5 +137,5 @@ class QuotaManager:
     @staticmethod
     def _seconds_until_next_pacific_day() -> int:
         now = datetime.now(PACIFIC_TZ)
-        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() + 24 * 3600
-        return int(max(1, math.ceil(tomorrow - now.timestamp())))
+        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        return int(max(1, math.ceil((tomorrow - now).total_seconds())))
