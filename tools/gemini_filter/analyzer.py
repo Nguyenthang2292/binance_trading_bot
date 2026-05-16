@@ -487,8 +487,9 @@ def analyze(data: dict[str, Any], key_manager: Any) -> dict[str, Any]:
     t2 = threading.Thread(target=run_vision, daemon=True)
     t1.start()
     t2.start()
-    t1.join(timeout=120.0)
-    t2.join(timeout=120.0)
+    _deadline = time.monotonic() + 120.0
+    t1.join(timeout=max(0.0, _deadline - time.monotonic()))
+    t2.join(timeout=max(0.0, _deadline - time.monotonic()))
     if t1.is_alive() or t2.is_alive():
         with lock:
             errors.append("component_timeout:analysis threads did not finish within 120s")

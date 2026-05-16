@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from tools.gemini_filter.key_manager import _split_key_list
+import pytest
+from unittest.mock import MagicMock
+from google.genai import errors as genai_errors
+
+from tools.gemini_filter.key_manager import GeminiKeyManager, _is_retryable_key_error, _split_key_list, _HTTP_TIMEOUT_MS
 
 
 def test_split_key_list_supports_multiple_delimiters() -> None:
     parsed = _split_key_list("k1;k2,k3\nk4")
     assert parsed == ["k1", "k2", "k3", "k4"]
-
-
-import pytest
-from unittest.mock import MagicMock
-from google.genai import errors as genai_errors
-from tools.gemini_filter.key_manager import _is_retryable_key_error
 
 
 def _api_error(code: int) -> Exception:
@@ -37,6 +35,18 @@ def test_500_is_retryable() -> None:
     assert _is_retryable_key_error(_api_error(500))
 
 
+def test_502_is_retryable() -> None:
+    assert _is_retryable_key_error(_api_error(502))
+
+
+def test_503_is_retryable() -> None:
+    assert _is_retryable_key_error(_api_error(503))
+
+
+def test_504_is_retryable() -> None:
+    assert _is_retryable_key_error(_api_error(504))
+
+
 def test_client_constructed_with_http_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """genai.Client must be constructed with an http_options timeout."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -51,7 +61,6 @@ def test_client_constructed_with_http_timeout(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(genai_module, "Client", capturing_client)
 
-    from tools.gemini_filter.key_manager import GeminiKeyManager
     km = GeminiKeyManager()
 
     def fake_fn(client, key):
@@ -63,5 +72,4 @@ def test_client_constructed_with_http_timeout(monkeypatch: pytest.MonkeyPatch) -
     http_options = kwargs.get("http_options")
     assert http_options is not None, "http_options not passed to genai.Client"
     timeout = getattr(http_options, "timeout", None)
-    assert timeout is not None and timeout > 0, f"Expected positive timeout, got {timeout!r}"
-
+    assert timeout == _HTTP_TIMEOUT_MS, f"Expected timeout={_HTTP_TIMEOUT_MS}, got {timeout!r}"
