@@ -38,9 +38,6 @@ plugins/*.lib
 plugins/*.exp
 plugins/*.ilk
 
-# Generated review/report output
-docs/comprehensive-reviews/
-
 # Local IDE metadata
 .vs/
 .idea/
