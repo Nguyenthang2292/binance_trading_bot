@@ -487,8 +487,11 @@ def analyze(data: dict[str, Any], key_manager: Any) -> dict[str, Any]:
     t2 = threading.Thread(target=run_vision, daemon=True)
     t1.start()
     t2.start()
-    t1.join()
-    t2.join()
+    t1.join(timeout=120.0)
+    t2.join(timeout=120.0)
+    if t1.is_alive() or t2.is_alive():
+        with lock:
+            errors.append("component_timeout:analysis threads did not finish within 120s")
 
     latency_ms = int((time.perf_counter() - started) * 1000)
 

@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from typing import Callable, TypeVar
 
 from google import genai
-from google.genai import errors
+from google.genai import errors, types as genai_types
 
 T = TypeVar("T")
+
+_HTTP_TIMEOUT_MS = 30_000  # 30 seconds
 
 
 @dataclass(frozen=True)
@@ -20,7 +22,7 @@ class GeminiKey:
 def _is_retryable_key_error(exc: Exception) -> bool:
     if isinstance(exc, errors.APIError):
         code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-        return code in {401, 403, 429, 500, 502, 503, 504}
+        return code in {401, 429, 500, 502, 503, 504}
     lowered = str(exc).lower()
     return any(
         token in lowered
@@ -62,7 +64,10 @@ class GeminiKeyManager:
         last_error: Exception | None = None
         for offset in range(len(self._keys)):
             key = self._keys[(self._start + offset) % len(self._keys)]
-            client = genai.Client(api_key=key.value)
+            client = genai.Client(
+                api_key=key.value,
+                http_options=genai_types.HttpOptions(timeout=_HTTP_TIMEOUT_MS),
+            )
             try:
                 return fn(client, key)
             except Exception as exc:
