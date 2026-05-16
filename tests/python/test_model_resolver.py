@@ -100,3 +100,13 @@ def test_preview_excluded_when_not_allowed() -> None:
     result = _latest_core_model(models, tier="pro", allow_preview=False)
     assert result == "models/gemini-2.0-pro"
 
+
+def test_preview_wins_when_newer_version_than_stable() -> None:
+    """A preview at a higher version must beat a stable at a lower version."""
+    models = [
+        _Model(name="models/gemini-3.0-pro-preview", supported_actions=["generateContent"]),
+        _Model(name="models/gemini-2.5-pro", supported_actions=["generateContent"]),
+    ]
+    result = _latest_core_model(models, tier="pro", allow_preview=True)
+    assert result == "models/gemini-3.0-pro-preview"
+
