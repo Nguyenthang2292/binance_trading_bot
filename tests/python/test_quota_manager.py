@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from tools.gemini_filter.metrics_store import MetricsStore
 from tools.gemini_filter.quota_manager import QuotaConfig, QuotaManager
@@ -70,50 +73,58 @@ def test_cooldown_blocks_reserve(tmp_path: Path) -> None:
     assert result.reason == "model cooldown"
 
 
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-from unittest.mock import patch
+def _make_datetime_mock(fixed_now: datetime) -> type:
+    """Return a datetime drop-in whose .now() returns fixed_now; constructor works normally."""
+
+    class FakeDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return fixed_now
+
+    return FakeDatetime
 
 
-def test_seconds_until_next_pacific_day_standard_night(tmp_path: Path) -> None:
+def test_seconds_until_next_pacific_day_standard_night() -> None:
     """On a regular night, result must match the real wall-clock distance to next midnight."""
-    # 2025-01-15 23:00:00 PST (no DST active)
     fixed_now = datetime(2025, 1, 15, 23, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
     next_midnight = datetime(2025, 1, 16, 0, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
     expected = int((next_midnight - fixed_now).total_seconds())  # 3600
 
     import tools.gemini_filter.quota_manager as qm_module
-    with patch.object(qm_module, "datetime") as mock_dt:
-        mock_dt.now.return_value = fixed_now
-        # Allow datetime constructor to still work for replace+timedelta
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+    with patch.object(qm_module, "datetime", _make_datetime_mock(fixed_now)):
         result = QuotaManager._seconds_until_next_pacific_day()
 
     assert result == expected, f"Expected {expected}s, got {result}s"
 
 
-def test_seconds_until_next_pacific_day_dst_spring_forward(tmp_path: Path) -> None:
-    """During spring-forward (23-hour day), must still reach exactly next midnight.
-
-    The old code does today_midnight.timestamp() + 86400, which on a spring-forward day
-    overshoots to 01:00 PDT the next day instead of 00:00 PDT (midnight).
-    The bug is visible from inside the PDT portion of the day (after 03:00 PDT).
-    """
-    # 2025-03-09 03:00:00 PDT — clocks sprang forward at 2:00 AM PST (now in PDT/UTC-7)
-    # midnight of this day was at PST (UTC-8), but 'now' is PDT (UTC-7)
-    # old: today_midnight(PST).timestamp() + 86400 = 2025-03-10 01:00 PDT (1h past midnight!)
-    # new: today_midnight + timedelta(days=1) = 2025-03-10 00:00 PDT (correct)
-    after_spring = datetime(2025, 3, 9, 3, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+def test_seconds_until_next_pacific_day_dst_spring_forward() -> None:
+    """During spring-forward (23-hour day), must still reach exactly next midnight."""
+    # 2025-03-09 03:00:00 PDT — after clocks spring forward (2:00 AM PST → 3:00 AM PDT)
+    # This day is only 23 hours long; old code (+ 86400s) would overshoot by 1 hour.
+    fixed_now = datetime(2025, 3, 9, 3, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
     next_midnight = datetime(2025, 3, 10, 0, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
-    expected = int((next_midnight - after_spring).total_seconds())  # 75600 (21h)
+    expected = int((next_midnight - fixed_now).total_seconds())  # 75600 (21h)
 
     import tools.gemini_filter.quota_manager as qm_module
-    with patch.object(qm_module, "datetime") as mock_dt:
-        mock_dt.now.return_value = after_spring
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+    with patch.object(qm_module, "datetime", _make_datetime_mock(fixed_now)):
         result = QuotaManager._seconds_until_next_pacific_day()
 
-    assert result == expected, f"Expected {expected}s (21h remaining on 23h spring-forward day), got {result}s"
+    assert result == expected, f"Expected {expected}s (21h left in 23h day), got {result}s"
+
+
+def test_seconds_until_next_pacific_day_dst_fall_back() -> None:
+    """During fall-back (25-hour day), must still reach exactly next midnight."""
+    # 2025-11-02 01:30:00 PDT — before clocks fall back (2:00 AM PDT → 1:00 AM PST)
+    # This day is 25 hours long; old code (+ 86400s) would undershoot by 1 hour.
+    fixed_now = datetime(2025, 11, 2, 1, 30, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    next_midnight = datetime(2025, 11, 3, 0, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    expected = int((next_midnight - fixed_now).total_seconds())
+
+    import tools.gemini_filter.quota_manager as qm_module
+    with patch.object(qm_module, "datetime", _make_datetime_mock(fixed_now)):
+        result = QuotaManager._seconds_until_next_pacific_day()
+
+    assert result == expected, f"Expected {expected}s (in 25h day), got {result}s"
 
 
 def test_seconds_until_next_pacific_day_is_positive() -> None:
