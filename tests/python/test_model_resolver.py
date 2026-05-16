@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tools.gemini_filter.model_resolver import resolve_models
+from tools.gemini_filter.model_resolver import _latest_core_model, resolve_models
 
 
 @dataclass
@@ -70,4 +70,33 @@ def test_model_resolver_latest_pro_and_cache_hit(tmp_path: Path) -> None:
     assert first.sentiment_model == "gemini-3.1-pro-preview"
     assert first.vision_model == "gemini-3.1-pro-preview"
     assert second.sentiment_model == "gemini-3.1-pro-preview"
+
+
+def test_stable_preferred_over_preview_same_version() -> None:
+    """Stable model must win over preview when version numbers are identical."""
+    models = [
+        _Model(name="models/gemini-2.5-pro-preview", supported_actions=["generateContent"]),
+        _Model(name="models/gemini-2.5-pro", supported_actions=["generateContent"]),
+    ]
+    result = _latest_core_model(models, tier="pro", allow_preview=True)
+    assert result == "models/gemini-2.5-pro", f"Expected stable, got {result!r}"
+
+
+def test_preview_still_returned_when_no_stable_exists() -> None:
+    """If only preview models are available, return the preview."""
+    models = [
+        _Model(name="models/gemini-2.5-pro-preview", supported_actions=["generateContent"]),
+    ]
+    result = _latest_core_model(models, tier="pro", allow_preview=True)
+    assert result == "models/gemini-2.5-pro-preview"
+
+
+def test_preview_excluded_when_not_allowed() -> None:
+    """When allow_preview=False, preview models must be ignored entirely."""
+    models = [
+        _Model(name="models/gemini-2.5-pro-preview", supported_actions=["generateContent"]),
+        _Model(name="models/gemini-2.0-pro", supported_actions=["generateContent"]),
+    ]
+    result = _latest_core_model(models, tier="pro", allow_preview=False)
+    assert result == "models/gemini-2.0-pro"
 

@@ -67,7 +67,7 @@ def _latest_core_model(models: list[Any], *, tier: str, allow_preview: bool) -> 
             continue
         if not _is_generate_content_model(model):
             continue
-        preview_rank = 1 if match.group("preview") else 0
+        preview_rank = 0 if match.group("preview") else 1
         candidates.append((_version_key(match.group("version")), preview_rank, name))
     if not candidates:
         return None
