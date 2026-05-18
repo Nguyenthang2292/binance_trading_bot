@@ -53,6 +53,10 @@ boost::asio::awaitable<RestResult<std::vector<UserTrade>>> RestClientAdapter::us
     co_return co_await m_client.userTrades(std::move(symbol), orderId, startTime, endTime, limit);
 }
 
+boost::asio::awaitable<RestResult<LeverageResult>> RestClientAdapter::setLeverage(std::string symbol, int leverage) {
+    co_return co_await m_client.setLeverage(std::move(symbol), leverage);
+}
+
 boost::asio::awaitable<RestResult<BatchOrderResult>> RestClientAdapter::batchOrders(std::vector<OrderRequest> reqs) {
     co_return co_await m_client.batchOrders(std::move(reqs));
 }

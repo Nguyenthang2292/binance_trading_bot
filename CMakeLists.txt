@@ -40,6 +40,9 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(nlohmann_json)
 
 find_package(OpenSSL REQUIRED)
+if(NOT WIN32)
+    find_package(SQLite3 REQUIRED)
+endif()
 
 set(LIB_SOURCES
     src/context.cpp
@@ -80,6 +83,10 @@ set(LIB_SOURCES
     src/engine/price_filter.cpp
     src/engine/trailing_stop_controller.cpp
     src/engine/signal_engine.cpp
+    src/risk/risk_db.cpp
+    src/risk/equity_curve.cpp
+    src/risk/risk_metrics.cpp
+    src/risk/risk_controller.cpp
     src/catalog/plugin_handle.cpp
     src/catalog/plugin_loader.cpp
     src/catalog/strategy_catalog.cpp
@@ -142,6 +149,12 @@ set(LIB_HEADERS
     src/engine/price_filter.h
     src/engine/trailing_stop_controller.h
     src/engine/signal_engine.h
+    src/risk/risk_types.h
+    src/risk/irisk_port.h
+    src/risk/risk_db.h
+    src/risk/equity_curve.h
+    src/risk/risk_metrics.h
+    src/risk/risk_controller.h
     src/catalog/plugin_handle.h
     src/catalog/plugin_loader.h
     src/catalog/strategy_catalog.h
@@ -165,10 +178,11 @@ target_link_libraries(bot_lib PUBLIC
     OpenSSL::Crypto
 )
 if(NOT WIN32)
+    target_link_libraries(bot_lib PUBLIC SQLite::SQLite3)
     target_link_libraries(bot_lib PUBLIC pthread)
 endif()
 if(WIN32)
-    target_link_libraries(bot_lib PUBLIC Crypt32)
+    target_link_libraries(bot_lib PUBLIC Crypt32 winsqlite3)
 endif()
 target_compile_features(bot_lib PUBLIC cxx_std_23)
 target_compile_options(bot_lib PUBLIC $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
@@ -183,6 +197,8 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 add_subdirectory(plugins/src/trend_breakout)
 add_subdirectory(plugins/src/gartley_day_crossover)
 add_subdirectory(plugins/src/donchian_5_20_crossover)
+add_subdirectory(plugins/src/golden_crossover)
+add_subdirectory(plugins/src/monthly_close_model)
 
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
 
@@ -202,7 +218,15 @@ target_link_libraries(${PROJECT_NAME}_tests PRIVATE
     bot_lib
     GTest::gtest_main
 )
+add_dependencies(${PROJECT_NAME}_tests
+    strategy_trend_breakout
+    strategy_gartley_day_crossover
+    strategy_donchian_5_20_crossover
+    strategy_golden_crossover
+    strategy_monthly_close_model
+)
 target_include_directories(${PROJECT_NAME}_tests PRIVATE src)
+target_compile_definitions(${PROJECT_NAME}_tests PRIVATE BOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 set_target_properties(${PROJECT_NAME}_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )

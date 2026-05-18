@@ -99,6 +99,7 @@ TEST(Donchian520PluginTest, LoadsDefaultVariantConfig) {
     EXPECT_EQ(strategy->config().type, "donchian_5_20_crossover");
     EXPECT_EQ(strategy->config().intervals, (std::vector<std::string>{"1d", "4h", "1h", "30m"}));
     EXPECT_DOUBLE_EQ(strategy->config().minConfidence, 0.5);
+    EXPECT_DOUBLE_EQ(strategy->config().takeProfitPercent, 20.0);
 }
 
 TEST(Donchian520PluginTest, EmitsLongAndShortFromClosedCandles) {

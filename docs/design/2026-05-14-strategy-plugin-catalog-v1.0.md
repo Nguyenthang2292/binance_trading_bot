@@ -314,6 +314,7 @@ Extend `config.json` hien co:
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
+      "takeProfitPercent": 20.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.5,

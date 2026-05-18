@@ -12,7 +12,7 @@
 | Version | Date | Changes |
 |---|---|---|
 | 1.2 | 2026-05-16 | Chốt semantic là Gartley-style crossover theo candle của từng TF; giữ invariant một symbol chỉ có một position toàn hệ thống; ATR chỉ tính tới eval candle đã đóng; `minCandles` tăng lên 16 với default ATR |
-| 1.1 | 2026-05-16 | Mở rộng sang multi-timeframe: `1d`, `4h`, `1h`, `30m`; bỏ guard cứng interval; giảm scan_interval xuống 1800s |
+| 1.1 | 2026-05-16 | Mở rộng sang multi-timeframe: `1d`, `4h`, `1h`, `30m`; bỏ guard cứng interval; giảm scan_interval xuống 900s |
 | 1.0 | 2026-05-16 | Initial design |
 
 ---
@@ -69,7 +69,7 @@ confidence = clamp(bandWidth / mid / confThreshold, 0.0, 1.0)
 
 | Indicator | Params | Dùng cho |
 |---|---|---|
-| ATR | `period=14` | `signal.atr` — engine dùng để tính TP/SL và sizing |
+| ATR | `period=14` | `signal.atr` — engine dùng để sizing, SL và TP fallback theo `tp_multiplier` |
 | Fast MA (SMA of mean) | `fastPeriod=3` | Signal line |
 | Slow High MA (SMA of high, offset) | `slowPeriod=6`, `offset=2` | Upper band |
 | Slow Low MA (SMA of low, offset) | `slowPeriod=6`, `offset=2` | Lower band |
@@ -95,10 +95,11 @@ minCandles = max(fastPeriod + 1, 1 + offset + slowPeriod, atrPeriod + 2)
 | `atr_period` | 14 | Wilder ATR standard |
 | `risk_pct` | 0.01 | 1% balance per trade |
 | `sl_multiplier` | 1.5 | SL = entry ± 1.5 × ATR |
-| `tp_multiplier` | 3.0 | TP = entry ± 3.0 × ATR (R:R = 1:2) |
+| `takeProfitPercent` | 20.0 | TP mặc định theo Binance Futures ROI/PNL%; khoảng cách giá = ROI% / leverage |
+| `tp_multiplier` | 3.0 | ATR fallback khi `takeProfitPercent = 0.0` |
 | `min_notional` | 1.0 | Strategy floor; engine/symbol exchange filters vẫn có thể nâng floor bằng `max()` |
 | `min_confidence` | 0.5 | Lọc signal với band < 1% giá |
-| `scan_interval_seconds` | 1800 | Rescan mỗi 30 phút — khớp TF thấp nhất (30m) |
+| `scan_interval_seconds` | 900 | Rescan mỗi 15 phút — 2× per 30m candle |
 | `max_hold_duration_seconds` | 86400 | Time-exit sau 24 giờ |
 
 ### 2.7 Non-Goals
@@ -166,11 +167,12 @@ evaluate(symbol, interval, klines):
   "name": "Gartley 3&6 Candle Crossover",
   "type": "gartley_day_crossover",
   "intervals": ["1d", "4h", "1h", "30m"],
-  "scan_interval_seconds": 1800,
+  "scan_interval_seconds": 900,
   "max_hold_duration_seconds": 86400,
   "risk_pct": 0.01,
   "sl_multiplier": 1.5,
   "tp_multiplier": 3.0,
+  "takeProfitPercent": 20.0,
   "min_notional": 1.0,
   "atr_period": 14,
   "min_confidence": 0.5,
@@ -203,7 +205,7 @@ evaluate(symbol, interval, klines):
 - ATR: dùng `strategy::indicators::lastAtr()` từ `src/strategy/indicators/atr.h` trên slice closed candles `klines[0..evalIdx]`
 - Evaluation candle: `klines[size - 2]` — không dùng `klines.back()` đang hình thành cho signal hoặc ATR
 - `evaluate()` phải là `const` — không lưu state, tính lại mọi thứ từ `klines` mỗi lần gọi
-- `signal.atr` phải được điền khi có signal — engine dùng để sizing và TP/SL
+- `signal.atr` phải được điền khi có signal — engine dùng để sizing, SL và TP fallback theo `tp_multiplier`
 - Không có interval guard trong `evaluate()` — engine chỉ gọi evaluate() cho các interval trong `cfg.intervals`, nên guard là thừa với multi-TF design
 
 ---
@@ -231,4 +233,4 @@ evaluate(symbol, interval, klines):
 | `klines[size-2]` làm eval candle | `klines.back()` | Tránh candle chưa đóng; ATR cũng phải dùng closed candles | Approved |
 | Multi-TF: `1d`, `4h`, `1h`, `30m` | Single `1d` | Mở rộng cơ hội signal; logic MA không phụ thuộc TF cụ thể | Approved |
 | Bỏ interval guard trong `evaluate()` | Guard cứng như trend_breakout | Engine đã filter theo `cfg.intervals`; guard thừa với multi-TF | Approved |
-| `scan_interval` = 1800s | 3600s | Khớp TF thấp nhất 30m để không bỏ lỡ signal | Approved |
+| `scan_interval` = 900s | 3600s | Scan 2× per 30m candle để giảm rủi ro bỏ lỡ signal | Approved |

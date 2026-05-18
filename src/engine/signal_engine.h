@@ -8,6 +8,7 @@
 #include "engine/trailing_stop_controller.h"
 #include "engine/work_queue.h"
 #include "orders/orders.h"
+#include "risk/irisk_port.h"
 #include "scanner/market_scanner.h"
 #include "strategy/indicators/atr.h"
 #include "strategy/strategy_registry.h"
@@ -51,6 +52,7 @@ public:
     virtual boost::asio::awaitable<OrdersResult<NormalPlacementResult>> limit(LimitOrderDraft draft) = 0;
     virtual boost::asio::awaitable<OrdersResult<NormalPlacementResult>> protection(ProtectionOrderDraft draft) = 0;
     virtual boost::asio::awaitable<OrdersResult<NormalPlacementResult>> closeByMarket(CloseByMarketDraft draft) = 0;
+    virtual boost::asio::awaitable<OrdersResult<LeverageResult>> setLeverage(Symbol symbol, int leverage) = 0;
     virtual boost::asio::awaitable<OrdersResult<NormalCancelResult>> cancelNormalByOrderId(Symbol symbol, int64_t orderId) = 0;
     virtual boost::asio::awaitable<OrdersResult<NormalCancelResult>> cancelNormalByClientOrderId(
         Symbol symbol,
@@ -81,7 +83,8 @@ public:
         IExposurePort& exposure,
         IGeminiFilterPort& geminiFilter,
         GeminiFilterConfig geminiConfig,
-        Config config);
+        Config config,
+        IRiskPort* riskPort = nullptr);
 
     SignalEngine(
         IScannerPort& scanner,
@@ -91,7 +94,8 @@ public:
         IExposurePort& exposure,
         IGeminiFilterPort& geminiFilter,
         GeminiFilterConfig geminiConfig,
-        Config config);
+        Config config,
+        IRiskPort* riskPort = nullptr);
 
     SignalEngine(
         IScannerPort& scanner,
@@ -100,7 +104,8 @@ public:
         IOrdersPort& orders,
         IOrderCapPort& orderCap,
         IExposurePort& exposure,
-        Config config);
+        Config config,
+        IRiskPort* riskPort = nullptr);
 
     SignalEngine(
         IScannerPort& scanner,
@@ -108,7 +113,8 @@ public:
         IAccountPort& account,
         IOrdersPort& orders,
         IExposurePort& exposure,
-        Config config);
+        Config config,
+        IRiskPort* riskPort = nullptr);
 
     boost::asio::awaitable<void> run();
     void stop();
@@ -129,6 +135,7 @@ public:
     boost::asio::awaitable<void> processExpiredPositions(std::chrono::system_clock::time_point now);
     boost::asio::awaitable<void> processTrailingStops();
     boost::asio::awaitable<void> logExposureMetrics();
+    boost::asio::awaitable<void> notifyRiskPositionClosed();
 
     void onUserDataEvent(const UserDataEvent& event);
     const PositionTracker& tracker() const { return m_tracker; }
@@ -163,6 +170,7 @@ private:
     IOrderCapPort& m_orderCap;
     IExposurePort& m_exposure;
     IGeminiFilterPort& m_geminiFilter;
+    IRiskPort* m_riskPort{nullptr};
     GeminiFilterConfig m_geminiConfig;
     int m_geminiEvaluationsThisCycle{0};
     GeminiCycleGate m_geminiCycleGate;
@@ -216,6 +224,9 @@ public:
     }
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> closeByMarket(CloseByMarketDraft draft) override {
         co_return co_await m_orders.closeByMarket(std::move(draft));
+    }
+    boost::asio::awaitable<OrdersResult<LeverageResult>> setLeverage(Symbol symbol, int leverage) override {
+        co_return co_await m_orders.setLeverage(std::move(symbol), leverage);
     }
     boost::asio::awaitable<OrdersResult<NormalCancelResult>> cancelNormalByOrderId(Symbol symbol, int64_t orderId) override {
         co_return co_await m_orders.cancelNormalByOrderId(std::move(symbol), orderId);

@@ -17,6 +17,10 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> Orders::closeByMarke
     co_return co_await m_normalService->closeByMarket(std::move(draft));
 }
 
+boost::asio::awaitable<OrdersResult<LeverageResult>> Orders::setLeverage(Symbol symbol, int leverage) {
+    co_return co_await m_normalService->setLeverage(std::move(symbol), leverage);
+}
+
 boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> Orders::amendLimitOrder(AmendLimitOrderDraft draft) {
     co_return co_await m_normalService->amendLimitOrder(std::move(draft));
 }

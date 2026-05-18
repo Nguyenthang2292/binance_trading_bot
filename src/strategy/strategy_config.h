@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace strategy {
@@ -22,10 +23,12 @@ struct StrategyConfig {
     double riskPct{0.01};
     double slMultiplier{1.5};
     double tpMultiplier{3.0};
+    double takeProfitPercent{20.0};
     double minNotional{1.0};
     int atrPeriod{14};
     double minConfidence{0.0};
     TrailingStopConfig trailingStop;
+    std::unordered_map<std::string, std::chrono::seconds> maxHoldDurationByInterval;
 };
 
 } // namespace strategy

@@ -70,7 +70,7 @@ Strategy chỉ phát signal. Engine chịu trách nhiệm:
 - lấy `signal.atr` để sizing;
 - mở market order;
 - đặt initial SL theo `entry ± sl_multiplier × ATR`;
-- đặt TP xa theo `entry ± tp_multiplier × ATR`;
+- đặt TP theo Binance Futures ROI/PNL% qua `takeProfitPercent` (`price move % = takeProfitPercent / leverage`); khi `takeProfitPercent = 0.0` fallback về `entry ± tp_multiplier × ATR`;
 - quản lý trailing stop qua `TrailingStopController`;
 - đóng lệnh theo `max_hold_duration_seconds` nếu các exit khác không fire.
 
@@ -90,6 +90,7 @@ Strategy chỉ phát signal. Engine chịu trách nhiệm:
   "risk_pct": 0.01,
   "sl_multiplier": 1.5,
   "tp_multiplier": 20.0,
+  "takeProfitPercent": 20.0,
   "min_notional": 1.0,
   "atr_period": 14,
   "min_confidence": 0.5,
@@ -203,6 +204,6 @@ Trước khi bật production:
 | Breakout 20 candle trên 4H | 1H, 1D, weekly | User chọn rõ 20 candle 4H; phù hợp crypto medium-term ngắn | Approved |
 | Confidence = 1.0 cố định | Confidence theo breakout magnitude | Edge nằm ở exit; variable confidence chưa có backtest basis | Approved |
 | Initial SL = 1.5 × ATR | Fixed 1% stop | ATR tự điều chỉnh theo volatility và đã được engine hỗ trợ | Approved |
-| TP = 20 × ATR | Không đặt TP | Engine hiện có TP order flow; TP xa để trailing là exit chính | Approved |
+| TP = 20% mặc định, `20 × ATR` fallback | Không đặt TP | Engine hiện có TP order flow; TP xa để trailing là exit chính | Approved |
 | Trailing stop là engine module generic | Logic riêng trong `trend_breakout` | Dùng lại cho mọi strategy, không đổi `IStrategy` ABI, dễ test độc lập | Approved |
 | Controller chỉ tính decision, SignalEngine xử lý order | Controller tự gọi Orders | Tách calculation khỏi side effect, giảm coupling và dễ unit test | Approved |

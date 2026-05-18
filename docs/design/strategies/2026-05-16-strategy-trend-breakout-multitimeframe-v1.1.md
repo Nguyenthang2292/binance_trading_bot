@@ -25,7 +25,7 @@
 
 - The same Donchian breakout rule applies to all enabled timeframes.
 - Default enabled intervals for `trend_breakout` become `["30m", "1h", "4h"]`.
-- `breakout_period`, `atr_period`, `risk_pct`, `sl_multiplier`, `tp_multiplier`, and `min_confidence` remain shared across timeframes for v1.1.
+- `breakout_period`, `atr_period`, `risk_pct`, `sl_multiplier`, `takeProfitPercent`, `tp_multiplier`, and `min_confidence` remain shared across timeframes for v1.1.
 - Scanner must warm up and stream `30m`, `1h`, and `4h` klines.
 - Order attribution can be carried through `OrderMetadata.strategyTag` and log strings without changing Binance order APIs.
 - The tracker stores one position per symbol, so a symbol cannot hold separate `30m` and `4h` positions at the same time.
@@ -162,6 +162,7 @@ For v1.1, scanner should include `1h`, and the strategy should include `30m`, `1
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 20.0,
+      "takeProfitPercent": 20.0,
       "min_notional": 5.0,
       "atr_period": 14,
       "min_confidence": 0.5,

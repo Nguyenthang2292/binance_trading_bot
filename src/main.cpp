@@ -9,6 +9,10 @@
 #include "logger.h"
 #include "orders/orders.h"
 #include "orders/rest_client_adapter.h"
+#include "risk/equity_curve.h"
+#include "risk/risk_controller.h"
+#include "risk/risk_db.h"
+#include "risk/risk_metrics.h"
 #include "scanner/market_scanner.h"
 #include "strategy/strategy_registry.h"
 #include "ws/user_data_stream.h"
@@ -198,6 +202,9 @@ std::vector<std::string> strategyIntervals(const nlohmann::json& strategyCfg) {
     if (type == "gartley_day_crossover") {
         return {"1d", "4h", "1h", "30m"};
     }
+    if (type == "golden_crossover") {
+        return {"4h", "1h", "30m"};
+    }
     return intervals;
 }
 
@@ -238,6 +245,21 @@ int minWarmupCandles(const nlohmann::json& strategyCfg) {
             offset = 2;
         }
         minCandles = std::max(minCandles, std::max(fastPeriod + 1, 1 + offset + slowPeriod));
+    } else if (type == "golden_crossover") {
+        int maShort = 50;
+        int maLong = 200;
+        if (strategyCfg.contains("params") && strategyCfg.at("params").is_object()) {
+            const auto& params = strategyCfg.at("params");
+            maShort = params.value("ma_short", 50);
+            maLong = params.value("ma_long", 200);
+        }
+        if (maShort <= 0) {
+            maShort = 50;
+        }
+        if (maLong <= maShort) {
+            maLong = 200;
+        }
+        minCandles = std::max(minCandles, maLong);
     }
 
     return std::max(1, minCandles);
@@ -342,6 +364,7 @@ int main(int argc, char* argv[]) {
     const auto exposureJson = config.value("exposure_control", nlohmann::json::object());
     const auto orderCapJson = config.value("order_cap", nlohmann::json::object());
     const auto geminiJson = config.value("gemini_filter", nlohmann::json::object());
+    const auto riskJson = config.value("risk_analytics", nlohmann::json::object());
 
     engine::ExposureConfig exposureConfig;
     exposureConfig.enabled = exposureJson.value("enabled", false);
@@ -520,6 +543,14 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    engine::RiskConfig riskConfig;
+    try {
+        riskConfig = engine::RiskConfig::fromJson(riskJson);
+    } catch (const std::exception& e) {
+        Logger::instance().log(LogLevel::Error, std::string("Invalid risk_analytics config: ") + e.what());
+        return 1;
+    }
+
     ContextConfig contextConfig;
     contextConfig.apiKey = apiKey;
     contextConfig.secretKey = secretKey;
@@ -666,6 +697,41 @@ int main(int argc, char* argv[]) {
         Logger::instance().log(LogLevel::Info, "Gemini filter disabled");
     }
 
+    engine::NoOpRiskPort noOpRisk;
+    std::unique_ptr<engine::RiskDb> riskDb;
+    std::unique_ptr<engine::EquityCurve> riskCurve;
+    std::unique_ptr<engine::RiskMetrics> riskMetrics;
+    std::unique_ptr<engine::RiskController> riskController;
+    engine::IRiskPort* riskPort = &noOpRisk;
+
+    if (riskConfig.enabled) {
+        try {
+            riskDb = std::make_unique<engine::RiskDb>(riskConfig.dbPath);
+            riskCurve = std::make_unique<engine::EquityCurve>(*riskDb);
+            riskMetrics = std::make_unique<engine::RiskMetrics>(
+                riskConfig.riskFreeRate,
+                riskConfig.minDataPoints,
+                std::chrono::minutes{riskConfig.sampleIntervalMinutes});
+            riskController = std::make_unique<engine::RiskController>(
+                *riskDb,
+                *riskCurve,
+                *riskMetrics,
+                riskConfig);
+            riskPort = riskController.get();
+            Logger::instance().log(
+                LogLevel::Info,
+                "Risk analytics enabled db_path=" + quoteString(riskConfig.dbPath) +
+                    " basis=" + quoteString(engine::toString(riskConfig.equityBasis)) +
+                    " lookback_days=" + std::to_string(riskConfig.controlLookbackDays) +
+                    " sample_interval_minutes=" + std::to_string(riskConfig.sampleIntervalMinutes));
+        } catch (const std::exception& e) {
+            Logger::instance().log(LogLevel::Error, std::string("Risk analytics init failed: ") + e.what());
+            return 1;
+        }
+    } else {
+        Logger::instance().log(LogLevel::Info, "Risk analytics disabled");
+    }
+
     engine::SignalEngine signalEngine(
         scannerPort,
         registry,
@@ -683,7 +749,8 @@ int main(int argc, char* argv[]) {
             .trailingCheckInterval = std::chrono::seconds(engineJson.value("trailing_check_interval_seconds", 300)),
             .placeStopLoss = engineJson.value("place_stop_loss", true),
             .monitorTrailingStops = engineJson.value("monitor_trailing_stops", true),
-        });
+        },
+        riskPort);
     signalEngine.setScanCycleStatusCallback(
         [&strategyCatalog](int queueItems, int openPositions) {
             catalog::CatalogReporter::logRuntimeStatus(

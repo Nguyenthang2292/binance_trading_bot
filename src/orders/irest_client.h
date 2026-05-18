@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/expected_compat.h"
+#include "types/account.h"
 #include "types/trade.h"
 #include "types/error.h"
 
@@ -39,5 +40,8 @@ public:
         std::optional<int64_t> startTime = {},
         std::optional<int64_t> endTime = {},
         int limit = 500) = 0;
+    virtual boost::asio::awaitable<RestResult<LeverageResult>> setLeverage(std::string, int) {
+        co_return std::unexpected(BinanceError::fromApiResponse(-1, "setLeverage unsupported"));
+    }
     virtual boost::asio::awaitable<RestResult<BatchOrderResult>> batchOrders(std::vector<OrderRequest> reqs) = 0;
 };

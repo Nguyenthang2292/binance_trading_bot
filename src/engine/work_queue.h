@@ -2,6 +2,8 @@
 
 #include "strategy/strategy_registry.h"
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,8 +19,8 @@ class WorkQueue {
 public:
     static std::vector<WorkItem> build(
         const std::vector<std::string>& symbols,
-        const strategy::StrategyRegistry& registry);
+        const strategy::StrategyRegistry& registry,
+        std::optional<uint64_t> seed = std::nullopt);
 };
 
 } // namespace engine
-

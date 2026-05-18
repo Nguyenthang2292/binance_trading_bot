@@ -81,6 +81,7 @@ strategy::StrategyConfig parseConfig(const nlohmann::json& j) {
     cfg.riskPct = j.value("risk_pct", 0.01);
     cfg.slMultiplier = j.value("sl_multiplier", 1.5);
     cfg.tpMultiplier = j.value("tp_multiplier", 20.0);
+    cfg.takeProfitPercent = j.value("takeProfitPercent", j.value("take_profit_percent", 20.0));
     cfg.minNotional = j.value("min_notional", 1.0);
     cfg.atrPeriod = j.value("atr_period", 14);
     cfg.minConfidence = j.value("min_confidence", 0.5);

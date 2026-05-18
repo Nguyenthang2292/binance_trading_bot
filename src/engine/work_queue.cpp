@@ -1,6 +1,7 @@
 #include "engine/work_queue.h"
 
 #include <algorithm>
+#include <random>
 
 #include "logger.h"
 
@@ -8,30 +9,37 @@ namespace engine {
 
 std::vector<WorkItem> WorkQueue::build(
     const std::vector<std::string>& symbols,
-    const strategy::StrategyRegistry& registry) {
+    const strategy::StrategyRegistry& registry,
+    std::optional<uint64_t> seed) {
     std::vector<WorkItem> out;
     const auto strategies = registry.all();
     if (strategies.empty() || symbols.empty()) {
         return out;
     }
 
-    auto sortedSymbols = symbols;
-    std::sort(sortedSymbols.begin(), sortedSymbols.end());
-    if (strategies.size() > sortedSymbols.size()) {
-        const size_t unscheduled = strategies.size() - sortedSymbols.size();
+    if (strategies.size() > symbols.size()) {
+        const size_t unscheduled = strategies.size() - symbols.size();
         Logger::instance().log(
             LogLevel::Warning,
             "work queue strategy starvation this cycle unscheduled=" + std::to_string(unscheduled) +
-                " symbols=" + std::to_string(sortedSymbols.size()) +
+                " symbols=" + std::to_string(symbols.size()) +
                 " strategies=" + std::to_string(strategies.size()));
     }
 
-    for (size_t symbolIndex = 0; symbolIndex < sortedSymbols.size(); ++symbolIndex) {
+    auto shuffledSymbols = symbols;
+    const uint64_t rngSeed = seed.has_value() ? *seed : std::random_device{}();
+    std::mt19937_64 rng(rngSeed);
+    std::shuffle(shuffledSymbols.begin(), shuffledSymbols.end(), rng);
+
+    for (size_t symbolIndex = 0; symbolIndex < shuffledSymbols.size(); ++symbolIndex) {
         const auto* strategy = strategies[symbolIndex % strategies.size()];
+        if (!strategy) {
+            continue;
+        }
         const auto& cfg = strategy->config();
         for (const auto& interval : cfg.intervals) {
             out.push_back(WorkItem{
-                .symbol = sortedSymbols[symbolIndex],
+                .symbol = shuffledSymbols[symbolIndex],
                 .interval = interval,
                 .strategy = strategy,
             });

@@ -122,6 +122,7 @@ TEST(GartleyDayCrossoverPluginTest, LoadsDefaultConfig) {
     EXPECT_EQ(strategy->config().type, "gartley_day_crossover");
     EXPECT_EQ(strategy->config().intervals, (std::vector<std::string>{"1d", "4h", "1h", "30m"}));
     EXPECT_DOUBLE_EQ(strategy->config().minNotional, 1.0);
+    EXPECT_DOUBLE_EQ(strategy->config().takeProfitPercent, 20.0);
 }
 
 TEST(GartleyDayCrossoverPluginTest, EmitsLongShortAndNone) {

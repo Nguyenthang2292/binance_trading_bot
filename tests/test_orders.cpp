@@ -24,8 +24,10 @@ public:
     RestResult<void> cancelAllOrdersResult = RestResult<void>{};
     RestResult<std::vector<Order>> openOrdersResult = std::vector<Order>{};
     RestResult<std::vector<Order>> allOrdersResult = std::vector<Order>{};
+    RestResult<LeverageResult> setLeverageResult = LeverageResult{};
     std::function<void()> onNewOrder;
     int newOrderCalls{0};
+    int setLeverageCalls{0};
     int cancelAllOrdersCalls{0};
     int queryOrderByClientOrderIdCalls{0};
     int allOrdersCalls{0};
@@ -36,6 +38,8 @@ public:
     std::optional<int64_t> allOrdersStartTime;
     std::optional<int64_t> allOrdersEndTime;
     int allOrdersLimit{0};
+    std::string setLeverageSymbol;
+    int setLeverageValue{0};
 
     boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest) override {
         ++newOrderCalls;
@@ -97,6 +101,13 @@ public:
         std::optional<int64_t>,
         int) override {
         co_return std::vector<UserTrade>{};
+    }
+
+    boost::asio::awaitable<RestResult<LeverageResult>> setLeverage(std::string symbol, int leverage) override {
+        ++setLeverageCalls;
+        setLeverageSymbol = std::move(symbol);
+        setLeverageValue = leverage;
+        co_return setLeverageResult;
     }
 
     boost::asio::awaitable<RestResult<BatchOrderResult>> batchOrders(std::vector<OrderRequest>) override {
@@ -172,6 +183,27 @@ TEST(OrdersTest, MarketTreatsHttp500AsUnknownPendingReconcile) {
     EXPECT_EQ(*result->errorCategory, OrderErrorCategory::ExchangeReject);
     ASSERT_TRUE(result->binanceCode.has_value());
     EXPECT_EQ(*result->binanceCode, 500);
+}
+
+TEST(OrdersTest, SetLeverageDelegatesToRestClient) {
+    StubRestClient rest;
+    rest.setLeverageResult = LeverageResult{
+        .symbol = "BTCUSDT",
+        .leverage = 13,
+        .maxNotionalValue = 100000.0,
+    };
+
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    Orders orders(rest, cfg);
+
+    auto result = runAwaitable(orders.setLeverage("BTCUSDT", 13));
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(rest.setLeverageCalls, 1);
+    EXPECT_EQ(rest.setLeverageSymbol, "BTCUSDT");
+    EXPECT_EQ(rest.setLeverageValue, 13);
+    EXPECT_EQ(result->leverage, 13);
 }
 
 TEST(OrdersTest, QuerySnapshotPreservesDecimalStrings) {

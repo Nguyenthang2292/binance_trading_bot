@@ -130,6 +130,7 @@ void expectShortSignal(
 TEST(TrendBreakoutPluginTest, EmitsLongAndShortFor30m) {
     auto plugin = loadTrendBreakoutPlugin();
     auto strategy = createTrendBreakoutStrategy(plugin);
+    EXPECT_DOUBLE_EQ(strategy->config().takeProfitPercent, 20.0);
 
     const auto longSignal = strategy->evaluate("BTCUSDT", "30m", makeBreakoutKlines(101.0));
     expectLongSignal(longSignal, "30m", "close=101 > high20=100");

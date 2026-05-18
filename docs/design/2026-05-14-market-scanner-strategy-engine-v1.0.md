@@ -31,10 +31,10 @@ Thiet ke ba module moi tren nen tang C++23 Binance Futures SDK hien co:
 ### 2.1 Summary
 
 - **Market Scanner**: Subscribe WebSocket kline streams cho ~2000 futures symbols. Timeframes configurable, bat dau voi `15m` va `30m`. In-memory cache moi symbol × interval → `vector<Kline>` kich co fixed buffer (200 candles).
-- **Strategy Framework**: Plugin interface `IStrategy`. Moi strategy nhan `(symbol, interval, klines)` → tra `Signal` co direction (Long/Short/None), confidence, va ATR. Config per-strategy: `scan_interval`, `max_hold_duration`, `risk_pct`, `sl_multiplier`, `tp_multiplier`, `min_notional`, `atr_period`.
+- **Strategy Framework**: Plugin interface `IStrategy`. Moi strategy nhan `(symbol, interval, klines)` → tra `Signal` co direction (Long/Short/None), confidence, va ATR. Config per-strategy: `scan_interval`, `max_hold_duration`, `risk_pct`, `sl_multiplier`, `takeProfitPercent`, `tp_multiplier`, `min_notional`, `atr_period`.
 - **Signal Engine**: Sequential work-queue `vector<WorkItem{symbol, interval, strategy*}>`. Round-robin la cach phan cong (symbol × interval) sang strategy, xu ly tuan tu. Gap signal → execute. Skip symbol neu da co open position (one-way mode). Sau khi het queue → sleep theo `scan_interval` cua strategy → rescan.
 - **Position Sizing**: `size = max(min_notional, balance × risk_pct / (atr × sl_multiplier))`. Per-strategy config. Min $1 cho account < $50.
-- **TP/SL**: ATR-based. TP = entry ± `tp_multiplier × ATR`. SL = entry ∓ `sl_multiplier × ATR`. Time-exit = dong lenh sau `max_hold_duration` neu khong hit.
+- **TP/SL**: TP defaults to Binance Futures ROI/PNL% via `takeProfitPercent` (`price move % = takeProfitPercent / leverage`); when `takeProfitPercent = 0.0`, TP falls back to entry ± `tp_multiplier × ATR`. SL = entry ∓ `sl_multiplier × ATR`. Time-exit = dong lenh sau `max_hold_duration` neu khong hit.
 
 ### 2.2 Assumptions
 
@@ -195,7 +195,8 @@ struct StrategyConfig {
 
     double risk_pct{0.01};         // 1% of available balance per trade
     double sl_multiplier{1.5};     // SL = entry ± sl_multiplier × ATR
-    double tp_multiplier{3.0};     // TP = entry ± tp_multiplier × ATR
+    double tp_multiplier{3.0};     // TP fallback = entry ± tp_multiplier × ATR
+    double takeProfitPercent{20.0}; // TP default = Binance Futures ROI/PNL%
     double min_notional{1.0};      // minimum USDT per order (Binance min = 5, nhung de $1 macro)
     int    atr_period{14};         // period cho ATR calculation
 
@@ -624,6 +625,7 @@ Cau hinh engine duoc doc tu `config.json` (extend file hien co):
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
+      "takeProfitPercent": 20.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.5

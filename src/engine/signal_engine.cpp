@@ -16,6 +16,7 @@
 #include <exception>
 #include <future>
 #include <iomanip>
+#include <random>
 #include <sstream>
 #include <type_traits>
 #include <unordered_map>
@@ -107,6 +108,12 @@ std::string quoteString(std::string_view value) {
     return out.str();
 }
 
+int64_t nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
 std::optional<OrderMetadata> buildOrderMetadata(
     std::string_view strategyName,
     std::string_view signalInterval,
@@ -135,6 +142,33 @@ std::optional<OrderMetadata> buildOrderMetadata(
         return std::nullopt;
     }
     return metadata;
+}
+
+constexpr int kMinOrderLeverage = 2;
+constexpr int kMaxOrderLeverage = 20;
+
+int randomOrderLeverage() {
+    thread_local std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> distribution(kMinOrderLeverage, kMaxOrderLeverage);
+    return distribution(rng);
+}
+
+double takeProfitDistance(double entryPrice, double atr, const strategy::StrategyConfig& cfg, int leverage) {
+    if (cfg.takeProfitPercent > 0.0) {
+        const double effectiveLeverage = leverage > 0 ? static_cast<double>(leverage) : 1.0;
+        return entryPrice * cfg.takeProfitPercent / (100.0 * effectiveLeverage);
+    }
+    return atr * cfg.tpMultiplier;
+}
+
+std::chrono::seconds maxHoldDurationForInterval(
+    const strategy::StrategyConfig& cfg,
+    std::string_view signalInterval) {
+    const auto it = cfg.maxHoldDurationByInterval.find(std::string(signalInterval));
+    if (it != cfg.maxHoldDurationByInterval.end()) {
+        return it->second;
+    }
+    return cfg.maxHoldDuration;
 }
 
 } // namespace
@@ -238,7 +272,8 @@ SignalEngine::SignalEngine(
     IExposurePort& exposure,
     IGeminiFilterPort& geminiFilter,
     GeminiFilterConfig geminiConfig,
-    Config config)
+    Config config,
+    IRiskPort* riskPort)
     : m_scanner(scanner),
       m_registry(registry),
       m_account(account),
@@ -246,6 +281,7 @@ SignalEngine::SignalEngine(
       m_orderCap(orderCap),
       m_exposure(exposure),
       m_geminiFilter(geminiFilter),
+      m_riskPort(riskPort),
       m_geminiConfig(std::move(geminiConfig)),
       m_config(config),
       m_scanSleepTimer(m_scanner.ioContext()),
@@ -260,7 +296,8 @@ SignalEngine::SignalEngine(
     IExposurePort& exposure,
     IGeminiFilterPort& geminiFilter,
     GeminiFilterConfig geminiConfig,
-    Config config)
+    Config config,
+    IRiskPort* riskPort)
     : SignalEngine(
           scanner,
           registry,
@@ -270,7 +307,8 @@ SignalEngine::SignalEngine(
           exposure,
           geminiFilter,
           std::move(geminiConfig),
-          config) {}
+          config,
+          riskPort) {}
 
 SignalEngine::SignalEngine(
     IScannerPort& scanner,
@@ -279,7 +317,8 @@ SignalEngine::SignalEngine(
     IOrdersPort& orders,
     IOrderCapPort& orderCap,
     IExposurePort& exposure,
-    Config config)
+    Config config,
+    IRiskPort* riskPort)
     : SignalEngine(
           scanner,
           registry,
@@ -289,7 +328,8 @@ SignalEngine::SignalEngine(
           exposure,
           defaultGeminiPort(),
           GeminiFilterConfig{.enabled = false, .mode = GeminiFilterMode::Disabled},
-          config) {}
+          config,
+          riskPort) {}
 
 SignalEngine::SignalEngine(
     IScannerPort& scanner,
@@ -297,7 +337,8 @@ SignalEngine::SignalEngine(
     IAccountPort& account,
     IOrdersPort& orders,
     IExposurePort& exposure,
-    Config config)
+    Config config,
+    IRiskPort* riskPort)
     : SignalEngine(
           scanner,
           registry,
@@ -307,7 +348,8 @@ SignalEngine::SignalEngine(
           exposure,
           defaultGeminiPort(),
           GeminiFilterConfig{.enabled = false, .mode = GeminiFilterMode::Disabled},
-          config) {}
+          config,
+          riskPort) {}
 
 boost::asio::awaitable<void> SignalEngine::run() {
     if (m_running.exchange(true)) {
@@ -379,6 +421,20 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
     m_geminiEvaluationsThisCycle = 0;
     m_geminiCycleGate = {};
 
+    if (m_riskPort) {
+        account::AccountSnapshotRequest request;
+        request.includePositions = true;
+        const auto snapshotResult = co_await m_account.snapshot(request);
+        if (snapshotResult) {
+            m_riskPort->onScanCycle(*snapshotResult, nowMs());
+        } else {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "risk onScanCycle skipped: snapshot failed reason=" +
+                    quoteString(accountErrorToString(snapshotResult.error())));
+        }
+    }
+
     if (!symbols.empty() && allStrategies.size() > symbols.size()) {
         Logger::instance().log(
             LogLevel::Warning,
@@ -405,6 +461,10 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
             LogLevel::Info,
             "gemini gate cycle summary closed=true reason=" + quoteString(m_geminiCycleGate.reason) +
                 " skipped_items=" + std::to_string(m_geminiCycleGate.skippedItems));
+    }
+
+    if (m_riskPort) {
+        co_await m_riskPort->maybeRecompute(nowMs());
     }
 
     co_await logExposureMetrics();
@@ -635,6 +695,15 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         }
     }
 
+    if (m_riskPort && !m_riskPort->canOpenPosition()) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "risk gate blocked symbol=" + std::string(symbol) +
+                " tf=" + std::string(signalInterval) +
+                " status=HARD_BREACH");
+        co_return Result<void>{};
+    }
+
     if (m_geminiConfig.enabled && m_geminiConfig.mode != GeminiFilterMode::Disabled) {
         if (m_geminiEvaluationsThisCycle >= m_geminiConfig.maxEvaluationsPerScanCycle) {
             if (m_geminiConfig.mode == GeminiFilterMode::Enforce || m_geminiConfig.blockOnBudgetExhausted) {
@@ -737,6 +806,19 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         co_return Result<void>{};
     }
 
+    const int requestedLeverage = randomOrderLeverage();
+    auto leverageResult = co_await m_orders.setLeverage(std::string(symbol), requestedLeverage);
+    if (!leverageResult) {
+        m_tracker.remove(symbol);
+        Logger::instance().log(
+            LogLevel::Warning,
+            "set leverage failed symbol=" + std::string(symbol) +
+                " requested_leverage=" + std::to_string(requestedLeverage) +
+                " error=" + quoteString(leverageResult.error().toString()));
+        co_return std::unexpected(leverageResult.error());
+    }
+    const int activeLeverage = leverageResult->leverage > 0 ? leverageResult->leverage : requestedLeverage;
+
     Logger::instance().log(
         LogLevel::Info,
         "opening position strategy=" + quoteString(cfg.name) +
@@ -744,7 +826,8 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             " symbol=" + std::string(symbol) +
             " side=" + (direction == strategy::Signal::Direction::Long ? "BUY" : "SELL") +
             " qty=" + std::string(qty->value()) +
-            " notional=" + fmt2(size.notional));
+            " notional=" + fmt2(size.notional) +
+            " leverage=" + std::to_string(activeLeverage));
 
     const auto metadata = buildOrderMetadata(cfg.name, signalInterval, signalReason);
     const auto side = openSide(direction);
@@ -779,9 +862,10 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
                 "market placement returned invalid avgPrice for symbol=" + std::string(symbol));
         }
     }
+    const double tpDistance = takeProfitDistance(entryPrice, atr, cfg, activeLeverage);
     const double tpPriceValue = direction == strategy::Signal::Direction::Long
-        ? entryPrice + (atr * cfg.tpMultiplier)
-        : entryPrice - (atr * cfg.tpMultiplier);
+        ? entryPrice + tpDistance
+        : entryPrice - tpDistance;
     const auto tpRounding = direction == strategy::Signal::Direction::Long
         ? PriceRounding::Down
         : PriceRounding::Up;
@@ -874,7 +958,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     tracked.symbol = std::string(symbol);
     tracked.direction = direction;
     tracked.openedAt = std::chrono::system_clock::now();
-    tracked.maxHoldDuration = cfg.maxHoldDuration;
+    tracked.maxHoldDuration = maxHoldDurationForInterval(cfg, signalInterval);
     tracked.entryPrice = entryPrice;
     tracked.quantity = size.quantity;
     tracked.strategyName = cfg.name;
@@ -943,7 +1027,7 @@ boost::asio::awaitable<void> SignalEngine::logExposureMetrics() {
 
     Logger::instance().log(
         LogLevel::Info,
-        "exposure metrics"
+            "exposure metrics"
         " positions=" + std::to_string(metrics.positionCount) +
             " balance=" + fmt2(balance) +
             " long_beta=" + fmt2(metrics.longBetaExposure) +
@@ -952,6 +1036,24 @@ boost::asio::awaitable<void> SignalEngine::logExposureMetrics() {
             " gross_beta=" + fmt2(metrics.grossBetaExposure) +
             " net_x_balance=" + fmt2(netPct) +
             " gross_x_balance=" + fmt2(grossPct));
+}
+
+boost::asio::awaitable<void> SignalEngine::notifyRiskPositionClosed() {
+    if (!m_riskPort) {
+        co_return;
+    }
+
+    account::AccountSnapshotRequest request;
+    request.includePositions = true;
+    const auto snapshotResult = co_await m_account.snapshot(request);
+    if (!snapshotResult) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "risk onPositionClosed skipped: snapshot failed reason=" +
+                quoteString(accountErrorToString(snapshotResult.error())));
+        co_return;
+    }
+    m_riskPort->onPositionClosed(*snapshotResult, nowMs());
 }
 
 boost::asio::awaitable<void> SignalEngine::monitorTimeExit() {
@@ -1001,6 +1103,9 @@ boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions() {
             continue;
         }
         if (m_tracker.removeIfOpenedAt(tracked.symbol, tracked.openedAt)) {
+            if (m_riskPort) {
+                m_riskPort->onPositionClosed(*snapshotResult, nowMs());
+            }
             Logger::instance().log(
                 LogLevel::Info,
                 "tracker reconciliation removed stale symbol=" + tracked.symbol);
@@ -1044,6 +1149,7 @@ boost::asio::awaitable<void> SignalEngine::processExpiredPositions(std::chrono::
         const auto liveQty = co_await livePositionQuantity(pos.symbol);
         if (liveQty.has_value() && isFlatPositionQty(*liveQty)) {
             (void)m_tracker.removeIfOpenedAt(pos.symbol, pos.openedAt);
+            co_await notifyRiskPositionClosed();
             continue;
         }
 
@@ -1093,6 +1199,7 @@ boost::asio::awaitable<void> SignalEngine::processExpiredPositions(std::chrono::
 
         if (closeSucceeded || (liveQty.has_value() && isFlatPositionQty(*liveQty))) {
             (void)m_tracker.removeIfOpenedAt(pos.symbol, pos.openedAt);
+            co_await notifyRiskPositionClosed();
         } else {
             Logger::instance().log(
                 LogLevel::Warning,

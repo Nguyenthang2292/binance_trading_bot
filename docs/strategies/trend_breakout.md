@@ -35,7 +35,8 @@ Plugin bỏ qua mọi interval khác `4h`.
 | `atr_period` | 14 | Chu kỳ ATR |
 | `risk_pct` | 0.01 | 1% balance mỗi lệnh |
 | `sl_multiplier` | 1.5 | Initial SL = entry ± 1.5 × ATR |
-| `tp_multiplier` | 20.0 | TP xa để trailing stop là exit chính |
+| `takeProfitPercent` | 20.0 | TP mặc định theo Binance Futures ROI/PNL%; khoảng cách giá = ROI% / leverage |
+| `tp_multiplier` | 20.0 | ATR fallback khi `takeProfitPercent = 0.0` |
 | `trailing_enabled` | true | Bật generic engine trailing stop |
 | `trailing_interval` | `4h` | Interval dùng để tính trailing |
 | `trailing_candles` | 42 | Lowest low / highest high của 42 candle 4H đã đóng |

@@ -29,7 +29,7 @@ Các tham số `3/6/2` là số candle trên timeframe đang evaluate, không ph
 
 | Indicator | Params | Vai trò |
 |---|---|---|
-| ATR | `period=14` | Đo volatility trên candle đã đóng — engine dùng để tính TP/SL và sizing |
+| ATR | `period=14` | Đo volatility trên candle đã đóng — engine dùng để sizing, SL và TP fallback |
 | Fast MA | SMA(3) của `(high + low) / 2` | Signal line |
 | Slow High MA | SMA(6) của `high`, offset 2 candle | Upper band boundary |
 | Slow Low MA | SMA(6) của `low`, offset 2 candle | Lower band boundary |
@@ -48,10 +48,11 @@ Các tham số `3/6/2` là số candle trên timeframe đang evaluate, không ph
 | `atr_period` | 14 | Chu kỳ ATR |
 | `risk_pct` | 0.01 | 1% balance mỗi lệnh |
 | `sl_multiplier` | 1.5 | SL = entry ± 1.5 × ATR |
-| `tp_multiplier` | 3.0 | TP = entry ± 3.0 × ATR |
+| `takeProfitPercent` | 20.0 | TP mặc định theo Binance Futures ROI/PNL%; khoảng cách giá = ROI% / leverage |
+| `tp_multiplier` | 3.0 | ATR fallback khi `takeProfitPercent = 0.0` |
 | `min_notional` | 1.0 | Strategy floor; engine/symbol filters có thể nâng floor |
 | `min_confidence` | 0.5 | Lọc signal với band < 1% giá |
-| `scan_interval_seconds` | 1800 | Rescan mỗi 30 phút |
+| `scan_interval_seconds` | 900 | Rescan mỗi 15 phút |
 | `max_hold_duration_seconds` | 86400 | Time-exit sau 24 giờ |
 
 ---
@@ -65,7 +66,7 @@ Hoạt động tốt nhất trong thị trường có trend/momentum rõ trên t
 ## Giới Hạn & Cảnh Báo
 
 - Đây là Gartley-style candle crossover, không phải bản sao nguyên nghĩa 3/6 tuần hay 3/6 ngày trên intraday timeframe.
-- Params mặc định chưa được backtest — cần optimize `conf_threshold`, `sl_multiplier`, `tp_multiplier` trước khi dùng production
+- Params mặc định chưa được backtest — cần optimize `conf_threshold`, `sl_multiplier`, `takeProfitPercent`/`tp_multiplier` trước khi dùng production
 - `conf_threshold` cần tune theo từng market; crypto volatile có thể cần giảm xuống `0.01`
 - Không có trailing stop tích hợp — phụ thuộc vào `max_hold_duration_seconds` làm time-exit
 - Engine giữ invariant một symbol chỉ có một position toàn hệ thống; strategy không tự mở nhiều position theo từng TF.

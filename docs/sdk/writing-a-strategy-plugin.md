@@ -34,9 +34,11 @@ Typical config:
   "intervals": ["15m"],
   "scan_interval_seconds": 3600,
   "max_hold_duration_seconds": 86400,
+  "max_hold_duration_by_interval_seconds": {},
   "risk_pct": 0.01,
   "sl_multiplier": 1.5,
   "tp_multiplier": 3.0,
+  "takeProfitPercent": 20.0,
   "min_notional": 1.0,
   "atr_period": 14,
   "min_confidence": 0.5,
@@ -70,6 +72,8 @@ Build steps (Windows, MSVC):
 - `strategyType()` equals `strategies[].type`
 - `config().intervals` is not empty
 - `evaluate()` returns `Signal::Direction::None` when no signal
-- `Signal.atr > 0` when strategy expects engine TP/SL sizing from strategy ATR
+- `Signal.atr > 0` for ATR-based sizing, SL placement, and `tp_multiplier` fallback
+- `config().takeProfitPercent` defaults to `20.0` and is interpreted as Binance Futures ROI/PNL%; price distance is `ROI% / symbol leverage`; set it to `0.0` to use `tp_multiplier` for TP
+- `config().maxHoldDurationByInterval` is optional; when populated, the engine uses the entry for the signal timeframe and falls back to `config().maxHoldDuration`
 - `config().trailingStop.enabled` is set only when the strategy expects the generic engine trailing stop monitor to manage SL movement
 

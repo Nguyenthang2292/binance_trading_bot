@@ -19,6 +19,7 @@ public:
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> market(MarketOrderDraft draft);
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> limit(LimitOrderDraft draft);
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> closeByMarket(CloseByMarketDraft draft);
+    boost::asio::awaitable<OrdersResult<LeverageResult>> setLeverage(Symbol symbol, int leverage);
     boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> amendLimitOrder(AmendLimitOrderDraft draft);
 
     boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> amendLimitOrderByOrderId(

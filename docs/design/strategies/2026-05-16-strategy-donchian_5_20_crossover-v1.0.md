@@ -42,7 +42,7 @@ Thiết kế này không được coi là tương đương hiệu suất với D
 
 | Indicator | Params | Dùng cho |
 |---|---|---|
-| ATR | period=14 | `signal.atr` — engine dùng cho TP/SL và sizing |
+| ATR | period=14 | `signal.atr` — engine dùng cho sizing, SL và TP fallback theo `tp_multiplier` |
 | SMA | period=5 (short_period) | Short-term trend |
 | SMA | period=20 (long_period) | Long-term trend |
 
@@ -63,10 +63,11 @@ SMA được implement local trong plugin (helper đơn giản, không dependenc
 | `atr_period` | 14 | Wilder ATR standard |
 | `risk_pct` | 0.01 | 1% balance per trade |
 | `sl_multiplier` | 1.5 | SL = entry ± 1.5 × ATR |
-| `tp_multiplier` | 3.0 | TP = entry ± 3.0 × ATR |
+| `takeProfitPercent` | 20.0 | TP mặc định theo Binance Futures ROI/PNL%; khoảng cách giá = ROI% / leverage |
+| `tp_multiplier` | 3.0 | ATR fallback khi `takeProfitPercent = 0.0` |
 | `min_notional` | 1.0 | Khớp default hiện tại của engine/SDK |
 | `min_confidence` | 0.5 | Filter safety net — confidence luôn 1.0 nên filter không active |
-| `scan_interval` | 900s | Scan mỗi 15 phút — 2× per 30m candle, ≤ 1800 per convention |
+| `scan_interval` | 900s | Scan mỗi 15 phút — 2× per 30m candle, ≤ 900 per convention |
 | `max_hold_duration` | 86400s | 24h time-exit |
 | `short_period` | 5 | Như nguyên bản Donchian |
 | `long_period` | 20 | Như nguyên bản Donchian |
@@ -83,6 +84,7 @@ SMA được implement local trong plugin (helper đơn giản, không dependenc
 | `risk_pct` | `> 0` |
 | `sl_multiplier` | `> 0` |
 | `tp_multiplier` | `> 0` |
+| `takeProfitPercent` | `>= 0`; `0.0` uses ATR fallback |
 | `min_notional` | `>= 0` |
 | `min_confidence` | `0 <= min_confidence <= 1` |
 
@@ -148,6 +150,7 @@ evaluate(symbol, interval, klines):
   "risk_pct": 0.01,
   "sl_multiplier": 1.5,
   "tp_multiplier": 3.0,
+  "takeProfitPercent": 20.0,
   "min_notional": 1.0,
   "atr_period": 14,
   "min_confidence": 0.5,
@@ -183,10 +186,10 @@ evaluate(symbol, interval, klines):
 - `createStrategy()` validate params và config risk fields; invalid config return `nullptr`
 - `evaluate()` tính `minCandles = max(long_period, atr_period + 1)` thay vì hard-code 25
 - `evaluate()` phải là `const` và **không được giữ state** — tính lại mọi thứ từ `klines` mỗi lần gọi
-- `signal.atr` PHẢI được điền — engine dùng để tính TP/SL và sizing
+- `signal.atr` PHẢI được điền — engine dùng để sizing, SL và TP fallback theo `tp_multiplier`
 - **Always-signaling behavior**: strategy trả Long hoặc Short gần như mọi lúc. Engine phải có logic dedup để không mở duplicate position theo cùng direction. Điều này nằm ngoài scope của strategy plugin.
 - **Reason string format**: dùng `std::fixed << std::setprecision(2)` để giữ 2 decimal (reviewer U-1)
-- `"1d"` interval: signal fire mỗi 1800s nhưng daily MA chỉ thay đổi khi có daily candle mới đóng. Behavior này là expected — engine dedup xử lý.
+- `"1d"` interval: signal fire mỗi 900s nhưng daily MA chỉ thay đổi khi có daily candle mới đóng. Behavior này là expected — engine dedup xử lý.
 - Tham khảo `docs/sdk/writing-a-strategy-plugin.md` cho DLL setup chi tiết
 
 ---

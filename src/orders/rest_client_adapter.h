@@ -29,6 +29,7 @@ public:
         std::optional<int64_t> startTime = {},
         std::optional<int64_t> endTime = {},
         int limit = 500) override;
+    boost::asio::awaitable<RestResult<LeverageResult>> setLeverage(std::string symbol, int leverage) override;
     boost::asio::awaitable<RestResult<BatchOrderResult>> batchOrders(std::vector<OrderRequest> reqs) override;
 
 private:

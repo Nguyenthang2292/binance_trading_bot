@@ -26,7 +26,7 @@ Biến thể crypto của hệ thống Richard Donchian (1960) — một trong n
 
 | Indicator | Params | Vai trò |
 |---|---|---|
-| ATR | period=14 | Đo volatility — engine dùng để tính TP/SL và sizing |
+| ATR | period=14 | Đo volatility — engine dùng để sizing, SL và TP fallback |
 | SMA | period=5 (short_period) | Short-term trend momentum, tính trên closed candles |
 | SMA | period=20 (long_period) | Long-term trend baseline, tính trên closed candles |
 
@@ -40,9 +40,10 @@ Biến thể crypto của hệ thống Richard Donchian (1960) — một trong n
 | `atr_period` | 14 | Chu kỳ ATR |
 | `risk_pct` | 0.01 | 1% balance mỗi lệnh |
 | `sl_multiplier` | 1.5 | SL = entry ± 1.5 × ATR |
-| `tp_multiplier` | 3.0 | TP = entry ± 3.0 × ATR |
+| `takeProfitPercent` | 20.0 | TP mặc định theo Binance Futures ROI/PNL%; khoảng cách giá = ROI% / leverage |
+| `tp_multiplier` | 3.0 | ATR fallback khi `takeProfitPercent = 0.0` |
 | `min_confidence` | 0.5 | Safety net — confidence luôn 1.0 nên filter không active |
-| `scan_interval_seconds` | 1800 | Rescan mỗi 30 phút |
+| `scan_interval_seconds` | 900 | Rescan mỗi 15 phút |
 | `max_hold_duration_seconds` | 86400 | Time-exit tự động sau 24h |
 | `short_period` | 5 | Override via `params.short_period` (phải < `long_period`) |
 | `long_period` | 20 | Override via `params.long_period` (phải > `short_period`) |

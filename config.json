@@ -4,10 +4,10 @@
   },
   "scanner": {
     "intervals": ["1d", "4h", "1h", "30m"],
-    "kline_buffer_size": 200,
+    "kline_buffer_size": 201,
     "max_streams_per_connection": 512,
     "warmup_request_delay_ms": 0,
-    "warmup_initial_limit": 99,
+    "warmup_initial_limit": 200,
     "warmup_concurrency": 10,
     "backfill_enabled": true,
     "backfill_concurrency": 1,
@@ -40,7 +40,7 @@
   "gemini_filter": {
     "enabled": true,
     "mode": "enforce",
-    "python_path": "python",
+    "python_path": ".venv\\Scripts\\python.exe",
     "module_name": "tools.gemini_filter.gemini_filter",
     "working_directory": ".",
     "runtime_dir": "tmp/gemini_filter",
@@ -52,12 +52,12 @@
       "fallback_on_error": true,
       "allow_preview": true
     },
-    "sentiment_search_then_score": false,
-    "sentiment_weight": 0.5,
-    "vision_weight": 0.5,
-    "confidence_threshold": 0.6,
+    "sentiment_search_then_score": true,
+    "sentiment_weight": 0.6,
+    "vision_weight": 0.4,
+    "confidence_threshold": 0.55,
     "timeout_seconds": 45,
-    "max_evaluations_per_scan_cycle": 3,
+    "max_evaluations_per_scan_cycle": 123,
     "stale_runtime_ttl_hours": 24,
     "result_cache_ttl_seconds": 1800,
     "sentiment_cache_ttl_seconds": 3600,
@@ -103,6 +103,22 @@
     },
     "extra_tfs": ["1h", "4h"]
   },
+  "risk_analytics": {
+    "enabled": true,
+    "db_path": "data/risk_metrics.db",
+    "equity_basis": "margin",
+    "risk_free_rate": 0.0,
+    "min_data_points": 30,
+    "sample_interval_minutes": 60,
+    "control_lookback_days": 365,
+    "metrics_compute_interval_minutes": 60,
+    "missing_data_mode": "open",
+    "failure_mode": "closed",
+    "soft_max_drawdown": 0.2,
+    "hard_max_drawdown": 0.35,
+    "soft_min_upi": 0.5,
+    "hard_min_upi": -1.0
+  },
   "strategies": [
     {
       "name": "Trend Breakout Trader",
@@ -113,6 +129,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 20.0,
+      "takeProfitPercent": 10.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.5,
@@ -132,6 +149,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
+      "takeProfitPercent": 10.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.5,
@@ -151,12 +169,54 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
+      "takeProfitPercent": 10.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.5,
       "params": {
         "short_period": 5,
         "long_period": 20
+      }
+    },
+    {
+      "name": "Golden 50/200 Moving Average Crossover (Crypto MTF State Variant)",
+      "type": "golden_crossover",
+      "intervals": ["4h", "1h", "30m"],
+      "scan_interval_seconds": 900,
+      "max_hold_duration_seconds": 259200,
+      "risk_pct": 0.01,
+      "sl_multiplier": 1.5,
+      "tp_multiplier": 3.0,
+      "takeProfitPercent": 10.0,
+      "min_notional": 1.0,
+      "atr_period": 14,
+      "min_confidence": 0.5,
+      "params": {
+        "ma_short": 50,
+        "ma_long": 200
+      }
+    },
+    {
+      "name": "Monthly Close Model (Adapted MTF)",
+      "type": "monthly_close_model",
+      "intervals": ["4h", "1h", "30m", "1d"],
+      "scan_interval_seconds": 900,
+      "max_hold_duration_seconds": 86400,
+      "max_hold_duration_by_interval_seconds": {
+        "1d": 2592000,
+        "4h": 432000,
+        "1h": 108000,
+        "30m": 54000
+      },
+      "risk_pct": 0.01,
+      "sl_multiplier": 1.5,
+      "takeProfitPercent": 10.0,
+      "tp_multiplier": 3.0,
+      "min_notional": 1.0,
+      "atr_period": 14,
+      "min_confidence": 0.001,
+      "params": {
+        "period": 30
       }
     }
   ],
@@ -165,7 +225,7 @@
     "interval": "15m",
     "tradeQuantity": 0.001,
     "stopLossPercent": 0.0,
-    "takeProfitPercent": 4.0,
+    "takeProfitPercent": 10.0,
     "rsiPeriod": 14,
     "rsiOversold": 30.0,
     "rsiOverbought": 70.0,

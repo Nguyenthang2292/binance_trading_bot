@@ -58,6 +58,7 @@ strategy::StrategyConfig parseConfig(const nlohmann::json& j) {
     cfg.riskPct         = j.value("risk_pct", 0.01);
     cfg.slMultiplier    = j.value("sl_multiplier", 1.5);
     cfg.tpMultiplier    = j.value("tp_multiplier", 3.0);
+    cfg.takeProfitPercent = j.value("takeProfitPercent", j.value("take_profit_percent", 20.0));
     cfg.minNotional     = j.value("min_notional", 1.0);
     cfg.atrPeriod       = j.value("atr_period", 14);
     cfg.minConfidence   = j.value("min_confidence", 0.5);
@@ -82,6 +83,9 @@ void validateConfig(const strategy::StrategyConfig& cfg, const Donchian520Params
     }
     if (cfg.tpMultiplier <= 0.0) {
         throw std::invalid_argument("tp_multiplier must be > 0");
+    }
+    if (cfg.takeProfitPercent < 0.0) {
+        throw std::invalid_argument("takeProfitPercent must be >= 0");
     }
     if (cfg.minNotional < 0.0) {
         throw std::invalid_argument("min_notional must be >= 0");

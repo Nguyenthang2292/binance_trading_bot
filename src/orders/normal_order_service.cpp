@@ -473,6 +473,10 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     co_return result;
 }
 
+boost::asio::awaitable<OrdersResult<LeverageResult>> NormalOrderService::setLeverage(Symbol symbol, int leverage) {
+    co_return co_await m_rest.setLeverage(std::move(symbol), leverage);
+}
+
 boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> NormalOrderService::amendLimitOrder(AmendLimitOrderDraft draft) {
     auto request = m_mapper.toOrderRequest(draft);
     auto amended = co_await m_rest.modifyOrder(std::move(request));
