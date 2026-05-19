@@ -1,6 +1,6 @@
 // strategy_golden_crossover.cpp
 // Strategy: Golden 50/200 Moving Average Crossover (Crypto MTF State Variant)
-// Design: docs/design/2026-05-16-strategy-golden_crossover-v1.0.md
+// Design: docs/archives/design/2026-05-16-strategy-golden_crossover-v1.0.md
 //
 // Tham khảo: docs/sdk/writing-a-strategy-plugin.md
 

@@ -112,7 +112,7 @@ Plugin copies trailing fields from `params` into `StrategyConfig::trailingStop`.
 
 Trailing stop is now an engine feature for any strategy that sets `config().trailingStop.enabled = true`.
 
-Module design: [Generic Trailing Stop Controller](../2026-05-15-generic-trailing-stop-controller-v1.0.md).
+Module design: [Generic Trailing Stop Controller](../../archives/design/2026-05-15-generic-trailing-stop-controller-v1.0.md).
 
 | Component | Responsibility |
 |---|---|

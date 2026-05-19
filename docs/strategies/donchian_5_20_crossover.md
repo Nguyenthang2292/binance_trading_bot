@@ -3,6 +3,7 @@
 **Type:** `donchian_5_20_crossover`
 **Version:** 1.0
 **Date:** 2026-05-16
+**Source ref:** `penfold-2020-universal-tactics` — Chapter 7, "Donchian 5 and 20-Day Crossover"
 **Design doc:** [docs/design/2026-05-16-strategy-donchian_5_20_crossover-v1.0.md](../design/2026-05-16-strategy-donchian_5_20_crossover-v1.0.md)
 
 ---

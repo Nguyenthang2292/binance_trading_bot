@@ -3,7 +3,8 @@
 **Type:** `monthly_close_model`
 **Version:** 1.1
 **Date:** 2026-05-17
-**Design doc:** [docs/design/2026-05-17-strategy-monthly_close_model-v1.0.md](../design/2026-05-17-strategy-monthly_close_model-v1.0.md)
+**Source ref:** `penfold-2020-universal-tactics` — Chapter 7, "Monthly Close Model"
+**Design doc:** [docs/archives/design/2026-05-17-strategy-monthly_close_model-v1.0.md](../archives/design/2026-05-17-strategy-monthly_close_model-v1.0.md)
 
 ---
 

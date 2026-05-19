@@ -463,6 +463,13 @@ void GeminiFilterController::cleanupStaleEvalDirsOnce() const {
 }
 
 std::string GeminiFilterController::runSubprocess(const std::string& inputPath) const {
+    return runPythonModule(m_config.moduleName, {inputPath}, m_config.timeoutSeconds);
+}
+
+std::string GeminiFilterController::runPythonModule(
+    const std::string& moduleName,
+    const std::vector<std::string>& args,
+    int timeoutSeconds) const {
 #ifdef _WIN32
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
@@ -494,8 +501,10 @@ std::string GeminiFilterController::runSubprocess(const std::string& inputPath) 
     }
 
     std::string commandLine = quoteWindowsArg(m_config.pythonPath) +
-        " -m " + quoteWindowsArg(m_config.moduleName) +
-        " " + quoteWindowsArg(inputPath);
+        " -m " + quoteWindowsArg(moduleName);
+    for (const auto& arg : args) {
+        commandLine += " " + quoteWindowsArg(arg);
+    }
     std::vector<char> mutableCommand(commandLine.begin(), commandLine.end());
     mutableCommand.push_back('\0');
 
@@ -531,7 +540,7 @@ std::string GeminiFilterController::runSubprocess(const std::string& inputPath) 
 
     std::string output;
     std::string diagnostics;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(m_config.timeoutSeconds);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSeconds);
     for (;;) {
         readPipeAvailable(stdoutRead, output);
         readPipeAvailable(stderrRead, diagnostics);
@@ -589,7 +598,7 @@ std::string GeminiFilterController::runSubprocess(const std::string& inputPath) 
 #else
     Logger::instance().log(
         LogLevel::Info,
-        "gemini subprocess started command=" + quoteString(m_config.pythonPath + " -m " + m_config.moduleName));
+        "gemini subprocess started command=" + quoteString(m_config.pythonPath + " -m " + moduleName));
 
     int stdoutPipe[2] = {-1, -1};
     int stderrPipe[2] = {-1, -1};
@@ -625,8 +634,15 @@ std::string GeminiFilterController::runSubprocess(const std::string& inputPath) 
         std::vector<char*> argv;
         argv.push_back(const_cast<char*>(m_config.pythonPath.c_str()));
         argv.push_back(const_cast<char*>("-m"));
-        argv.push_back(const_cast<char*>(m_config.moduleName.c_str()));
-        argv.push_back(const_cast<char*>(inputPath.c_str()));
+        argv.push_back(const_cast<char*>(moduleName.c_str()));
+        std::vector<std::string> ownedArgs;
+        ownedArgs.reserve(args.size());
+        for (const auto& arg : args) {
+            ownedArgs.push_back(arg);
+        }
+        for (auto& arg : ownedArgs) {
+            argv.push_back(arg.data());
+        }
         argv.push_back(nullptr);
         execvp(argv[0], argv.data());
         _exit(127);
@@ -645,7 +661,7 @@ std::string GeminiFilterController::runSubprocess(const std::string& inputPath) 
     bool timedOut = false;
     bool childExited = false;
     int status = 0;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(m_config.timeoutSeconds);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSeconds);
 
     while (stdoutOpen || stderrOpen || !childExited) {
         drainPipeAvailable(stdoutPipe[0], output, stdoutOpen);
@@ -697,6 +713,67 @@ std::string GeminiFilterController::runSubprocess(const std::string& inputPath) 
 #endif
 }
 
+void GeminiFilterController::maybeTriggerAutotune() const {
+    if (!m_config.autotuneEnabled) {
+        return;
+    }
+    const std::string mode = m_config.autotuneMode;
+    if (mode == "disabled") {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard lock(m_autotuneMutex);
+        if (m_autotuneRunning) {
+            return;
+        }
+        if (m_nextAutotuneAt.time_since_epoch().count() > 0 && now < m_nextAutotuneAt) {
+            return;
+        }
+        m_autotuneRunning = true;
+        const int intervalSeconds = std::max(30, m_config.autotuneIntervalSeconds);
+        m_nextAutotuneAt = now + std::chrono::seconds(intervalSeconds);
+    }
+    std::thread(
+        [this]() {
+            try {
+                runAutotuneController();
+            } catch (const std::exception& e) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "autotune controller run failed reason=" + quoteString(e.what()));
+            } catch (...) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "autotune controller run failed reason=" + quoteString("unknown exception"));
+            }
+            std::lock_guard lock(m_autotuneMutex);
+            m_autotuneRunning = false;
+        })
+        .detach();
+}
+
+void GeminiFilterController::runAutotuneController() const {
+    const fs::path runtimeBase = fs::absolute(fs::path(m_config.runtimeDir));
+    const fs::path configPath = fs::absolute(fs::path(m_config.workingDirectory) / m_config.autotuneConfigPath);
+    const std::vector<std::string> args{
+        "--config",
+        configPath.string(),
+        "--runtime-base-dir",
+        runtimeBase.string(),
+    };
+    const int timeoutSeconds = std::max(10, m_config.autotuneControllerTimeoutSeconds);
+    const auto started = std::chrono::steady_clock::now();
+    (void)runPythonModule("tools.gemini_filter.autotune", args, timeoutSeconds);
+    const auto latencyMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+    Logger::instance().log(
+        LogLevel::Info,
+        "autotune controller completed mode=" + quoteString(m_config.autotuneMode) +
+            " runtime_base_dir=" + quoteString(runtimeBase.string()) +
+            " latency_ms=" + std::to_string(latencyMs));
+}
+
 GeminiFilterResult GeminiFilterController::evaluate(
     std::string_view symbol,
     strategy::Signal::Direction direction,
@@ -705,6 +782,8 @@ GeminiFilterResult GeminiFilterController::evaluate(
     if (!m_config.enabled || m_config.mode == GeminiFilterMode::Disabled) {
         return {GeminiDecision::Allow, 1.0, 1.0, 1.0, "gemini filter disabled", {}, false};
     }
+
+    maybeTriggerAutotune();
 
     if (const auto cached = getCachedResult(symbol, direction, signalInterval, cache)) {
         Logger::instance().log(
@@ -797,6 +876,10 @@ GeminiFilterResult GeminiFilterController::evaluate(
             {"default_rpm", m_config.quotaDefaultRpm},
             {"default_rpd", m_config.quotaDefaultRpd},
             {"models", quotaModels},
+        };
+        payload["autotune"] = {
+            {"enabled", m_config.autotuneEnabled},
+            {"mode", m_config.autotuneMode},
         };
 
         {

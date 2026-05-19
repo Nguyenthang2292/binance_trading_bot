@@ -4,6 +4,7 @@
 #include "engine/exposure_controller.h"
 #include "engine/order_cap_controller.h"
 #include "engine/gemini_filter.h"
+#include "engine/loss_manager.h"
 #include "engine/position_tracker.h"
 #include "engine/trailing_stop_controller.h"
 #include "engine/work_queue.h"
@@ -50,6 +51,7 @@ public:
     virtual ~IOrdersPort() = default;
     virtual boost::asio::awaitable<OrdersResult<NormalPlacementResult>> market(MarketOrderDraft draft) = 0;
     virtual boost::asio::awaitable<OrdersResult<NormalPlacementResult>> limit(LimitOrderDraft draft) = 0;
+    virtual boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> amendLimitOrder(AmendLimitOrderDraft draft) = 0;
     virtual boost::asio::awaitable<OrdersResult<NormalPlacementResult>> protection(ProtectionOrderDraft draft) = 0;
     virtual boost::asio::awaitable<OrdersResult<NormalPlacementResult>> closeByMarket(CloseByMarketDraft draft) = 0;
     virtual boost::asio::awaitable<OrdersResult<LeverageResult>> setLeverage(Symbol symbol, int leverage) = 0;
@@ -72,6 +74,7 @@ public:
         std::chrono::seconds trailingCheckInterval{300};
         bool placeStopLoss{true};
         bool monitorTrailingStops{true};
+        LossManagerConfig lossManager;
     };
 
     SignalEngine(
@@ -132,6 +135,7 @@ public:
     boost::asio::awaitable<void> monitorTimeExit();
     boost::asio::awaitable<void> monitorTrailingStops();
     boost::asio::awaitable<void> reconcileTrackedPositions();
+    boost::asio::awaitable<void> reconcileTrackedPositions(const account::AccountSnapshot& snapshot);
     boost::asio::awaitable<void> processExpiredPositions(std::chrono::system_clock::time_point now);
     boost::asio::awaitable<void> processTrailingStops();
     boost::asio::awaitable<void> logExposureMetrics();
@@ -176,6 +180,7 @@ private:
     GeminiCycleGate m_geminiCycleGate;
     Config m_config;
     PositionTracker m_tracker;
+    std::unique_ptr<LossManager> m_lossManager;
     TrailingStopController m_trailingStops;
     std::atomic<bool> m_running{false};
     ScanCycleStatusCb m_scanCycleStatusCb;
@@ -218,6 +223,9 @@ public:
     }
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> limit(LimitOrderDraft draft) override {
         co_return co_await m_orders.limit(std::move(draft));
+    }
+    boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> amendLimitOrder(AmendLimitOrderDraft draft) override {
+        co_return co_await m_orders.amendLimitOrder(std::move(draft));
     }
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> protection(ProtectionOrderDraft draft) override {
         co_return co_await m_orders.protection(std::move(draft));

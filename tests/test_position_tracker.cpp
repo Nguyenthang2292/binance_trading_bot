@@ -40,6 +40,9 @@ TEST(PositionTrackerTest, LoadFromSnapshotKeepsNonZeroPositions) {
 
     EXPECT_TRUE(tracker.has("BTCUSDT"));
     EXPECT_FALSE(tracker.has("ETHUSDT"));
+    const auto loaded = tracker.bySymbol("BTCUSDT");
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_TRUE(loaded->recoveredFromSnapshot);
 }
 
 TEST(PositionTrackerTest, ReserveCommitAndPartialFillBehavior) {
@@ -67,5 +70,36 @@ TEST(PositionTrackerTest, ReserveCommitAndPartialFillBehavior) {
 
     EXPECT_TRUE(tracker.applyExitFillByClientId("tp-x", 1.1));
     EXPECT_FALSE(tracker.has("BTCUSDT"));
+}
+
+TEST(PositionTrackerTest, UpdatesTakeProfitAndPositionView) {
+    engine::PositionTracker tracker;
+
+    engine::TrackedPosition tracked;
+    tracked.symbol = "BTCUSDT";
+    tracked.direction = strategy::Signal::Direction::Long;
+    tracked.quantity = 0.5;
+    tracked.entryPrice = 100.0;
+    tracked.openedAt = std::chrono::system_clock::now();
+    tracked.maxHoldDuration = std::chrono::hours(1);
+    ASSERT_TRUE(tracker.add(tracked));
+
+    EXPECT_TRUE(tracker.updateTakeProfit("BTCUSDT", 123, "tp-123"));
+    auto updated = tracker.bySymbol("BTCUSDT");
+    ASSERT_TRUE(updated.has_value());
+    EXPECT_EQ(updated->tpOrderId, 123);
+    EXPECT_EQ(updated->tpClientOrderId, "tp-123");
+
+    EXPECT_TRUE(tracker.refreshPositionView("BTCUSDT", 101.5, 0.75));
+    updated = tracker.bySymbol("BTCUSDT");
+    ASSERT_TRUE(updated.has_value());
+    EXPECT_DOUBLE_EQ(updated->entryPrice, 101.5);
+    EXPECT_DOUBLE_EQ(updated->quantity, 0.75);
+
+    EXPECT_TRUE(tracker.clearTakeProfit("BTCUSDT"));
+    updated = tracker.bySymbol("BTCUSDT");
+    ASSERT_TRUE(updated.has_value());
+    EXPECT_EQ(updated->tpOrderId, 0);
+    EXPECT_TRUE(updated->tpClientOrderId.empty());
 }
 

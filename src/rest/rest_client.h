@@ -52,6 +52,12 @@ public:
     boost::asio::awaitable<Result<FuturesAccount>> account();
     boost::asio::awaitable<Result<std::vector<Balance>>> balance();
     boost::asio::awaitable<Result<std::vector<Position>>> positions(std::optional<std::string> symbol = {});
+    boost::asio::awaitable<Result<FuturesAccountConfig>> accountConfig();
+    boost::asio::awaitable<Result<PositionModeStatus>> positionMode();
+    boost::asio::awaitable<Result<MultiAssetsModeStatus>> multiAssetsMode();
+    boost::asio::awaitable<Result<void>> testOrder(OrderRequest req);
+    boost::asio::awaitable<Result<std::vector<SymbolLeverageBrackets>>> leverageBrackets(
+        std::optional<std::string> symbol = {});
     boost::asio::awaitable<Result<LeverageResult>> setLeverage(std::string symbol, int leverage);
     boost::asio::awaitable<Result<void>> setMarginType(std::string symbol, std::string marginType);
 

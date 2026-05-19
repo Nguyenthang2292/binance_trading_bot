@@ -1,12 +1,17 @@
 #include <gtest/gtest.h>
 
 #include "engine/work_queue.h"
+#include "logger.h"
 
-#include <array>
+#include <filesystem>
+#include <fstream>
 #include <optional>
+#include <random>
 #include <set>
+#include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -44,18 +49,58 @@ std::vector<PairBlock> toBlocks(const std::vector<engine::WorkItem>& queue) {
     return out;
 }
 
-std::vector<std::string> symbolsInOrder(const std::vector<engine::WorkItem>& queue) {
-    std::vector<std::string> out;
-    out.reserve(queue.size());
-    for (const auto& item : queue) {
-        out.push_back(item.symbol);
+std::vector<PairBlock> expectedBlocks(
+    const std::vector<std::string>& symbols,
+    const strategy::StrategyRegistry& registry,
+    uint64_t seed) {
+    std::vector<PairBlock> out;
+    auto strategies = registry.all();
+    if (strategies.empty() || symbols.empty()) {
+        return out;
+    }
+
+    std::mt19937_64 rng(seed);
+    std::shuffle(strategies.begin(), strategies.end(), rng);
+    auto shuffledSymbols = symbols;
+    std::shuffle(shuffledSymbols.begin(), shuffledSymbols.end(), rng);
+
+    out.reserve(shuffledSymbols.size());
+    for (size_t i = 0; i < shuffledSymbols.size(); ++i) {
+        const auto* strategy = strategies[i % strategies.size()];
+        if (!strategy) {
+            continue;
+        }
+        const auto& intervals = strategy->config().intervals;
+        if (intervals.empty()) {
+            continue;
+        }
+        out.push_back(PairBlock{
+            .symbol = shuffledSymbols[i],
+            .strategyName = strategy->config().name,
+            .intervals = intervals,
+        });
     }
     return out;
 }
 
+void expectQueueMatchesExpected(
+    const std::vector<engine::WorkItem>& queue,
+    const std::vector<std::string>& symbols,
+    const strategy::StrategyRegistry& registry,
+    uint64_t seed) {
+    const auto actual = toBlocks(queue);
+    const auto expected = expectedBlocks(symbols, registry, seed);
+    ASSERT_EQ(actual.size(), expected.size());
+    for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(actual[i].symbol, expected[i].symbol);
+        EXPECT_EQ(actual[i].strategyName, expected[i].strategyName);
+        EXPECT_EQ(actual[i].intervals, expected[i].intervals);
+    }
+}
+
 } // namespace
 
-TEST(WorkQueueTest, SeededShufflePreservesZipAssignments) {
+TEST(WorkQueueTest, SeededShuffleRandomizesStrategyOrder) {
     strategy::StrategyRegistry registry;
 
     strategy::StrategyConfig a;
@@ -68,30 +113,18 @@ TEST(WorkQueueTest, SeededShufflePreservesZipAssignments) {
     b.intervals = {"30m"};
     registry.add(std::make_unique<QueueStrategy>(b));
 
+    strategy::StrategyConfig c;
+    c.name = "c";
+    c.intervals = {"15m"};
+    registry.add(std::make_unique<QueueStrategy>(c));
+
+    const uint64_t seed = 42u;
     const std::vector<std::string> symbols{"BTCUSDT", "ETHUSDT", "SOLUSDT"};
-    const auto queue = engine::WorkQueue::build(symbols, registry, 42u);
-    ASSERT_EQ(queue.size(), 5u);
-
-    const auto blocks = toBlocks(queue);
-    ASSERT_EQ(blocks.size(), 3u);
-    EXPECT_EQ(blocks[0].strategyName, "a");
-    EXPECT_EQ(blocks[0].intervals, a.intervals);
-    EXPECT_EQ(blocks[1].strategyName, "b");
-    EXPECT_EQ(blocks[1].intervals, b.intervals);
-    EXPECT_EQ(blocks[2].strategyName, "a");
-    EXPECT_EQ(blocks[2].intervals, a.intervals);
-
-    std::set<std::string> usedSymbols;
-    for (const auto& block : blocks) {
-        usedSymbols.insert(block.symbol);
-    }
-    EXPECT_EQ(usedSymbols.size(), symbols.size());
-    for (const auto& symbol : symbols) {
-        EXPECT_TRUE(usedSymbols.contains(symbol));
-    }
+    const auto queue = engine::WorkQueue::build(symbols, registry, seed);
+    expectQueueMatchesExpected(queue, symbols, registry, seed);
 }
 
-TEST(WorkQueueTest, SameSeedProducesSameOrder) {
+TEST(WorkQueueTest, SameSeedProducesSameStrategyAndSymbolOrder) {
     strategy::StrategyRegistry registry;
 
     strategy::StrategyConfig a;
@@ -118,31 +151,79 @@ TEST(WorkQueueTest, SameSeedProducesSameOrder) {
     }
 }
 
-TEST(WorkQueueTest, FixedSeedCanProduceNonInputOrder) {
+TEST(WorkQueueTest, SeededDualShuffleUsesStrategyThenSymbolOrder) {
     strategy::StrategyRegistry registry;
 
     strategy::StrategyConfig a;
     a.name = "a";
-    a.intervals = {"1h"};
+    a.intervals = {"15m"};
     registry.add(std::make_unique<QueueStrategy>(a));
 
-    const std::vector<std::string> symbols{
-        "S01USDT", "S02USDT", "S03USDT", "S04USDT", "S05USDT",
-        "S06USDT", "S07USDT", "S08USDT", "S09USDT", "S10USDT"};
+    strategy::StrategyConfig b;
+    b.name = "b";
+    b.intervals = {"30m"};
+    registry.add(std::make_unique<QueueStrategy>(b));
 
-    bool sawReordered = false;
-    for (const uint64_t seed : std::array<uint64_t, 7>{1u, 2u, 3u, 4u, 5u, 42u, 99u}) {
+    strategy::StrategyConfig c;
+    c.name = "c";
+    c.intervals = {"1h"};
+    registry.add(std::make_unique<QueueStrategy>(c));
+
+    const uint64_t seed = 9u;
+    const std::vector<std::string> symbols{"S1", "S2", "S3", "S4"};
+    const auto queue = engine::WorkQueue::build(symbols, registry, seed);
+    expectQueueMatchesExpected(queue, symbols, registry, seed);
+}
+
+TEST(WorkQueueTest, AllStrategiesHavePositiveSelectionProbability) {
+    strategy::StrategyRegistry registry;
+
+    for (const std::string& name : {"s0", "s1", "s2", "s3", "s4"}) {
+        strategy::StrategyConfig cfg;
+        cfg.name = name;
+        cfg.intervals = {"1h"};
+        registry.add(std::make_unique<QueueStrategy>(cfg));
+    }
+
+    const std::vector<std::string> symbols{"BTCUSDT", "ETHUSDT"};
+    std::set<std::string> observed;
+    for (const uint64_t seed : {1u, 2u, 3u, 4u, 5u, 11u, 17u, 23u, 31u, 47u}) {
         const auto queue = engine::WorkQueue::build(symbols, registry, seed);
-        if (symbolsInOrder(queue) != symbols) {
-            sawReordered = true;
-            break;
+        for (const auto& block : toBlocks(queue)) {
+            observed.insert(block.strategyName);
         }
     }
 
-    EXPECT_TRUE(sawReordered);
+    EXPECT_EQ(observed.size(), 5u);
 }
 
-TEST(WorkQueueTest, AllSymbolsAreAssignedExactlyOnce) {
+TEST(WorkQueueTest, ModuloWrappingPreservedAfterStrategyShuffle) {
+    strategy::StrategyRegistry registry;
+
+    strategy::StrategyConfig a;
+    a.name = "a";
+    a.intervals = {"15m", "1h"};
+    registry.add(std::make_unique<QueueStrategy>(a));
+
+    strategy::StrategyConfig b;
+    b.name = "b";
+    b.intervals = {"30m"};
+    registry.add(std::make_unique<QueueStrategy>(b));
+
+    const uint64_t seed = 99u;
+    const std::vector<std::string> symbols{"S1", "S2", "S3", "S4"};
+    const auto queue = engine::WorkQueue::build(symbols, registry, seed);
+    expectQueueMatchesExpected(queue, symbols, registry, seed);
+
+    std::unordered_map<std::string, size_t> assignments;
+    for (const auto& block : toBlocks(queue)) {
+        ++assignments[block.strategyName];
+    }
+    EXPECT_EQ(assignments["a"], 2u);
+    EXPECT_EQ(assignments["b"], 2u);
+}
+
+TEST(WorkQueueTest, AllSymbolsAssignedExactlyOnceAfterDualShuffle) {
     strategy::StrategyRegistry registry;
 
     strategy::StrategyConfig a;
@@ -160,12 +241,6 @@ TEST(WorkQueueTest, AllSymbolsAreAssignedExactlyOnce) {
     c.intervals = {"15m", "1d", "1w"};
     registry.add(std::make_unique<QueueStrategy>(c));
 
-    const std::unordered_map<std::string, size_t> intervalCountByStrategy{
-        {"a", a.intervals.size()},
-        {"b", b.intervals.size()},
-        {"c", c.intervals.size()},
-    };
-
     const std::vector<std::string> symbols{
         "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT"};
     const auto queue = engine::WorkQueue::build(symbols, registry, 20260517u);
@@ -175,18 +250,14 @@ TEST(WorkQueueTest, AllSymbolsAreAssignedExactlyOnce) {
     std::set<std::string> assignedSymbols;
     for (const auto& block : blocks) {
         assignedSymbols.insert(block.symbol);
-        const auto it = intervalCountByStrategy.find(block.strategyName);
-        ASSERT_NE(it, intervalCountByStrategy.end());
-        EXPECT_EQ(block.intervals.size(), it->second);
     }
-
     EXPECT_EQ(assignedSymbols.size(), symbols.size());
     for (const auto& symbol : symbols) {
         EXPECT_TRUE(assignedSymbols.contains(symbol));
     }
 }
 
-TEST(WorkQueueTest, DegeneratesToSingleStrategyAcrossAllSymbols) {
+TEST(WorkQueueTest, DegenerateSingleStrategy) {
     strategy::StrategyRegistry registry;
 
     strategy::StrategyConfig a;
@@ -194,16 +265,10 @@ TEST(WorkQueueTest, DegeneratesToSingleStrategyAcrossAllSymbols) {
     a.intervals = {"15m", "1h"};
     registry.add(std::make_unique<QueueStrategy>(a));
 
+    const uint64_t seed = 9u;
     const std::vector<std::string> symbols{"ETHUSDT", "BTCUSDT"};
-    const auto queue = engine::WorkQueue::build(symbols, registry, 9u);
-    ASSERT_EQ(queue.size(), 4u);
-
-    const auto blocks = toBlocks(queue);
-    ASSERT_EQ(blocks.size(), symbols.size());
-    for (const auto& block : blocks) {
-        EXPECT_EQ(block.strategyName, "a");
-        EXPECT_EQ(block.intervals, a.intervals);
-    }
+    const auto queue = engine::WorkQueue::build(symbols, registry, seed);
+    expectQueueMatchesExpected(queue, symbols, registry, seed);
 }
 
 TEST(WorkQueueTest, SkipsUnpairedStrategiesWhenStrategiesExceedSymbols) {
@@ -224,36 +289,31 @@ TEST(WorkQueueTest, SkipsUnpairedStrategiesWhenStrategiesExceedSymbols) {
     c.intervals = {"1h"};
     registry.add(std::make_unique<QueueStrategy>(c));
 
+    const uint64_t seed = 1u;
     const std::vector<std::string> symbols{"BTCUSDT"};
-    const auto queue = engine::WorkQueue::build(symbols, registry, 1u);
-    ASSERT_EQ(queue.size(), 1u);
+    const auto logPath = std::filesystem::temp_directory_path() / "work_queue_warning_test.log";
+    std::error_code removeError;
+    std::filesystem::remove(logPath, removeError);
+    Logger::instance().setLogFile(logPath.string());
+    const auto queue = engine::WorkQueue::build(symbols, registry, seed);
+    Logger::instance().setLogFile("");
 
-    EXPECT_EQ(queue[0].symbol, "BTCUSDT");
-    ASSERT_NE(queue[0].strategy, nullptr);
-    EXPECT_EQ(queue[0].strategy->config().name, "a");
-    EXPECT_EQ(queue[0].interval, "15m");
-}
-
-TEST(WorkQueueTest, WarnsWhenStrategiesExceedSymbols) {
-    strategy::StrategyRegistry registry;
-
-    strategy::StrategyConfig a;
-    a.name = "a";
-    a.intervals = {"15m"};
-    registry.add(std::make_unique<QueueStrategy>(a));
-
-    strategy::StrategyConfig b;
-    b.name = "b";
-    b.intervals = {"30m"};
-    registry.add(std::make_unique<QueueStrategy>(b));
-
-    const std::vector<std::string> symbols{"BTCUSDT"};
-    testing::internal::CaptureStdout();
-    const auto queue = engine::WorkQueue::build(symbols, registry, 1u);
-    const std::string output = testing::internal::GetCapturedStdout();
+    std::ifstream in(logPath);
+    ASSERT_TRUE(in.is_open());
+    const std::string output(
+        (std::istreambuf_iterator<char>(in)),
+        std::istreambuf_iterator<char>());
+    in.close();
+    std::filesystem::remove(logPath, removeError);
 
     ASSERT_EQ(queue.size(), 1u);
-    EXPECT_NE(output.find("work queue strategy starvation this cycle"), std::string::npos);
+    expectQueueMatchesExpected(queue, symbols, registry, seed);
+    EXPECT_NE(
+        output.find("work queue per-cycle strategy rotation active"),
+        std::string::npos);
+    EXPECT_NE(
+        output.find("probabilistically fair over time via shuffle"),
+        std::string::npos);
 }
 
 TEST(WorkQueueTest, StrategyWithNoIntervalsProducesNoWorkItemsForItsPair) {
@@ -269,18 +329,10 @@ TEST(WorkQueueTest, StrategyWithNoIntervalsProducesNoWorkItemsForItsPair) {
     b.intervals = {};
     registry.add(std::make_unique<QueueStrategy>(b));
 
+    const uint64_t seed = 11u;
     const std::vector<std::string> symbols{"BTCUSDT", "ETHUSDT", "SOLUSDT"};
-    const auto queue = engine::WorkQueue::build(symbols, registry, 11u);
-    ASSERT_EQ(queue.size(), 2u);
-
-    std::set<std::string> seenSymbols;
-    for (const auto& item : queue) {
-        seenSymbols.insert(item.symbol);
-        ASSERT_NE(item.strategy, nullptr);
-        EXPECT_EQ(item.strategy->config().name, "a");
-        EXPECT_EQ(item.interval, "1h");
-    }
-    EXPECT_EQ(seenSymbols.size(), 2u);
+    const auto queue = engine::WorkQueue::build(symbols, registry, seed);
+    expectQueueMatchesExpected(queue, symbols, registry, seed);
 }
 
 TEST(WorkQueueTest, BuildsOneToOneMappingWhenCountsMatch) {
@@ -301,16 +353,17 @@ TEST(WorkQueueTest, BuildsOneToOneMappingWhenCountsMatch) {
     c.intervals = {"5m"};
     registry.add(std::make_unique<QueueStrategy>(c));
 
+    const uint64_t seed = 2u;
     const std::vector<std::string> symbols{"CCCUSDT", "AAAUSDT", "BBBUSDT"};
-    const auto queue = engine::WorkQueue::build(symbols, registry, 2u);
-    ASSERT_EQ(queue.size(), 3u);
+    const auto queue = engine::WorkQueue::build(symbols, registry, seed);
+    const auto blocks = toBlocks(queue);
+    expectQueueMatchesExpected(queue, symbols, registry, seed);
 
     std::set<std::string> usedSymbols;
     std::set<std::string> usedStrategies;
-    for (const auto& item : queue) {
-        usedSymbols.insert(item.symbol);
-        ASSERT_NE(item.strategy, nullptr);
-        usedStrategies.insert(item.strategy->config().name);
+    for (const auto& block : blocks) {
+        usedSymbols.insert(block.symbol);
+        usedStrategies.insert(block.strategyName);
     }
 
     EXPECT_EQ(usedSymbols.size(), 3u);

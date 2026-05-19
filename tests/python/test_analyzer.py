@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 from typing import Any
 
@@ -211,4 +213,152 @@ def test_analyze_allow_when_confidence_above_threshold(tmp_path: Path, monkeypat
     result = analyzer.analyze(data, _KeyManager())
     assert result["decision"] == "Allow"
     assert result["error_code"] is None
+
+
+def test_apply_autotune_override_merges_runtime_override(tmp_path: Path) -> None:
+    data = _base_data(tmp_path)
+    data["autotune"] = {"enabled": True, "mode": "apply"}
+    data["model_routing"] = {
+        "enabled": True,
+        "sentiment": {"candidates": ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3.1-pro-preview"]},
+        "vision": {
+            "candidates": ["gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-3.1-pro-preview"],
+            "pro_escalation_enabled": True,
+            "pro_escalation_min_score": 0.45,
+            "pro_escalation_max_score": 0.65,
+        },
+    }
+    data["quota"] = {
+        "enabled": True,
+        "safety_factor": 0.7,
+        "default_rpm": 10,
+        "default_rpd": 500,
+        "models": {
+            "gemini-2.5-flash-lite": {"rpm": 20, "rpd": 1000},
+            "gemini-2.5-flash": {"rpm": 10, "rpd": 500},
+        },
+    }
+
+    override_path = Path(data["runtime_base_dir"]) / "cache" / "autotune" / "active_override.json"
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    override_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-05-18T10:15:00Z",
+                "expiry_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat().replace("+00:00", "Z"),
+                "override_type": "normal",
+                "model_routing_override": {
+                    "sentiment": {"candidates": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-pro-preview"]},
+                    "vision": {
+                        "candidates": ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"],
+                        "pro_escalation_enabled": False,
+                    },
+                },
+                "quota_override": {
+                    "models": {
+                        "gemini-2.5-flash-lite": {"rpm": 12, "rpd": 620},
+                        "gemini-2.5-flash": {"rpm": 8, "rpd": 420},
+                    }
+                },
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+
+    merged = analyzer._apply_autotune_override(data)
+    assert merged["model_routing"]["sentiment"]["candidates"][0] == "gemini-2.5-flash"
+    assert merged["model_routing"]["vision"]["pro_escalation_enabled"] is False
+    assert merged["quota"]["models"]["gemini-2.5-flash-lite"]["rpm"] == 12
+
+
+def test_apply_autotune_override_caps_quota_to_static_limits(tmp_path: Path) -> None:
+    data = _base_data(tmp_path)
+    data["autotune"] = {"enabled": True, "mode": "apply"}
+    data["model_routing"] = {
+        "enabled": True,
+        "sentiment": {"candidates": ["gemini-2.5-flash-lite", "gemini-2.5-flash"]},
+        "vision": {"candidates": ["gemini-3.1-flash-lite", "gemini-2.5-flash"]},
+    }
+    data["quota"] = {
+        "enabled": True,
+        "models": {
+            "gemini-2.5-flash-lite": {"rpm": 20, "rpd": 1000},
+            "gemini-2.5-flash": {"rpm": 10, "rpd": 500},
+        },
+    }
+    override_path = Path(data["runtime_base_dir"]) / "cache" / "autotune" / "active_override.json"
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    override_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-05-18T10:15:00Z",
+                "expiry_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat().replace("+00:00", "Z"),
+                "override_type": "normal",
+                "model_routing_override": {},
+                "quota_override": {
+                    "models": {
+                        "gemini-2.5-flash-lite": {"rpm": 999, "rpd": 99999},
+                        "gemini-2.5-flash": {"rpm": 8, "rpd": 420},
+                    }
+                },
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    merged = analyzer._apply_autotune_override(data)
+    assert merged["quota"]["models"]["gemini-2.5-flash-lite"]["rpm"] == 20
+    assert merged["quota"]["models"]["gemini-2.5-flash-lite"]["rpd"] == 1000
+    assert merged["quota"]["models"]["gemini-2.5-flash"]["rpm"] == 8
+
+
+def test_apply_autotune_override_rejects_unsupported_schema(tmp_path: Path) -> None:
+    data = _base_data(tmp_path)
+    data["autotune"] = {"enabled": True, "mode": "apply"}
+    data["model_routing"] = {"enabled": True, "sentiment": {"candidates": ["a", "b"]}, "vision": {"candidates": ["x", "y"]}}
+    override_path = Path(data["runtime_base_dir"]) / "cache" / "autotune" / "active_override.json"
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    override_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "generated_at": "2026-05-18T10:15:00Z",
+                "expiry_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat().replace("+00:00", "Z"),
+                "override_type": "normal",
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    merged = analyzer._apply_autotune_override(data)
+    assert merged["model_routing"]["sentiment"]["candidates"] == ["a", "b"]
+
+
+def test_apply_autotune_override_rejects_expired_or_corrupt(tmp_path: Path) -> None:
+    data = _base_data(tmp_path)
+    data["autotune"] = {"enabled": True, "mode": "apply"}
+    data["model_routing"] = {"enabled": True, "sentiment": {"candidates": ["a", "b"]}, "vision": {"candidates": ["x", "y"]}}
+    override_path = Path(data["runtime_base_dir"]) / "cache" / "autotune" / "active_override.json"
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    override_path.write_text("{not-json", encoding="utf-8")
+    merged1 = analyzer._apply_autotune_override(data)
+    assert merged1["model_routing"]["sentiment"]["candidates"] == ["a", "b"]
+
+    override_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-05-18T10:15:00Z",
+                "expiry_at": "2000-01-01T00:00:00Z",
+                "override_type": "normal",
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    merged2 = analyzer._apply_autotune_override(data)
+    assert merged2["model_routing"]["sentiment"]["candidates"] == ["a", "b"]
 

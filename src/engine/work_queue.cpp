@@ -12,23 +12,26 @@ std::vector<WorkItem> WorkQueue::build(
     const strategy::StrategyRegistry& registry,
     std::optional<uint64_t> seed) {
     std::vector<WorkItem> out;
-    const auto strategies = registry.all();
+    auto strategies = registry.all();
     if (strategies.empty() || symbols.empty()) {
         return out;
     }
+
+    const uint64_t rngSeed = seed.has_value() ? *seed : std::random_device{}();
+    std::mt19937_64 rng(rngSeed);
+    std::shuffle(strategies.begin(), strategies.end(), rng);
 
     if (strategies.size() > symbols.size()) {
         const size_t unscheduled = strategies.size() - symbols.size();
         Logger::instance().log(
             LogLevel::Warning,
-            "work queue strategy starvation this cycle unscheduled=" + std::to_string(unscheduled) +
+            "work queue per-cycle strategy rotation active unscheduled_this_cycle=" + std::to_string(unscheduled) +
                 " symbols=" + std::to_string(symbols.size()) +
-                " strategies=" + std::to_string(strategies.size()));
+                " strategies=" + std::to_string(strategies.size()) +
+                " (probabilistically fair over time via shuffle)");
     }
 
     auto shuffledSymbols = symbols;
-    const uint64_t rngSeed = seed.has_value() ? *seed : std::random_device{}();
-    std::mt19937_64 rng(rngSeed);
     std::shuffle(shuffledSymbols.begin(), shuffledSymbols.end(), rng);
 
     for (size_t symbolIndex = 0; symbolIndex < shuffledSymbols.size(); ++symbolIndex) {

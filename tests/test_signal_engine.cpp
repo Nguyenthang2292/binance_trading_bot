@@ -12,8 +12,112 @@
 #include <vector>
 #include <optional>
 #include <stdexcept>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <thread>
 
 namespace {
+namespace fs = std::filesystem;
+
+struct TempDirGuard {
+    fs::path path;
+    ~TempDirGuard() {
+        std::error_code ec;
+        fs::remove_all(path, ec);
+    }
+};
+
+fs::path makeTempDir() {
+    const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    std::mt19937_64 rng(static_cast<std::mt19937_64::result_type>(nowNs));
+    std::uniform_int_distribution<unsigned long long> dist;
+    const auto leaf = "signal_engine_gemini_it_" + std::to_string(nowNs) + "_" + std::to_string(dist(rng));
+    const fs::path out = fs::temp_directory_path() / leaf;
+    fs::create_directories(out);
+    return out;
+}
+
+void writeTextFile(const fs::path& path, std::string_view text) {
+    fs::create_directories(path.parent_path());
+    std::ofstream out(path, std::ios::binary);
+    ASSERT_TRUE(out.good()) << "failed to open " << path.string();
+    out << text;
+    out.flush();
+    ASSERT_TRUE(out.good()) << "failed to write " << path.string();
+}
+
+void writeFakeEvalModule(const fs::path& workingDir) {
+    constexpr std::string_view module = R"(import json
+payload = {
+  "eval_id": "test",
+  "decision": "Allow",
+  "confidence": 0.9,
+  "sentiment_score": 0.9,
+  "vision_score": 0.9,
+  "sentiment_analysis": "ok",
+  "vision_analysis": "ok",
+  "reason": "test pass",
+  "error_code": None,
+  "error": None,
+  "latency_ms": 1
+}
+print(json.dumps(payload, ensure_ascii=True), end="")
+)";
+    writeTextFile(workingDir / "fake_eval.py", module);
+}
+
+void writeAutotuneConfig(const fs::path& configPath, const fs::path& runtimeBase, std::string_view mode) {
+    std::string runtime = runtimeBase.string();
+    std::string escapedRuntime;
+    escapedRuntime.reserve(runtime.size() * 2);
+    for (const char c : runtime) {
+        if (c == '\\') {
+            escapedRuntime += "\\\\";
+        } else {
+            escapedRuntime.push_back(c);
+        }
+    }
+    const std::string payload =
+        "{"
+        "\"gemini_filter\":{"
+        "\"runtime_dir\":\"" + escapedRuntime + "\","
+        "\"autotune\":{"
+        "\"enabled\":true,"
+        "\"mode\":\"" + std::string(mode) + "\","
+        "\"interval_seconds\":1,"
+        "\"controller_timeout_seconds\":1"
+        "}"
+        "}"
+        "}";
+    writeTextFile(configPath, payload);
+}
+
+void writeLockAwareAutotuneModule(const fs::path& workingDir) {
+    writeTextFile(workingDir / "tools" / "__init__.py", "");
+    writeTextFile(workingDir / "tools" / "gemini_filter" / "__init__.py", "");
+    constexpr std::string_view module =
+        "import argparse\n"
+        "from pathlib import Path\n"
+        "p=argparse.ArgumentParser()\n"
+        "p.add_argument('--config')\n"
+        "p.add_argument('--runtime-base-dir')\n"
+        "a=p.parse_args()\n"
+        "rb=Path(a.runtime_base_dir)\n"
+        "d=rb/'cache'/'autotune'\n"
+        "d.mkdir(parents=True, exist_ok=True)\n"
+        "(d/'invoked.txt').write_text('invoked', encoding='utf-8')\n"
+        "lock=d/'controller.lock'\n"
+        "if lock.exists():\n"
+        "  (d/'skipped_lock_busy.txt').write_text('1', encoding='utf-8')\n"
+        "  raise SystemExit(0)\n"
+        "lock.write_text('locked', encoding='utf-8')\n"
+        "(d/'started.txt').write_text('started', encoding='utf-8')\n"
+        "lock.unlink(missing_ok=True)\n";
+    writeTextFile(workingDir / "tools" / "gemini_filter" / "autotune.py", module);
+}
 
 template <typename T>
 std::enable_if_t<!std::is_void_v<T>, T> runAwaitable(boost::asio::io_context& ioc, boost::asio::awaitable<T> task) {
@@ -97,6 +201,7 @@ public:
     int protectionCalls{0};
     int closeCalls{0};
     int setLeverageCalls{0};
+    int amendLimitOrderCalls{0};
     int cancelNormalByOrderIdCalls{0};
     int cancelAlgoByAlgoIdCalls{0};
     int cancelAlgoByClientAlgoIdCalls{0};
@@ -106,6 +211,7 @@ public:
     std::optional<LimitOrderDraft> lastLimitDraft;
     std::optional<ProtectionOrderDraft> lastProtectionDraft;
     std::optional<CloseByMarketDraft> lastCloseDraft;
+    std::optional<AmendLimitOrderDraft> lastAmendLimitDraft;
     std::optional<int> leverageResponseOverride;
     std::optional<BinanceError> setLeverageError;
 
@@ -128,6 +234,22 @@ public:
         result.orderId = 3;
         return OrdersResult<NormalPlacementResult>(result);
     }();
+    OrdersResult<NormalOrderSnapshot> amendLimitResult = [] {
+        NormalOrderSnapshot result;
+        result.symbol = "BTCUSDT";
+        result.orderId = 2;
+        result.clientOrderId = "tp-amended";
+        result.side = OrderSide::Sell;
+        result.type = OrderType::Limit;
+        result.positionSide = PositionSide::Both;
+        result.timeInForce = TimeInForce::GTC;
+        result.status = "NEW";
+        result.price = "100.0";
+        result.origQty = "0.01";
+        result.executedQty = "0";
+        result.avgPrice = "0";
+        return OrdersResult<NormalOrderSnapshot>(result);
+    }();
 
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> market(MarketOrderDraft draft) override {
         ++marketCalls;
@@ -143,6 +265,11 @@ public:
         ++protectionCalls;
         lastProtectionDraft = std::move(draft);
         co_return protectionResult;
+    }
+    boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> amendLimitOrder(AmendLimitOrderDraft draft) override {
+        ++amendLimitOrderCalls;
+        lastAmendLimitDraft = std::move(draft);
+        co_return amendLimitResult;
     }
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> closeByMarket(CloseByMarketDraft draft) override {
         ++closeCalls;
@@ -1976,4 +2103,86 @@ TEST(SignalEngineTest, RunScanCycleCallsRiskOnScanCycleAndMaybeRecomputeOncePerC
     EXPECT_GT(risk.lastOnScanTs, 0);
     EXPECT_GT(risk.lastRecomputeTs, 0);
     EXPECT_GE(account.calls, 2);
+}
+
+TEST(SignalEngineTest, GeminiControllerLockContentionDoesNotBlockSignalPath) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 13000 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "1h", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"1h"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    TempDirGuard temp{makeTempDir()};
+    const fs::path workingDir = temp.path / "work";
+    const fs::path runtimeBase = temp.path / "runtime";
+    fs::create_directories(workingDir);
+    fs::create_directories(runtimeBase / "cache" / "autotune");
+    writeFakeEvalModule(workingDir);
+    writeLockAwareAutotuneModule(workingDir);
+    writeAutotuneConfig(workingDir / "config.json", runtimeBase, "apply");
+    writeTextFile(runtimeBase / "cache" / "autotune" / "controller.lock", "busy");
+
+    engine::GeminiFilterConfig controllerCfg;
+    controllerCfg.enabled = true;
+    controllerCfg.mode = engine::GeminiFilterMode::Enforce;
+    controllerCfg.pythonPath = "python";
+    controllerCfg.moduleName = "fake_eval";
+    controllerCfg.workingDirectory = workingDir.string();
+    controllerCfg.runtimeDir = runtimeBase.string();
+    controllerCfg.timeoutSeconds = 5;
+    controllerCfg.autotuneEnabled = true;
+    controllerCfg.autotuneMode = "apply";
+    controllerCfg.autotuneIntervalSeconds = 1;
+    controllerCfg.autotuneControllerTimeoutSeconds = 1;
+    controllerCfg.autotuneConfigPath = "config.json";
+    engine::GeminiFilterController geminiController(controllerCfg);
+
+    engine::GeminiFilterConfig signalGeminiCfg;
+    signalGeminiCfg.enabled = true;
+    signalGeminiCfg.mode = engine::GeminiFilterMode::Enforce;
+    signalGeminiCfg.maxEvaluationsPerScanCycle = 3;
+    engine::SignalEngine signalEngine(scanner, registry, account, orders, exposure, geminiController, signalGeminiCfg, {});
+
+    const auto started = std::chrono::steady_clock::now();
+    runAwaitable(ioc, signalEngine.processItem(singleWork(strategyPtr, "1h")));
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+
+    EXPECT_LT(elapsedMs, 2500);
+    EXPECT_EQ(orders.marketCalls, 1);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+
+    EXPECT_TRUE(fs::exists(runtimeBase / "cache" / "autotune" / "invoked.txt"));
+    EXPECT_TRUE(fs::exists(runtimeBase / "cache" / "autotune" / "skipped_lock_busy.txt"));
+    EXPECT_FALSE(fs::exists(runtimeBase / "cache" / "autotune" / "started.txt"));
 }

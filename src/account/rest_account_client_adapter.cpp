@@ -15,3 +15,10 @@ boost::asio::awaitable<AccountRestResult<std::vector<Position>>> AccountRestClie
     co_return co_await m_client.positions(std::move(symbol));
 }
 
+boost::asio::awaitable<AccountRestResult<FuturesAccountConfig>> AccountRestClientAdapter::accountConfig() {
+    co_return co_await m_client.accountConfig();
+}
+
+boost::asio::awaitable<AccountRestResult<void>> AccountRestClientAdapter::testOrder(OrderRequest req) {
+    co_return co_await m_client.testOrder(std::move(req));
+}

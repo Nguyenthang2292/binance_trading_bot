@@ -190,6 +190,93 @@ engine::GeminiFilterMode parseGeminiFilterMode(std::string modeRaw) {
     return engine::GeminiFilterMode::Enforce;
 }
 
+account::AccountTradeMode parseAccountTradeMode(std::string modeRaw, bool testnet) {
+    const std::string mode = lowerCopy(trimCopy(std::move(modeRaw)));
+    if (mode.empty()) {
+        return testnet ? account::AccountTradeMode::Demo : account::AccountTradeMode::Real;
+    }
+    if (mode == "demo" || mode == "testnet") {
+        return account::AccountTradeMode::Demo;
+    }
+    if (mode == "contest") {
+        return account::AccountTradeMode::Contest;
+    }
+    if (mode == "real" || mode == "live" || mode == "production") {
+        return account::AccountTradeMode::Real;
+    }
+    if (mode == "unknown") {
+        return account::AccountTradeMode::Unknown;
+    }
+    Logger::instance().log(
+        LogLevel::Warning,
+        "unsupported account_compatibility.trade_mode=" + quoteString(mode) +
+            "; fallback to environment default");
+    return testnet ? account::AccountTradeMode::Demo : account::AccountTradeMode::Real;
+}
+
+account::AccountCreditPolicy parseAccountCreditPolicy(std::string raw) {
+    const std::string policy = lowerCopy(trimCopy(std::move(raw)));
+    if (policy.empty() || policy == "explicit_only" || policy == "explicitonly") {
+        return account::AccountCreditPolicy::ExplicitOnly;
+    }
+    if (policy == "assume_zero" || policy == "assumezero") {
+        return account::AccountCreditPolicy::AssumeZero;
+    }
+    Logger::instance().log(
+        LogLevel::Warning,
+        "unsupported account_compatibility.credit_policy=" + quoteString(policy) +
+            "; fallback to explicit_only");
+    return account::AccountCreditPolicy::ExplicitOnly;
+}
+
+account::AccountCompatibilityConfig parseAccountCompatibilityConfig(
+    const nlohmann::json& rootConfig,
+    bool testnet) {
+    account::AccountCompatibilityConfig cfg;
+    const auto accountJson = rootConfig.value("account_compatibility", nlohmann::json::object());
+
+    cfg.displayAsset = accountJson.value("display_asset", cfg.displayAsset);
+    cfg.company = accountJson.value("company", cfg.company);
+    cfg.serverName = accountJson.value(
+        "server_name",
+        testnet ? std::string("Binance USD-M Futures Testnet") : std::string("Binance USD-M Futures"));
+    cfg.tradeMode = parseAccountTradeMode(accountJson.value("trade_mode", std::string{}), testnet);
+    cfg.expertTradeAllowed = accountJson.value("expert_trade_allowed", cfg.expertTradeAllowed);
+    cfg.creditPolicy = parseAccountCreditPolicy(accountJson.value("credit_policy", std::string{}));
+
+    if (accountJson.contains("account_name")) {
+        const auto accountName = trimCopy(accountJson.value("account_name", std::string{}));
+        if (!accountName.empty()) {
+            cfg.accountName = accountName;
+        }
+    }
+
+    if (accountJson.contains("login_override")) {
+        if (accountJson.at("login_override").is_number_integer()) {
+            cfg.loginOverride = accountJson.at("login_override").get<int64_t>();
+        } else if (accountJson.at("login_override").is_string()) {
+            const auto raw = trimCopy(accountJson.at("login_override").get<std::string>());
+            int64_t parsed = 0;
+            const auto* begin = raw.data();
+            const auto* end = begin + raw.size();
+            const auto res = std::from_chars(begin, end, parsed);
+            if (res.ec == std::errc{} && res.ptr == end) {
+                cfg.loginOverride = parsed;
+            } else {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "account_compatibility.login_override is not a valid int64; ignored");
+            }
+        } else if (!accountJson.at("login_override").is_null()) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "account_compatibility.login_override must be integer or string; ignored");
+        }
+    }
+
+    return cfg;
+}
+
 std::vector<std::string> strategyIntervals(const nlohmann::json& strategyCfg) {
     const auto type = strategyCfg.value("type", std::string{});
     auto intervals = strategyCfg.value("intervals", std::vector<std::string>{});
@@ -365,6 +452,7 @@ int main(int argc, char* argv[]) {
     const auto orderCapJson = config.value("order_cap", nlohmann::json::object());
     const auto geminiJson = config.value("gemini_filter", nlohmann::json::object());
     const auto riskJson = config.value("risk_analytics", nlohmann::json::object());
+    const auto lossJson = config.value("loss_manager", nlohmann::json::object());
 
     engine::ExposureConfig exposureConfig;
     exposureConfig.enabled = exposureJson.value("enabled", false);
@@ -492,6 +580,15 @@ int main(int argc, char* argv[]) {
             });
         }
     }
+    const auto autotuneJson = geminiJson.value("autotune", nlohmann::json::object());
+    geminiConfig.autotuneEnabled = autotuneJson.value("enabled", geminiConfig.autotuneEnabled);
+    geminiConfig.autotuneMode = lowerCopy(trimCopy(autotuneJson.value("mode", geminiConfig.autotuneMode)));
+    geminiConfig.autotuneIntervalSeconds =
+        autotuneJson.value("interval_seconds", geminiConfig.autotuneIntervalSeconds);
+    geminiConfig.autotuneControllerTimeoutSeconds =
+        autotuneJson.value("controller_timeout_seconds", geminiConfig.autotuneControllerTimeoutSeconds);
+    geminiConfig.autotuneConfigPath =
+        autotuneJson.value("config_path", geminiConfig.autotuneConfigPath);
     geminiConfig.extraTfs = geminiJson.value("extra_tfs", geminiConfig.extraTfs);
 
     if (!geminiConfig.enabled) {
@@ -532,6 +629,23 @@ int main(int argc, char* argv[]) {
     }
     if (geminiConfig.quotaDefaultRpd <= 0) {
         geminiConfig.quotaDefaultRpd = 250;
+    }
+    if (geminiConfig.autotuneMode != "observe" &&
+        geminiConfig.autotuneMode != "apply" &&
+        geminiConfig.autotuneMode != "disabled") {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "gemini autotune mode is invalid; force to disabled");
+        geminiConfig.autotuneMode = "disabled";
+    }
+    if (!geminiConfig.autotuneEnabled) {
+        geminiConfig.autotuneMode = "disabled";
+    }
+    if (geminiConfig.autotuneIntervalSeconds <= 0) {
+        geminiConfig.autotuneIntervalSeconds = 900;
+    }
+    if (geminiConfig.autotuneControllerTimeoutSeconds <= 0) {
+        geminiConfig.autotuneControllerTimeoutSeconds = 60;
     }
 
     const std::unordered_set<std::string> scannerIntervalSet(scannerIntervals.begin(), scannerIntervals.end());
@@ -641,7 +755,8 @@ int main(int argc, char* argv[]) {
             .positionMode = PositionMode::OneWay,
         });
 
-    account::AccountService accountSvc(rest, account::AccountCompatibilityConfig{});
+    const auto accountCompatibility = parseAccountCompatibilityConfig(config, contextConfig.testnet);
+    account::AccountService accountSvc(rest, accountCompatibility);
     engine::ScannerPort scannerPort(scanner);
     engine::AccountPort accountPort(accountSvc);
     engine::OrdersPort ordersPort(orders);
@@ -688,7 +803,8 @@ int main(int argc, char* argv[]) {
                     " close_gate_on_quota_exhausted=" +
                     (geminiConfig.closeGateOnQuotaExhausted ? "true" : "false") +
                     " model_routing=" + (geminiConfig.modelRoutingEnabled ? "enabled" : "disabled") +
-                    " quota=" + (geminiConfig.quotaEnabled ? "enabled" : "disabled"));
+                    " quota=" + (geminiConfig.quotaEnabled ? "enabled" : "disabled") +
+                    " autotune=" + (geminiConfig.autotuneEnabled ? geminiConfig.autotuneMode : "disabled"));
         } catch (const std::exception& e) {
             Logger::instance().log(LogLevel::Error, std::string("Gemini filter init failed: ") + e.what());
             return 1;
@@ -732,6 +848,18 @@ int main(int argc, char* argv[]) {
         Logger::instance().log(LogLevel::Info, "Risk analytics disabled");
     }
 
+    engine::LossManagerConfig lossManagerConfig;
+    lossManagerConfig.enabled = lossJson.value("enabled", lossManagerConfig.enabled);
+    lossManagerConfig.roiBeThreshold = lossJson.value("roi_be_threshold", lossManagerConfig.roiBeThreshold);
+    lossManagerConfig.roiDcaThreshold = lossJson.value("roi_dca_threshold", lossManagerConfig.roiDcaThreshold);
+    lossManagerConfig.maxDcaCount = lossJson.value("max_dca_count", lossManagerConfig.maxDcaCount);
+    lossManagerConfig.fallbackTakerFeeRate =
+        lossJson.value("fallback_taker_fee_rate", lossManagerConfig.fallbackTakerFeeRate);
+    lossManagerConfig.allowDcaOnRecoveredPositions =
+        lossJson.value("allow_dca_on_recovered_positions", lossManagerConfig.allowDcaOnRecoveredPositions);
+    lossManagerConfig.dcaPendingTimeoutCycles =
+        lossJson.value("dca_pending_timeout_cycles", lossManagerConfig.dcaPendingTimeoutCycles);
+
     engine::SignalEngine signalEngine(
         scannerPort,
         registry,
@@ -749,6 +877,7 @@ int main(int argc, char* argv[]) {
             .trailingCheckInterval = std::chrono::seconds(engineJson.value("trailing_check_interval_seconds", 300)),
             .placeStopLoss = engineJson.value("place_stop_loss", true),
             .monitorTrailingStops = engineJson.value("monitor_trailing_stops", true),
+            .lossManager = lossManagerConfig,
         },
         riskPort);
     signalEngine.setScanCycleStatusCallback(

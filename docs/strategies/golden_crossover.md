@@ -3,7 +3,8 @@
 **Type:** `golden_crossover`
 **Version:** 1.0
 **Date:** 2026-05-16
-**Design doc:** [docs/design/2026-05-16-strategy-golden_crossover-v1.0.md](../design/2026-05-16-strategy-golden_crossover-v1.0.md)
+**Source ref:** `penfold-2020-universal-tactics` — Chapter 7, "Golden 50 and 200-Day Crossover"
+**Design doc:** [docs/archives/design/2026-05-16-strategy-golden_crossover-v1.0.md](../archives/design/2026-05-16-strategy-golden_crossover-v1.0.md)
 
 ---
 

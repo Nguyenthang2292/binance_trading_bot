@@ -25,6 +25,7 @@ void PositionTracker::loadFromSnapshot(
         tracked.openedAt = std::chrono::system_clock::now();
         tracked.maxHoldDuration = defaultMaxHoldDuration;
         tracked.openingInFlight = false;
+        tracked.recoveredFromSnapshot = true;
         m_positions[tracked.symbol] = tracked;
     }
 }
@@ -175,6 +176,67 @@ bool PositionTracker::updateStopLoss(
     it->second.slOrderId = slOrderId;
     it->second.slClientOrderId = std::move(slClientOrderId);
     it->second.currentTrailLevel = currentTrailLevel;
+    return true;
+}
+
+bool PositionTracker::updateTakeProfit(
+    std::string_view symbol,
+    int64_t tpOrderId,
+    std::string tpClientOrderId) {
+    std::lock_guard lock(m_mutex);
+    const auto it = m_positions.find(std::string(symbol));
+    if (it == m_positions.end()) {
+        return false;
+    }
+    if (it->second.openingInFlight) {
+        return false;
+    }
+    it->second.tpOrderId = tpOrderId;
+    it->second.tpClientOrderId = std::move(tpClientOrderId);
+    return true;
+}
+
+bool PositionTracker::clearTakeProfit(std::string_view symbol) {
+    std::lock_guard lock(m_mutex);
+    const auto it = m_positions.find(std::string(symbol));
+    if (it == m_positions.end()) {
+        return false;
+    }
+    if (it->second.openingInFlight) {
+        return false;
+    }
+    it->second.tpOrderId = 0;
+    it->second.tpClientOrderId.clear();
+    return true;
+}
+
+bool PositionTracker::refreshPositionView(
+    std::string_view symbol,
+    double entryPrice,
+    double quantity) {
+    std::lock_guard lock(m_mutex);
+    const auto it = m_positions.find(std::string(symbol));
+    if (it == m_positions.end()) {
+        return false;
+    }
+    if (it->second.openingInFlight) {
+        return false;
+    }
+    it->second.entryPrice = entryPrice;
+    it->second.quantity = std::max(0.0, quantity);
+    return true;
+}
+
+bool PositionTracker::markRecoveredFromSnapshot(std::string_view symbol) {
+    std::lock_guard lock(m_mutex);
+    const auto it = m_positions.find(std::string(symbol));
+    if (it == m_positions.end()) {
+        return false;
+    }
+    if (it->second.openingInFlight) {
+        return false;
+    }
+    it->second.recoveredFromSnapshot = true;
     return true;
 }
 

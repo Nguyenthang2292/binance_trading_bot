@@ -3,6 +3,7 @@
 **Type:** `gartley_day_crossover`
 **Version:** 1.1
 **Date:** 2026-05-16
+**Source ref:** `penfold-2020-universal-tactics` — Chapter 7, "Gartley 3 and 6 Week Crossover"
 **Design doc:** [docs/design/strategies/2026-05-16-strategy-gartley_day_crossover-v1.0.md](../design/strategies/2026-05-16-strategy-gartley_day_crossover-v1.0.md)
 
 ---

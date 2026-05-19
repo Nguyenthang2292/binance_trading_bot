@@ -72,6 +72,12 @@ struct GeminiFilterConfig {
     int quotaDefaultRpd{250};
     std::vector<QuotaModelLimit> quotaModelLimits{};
 
+    bool autotuneEnabled{false};
+    std::string autotuneMode{"disabled"};
+    int autotuneIntervalSeconds{900};
+    int autotuneControllerTimeoutSeconds{60};
+    std::string autotuneConfigPath{"config.json"};
+
     std::vector<std::string> extraTfs{"1h", "4h"};
 };
 
@@ -131,6 +137,12 @@ private:
     GeminiFilterResult buildBlockResult(std::string reason, std::string errorCode = "gemini_error") const;
     void cleanupStaleEvalDirsOnce() const;
     std::string runSubprocess(const std::string& inputPath) const;
+    std::string runPythonModule(
+        const std::string& moduleName,
+        const std::vector<std::string>& args,
+        int timeoutSeconds) const;
+    void maybeTriggerAutotune() const;
+    void runAutotuneController() const;
     std::optional<GeminiFilterResult> getCachedResult(
         std::string_view symbol,
         strategy::Signal::Direction direction,
@@ -156,6 +168,9 @@ private:
     mutable std::unordered_map<std::string, CachedResult> m_resultCache;
     mutable size_t m_cacheHitCount{0};
     mutable size_t m_cacheMissCount{0};
+    mutable std::mutex m_autotuneMutex;
+    mutable bool m_autotuneRunning{false};
+    mutable std::chrono::steady_clock::time_point m_nextAutotuneAt{};
 };
 
 } // namespace engine

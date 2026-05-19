@@ -24,9 +24,19 @@ std::filesystem::path findPluginPathFrom(std::filesystem::path start) {
 
     auto current = std::move(start);
     while (!current.empty()) {
-        const auto candidate = current / "plugins" / kPluginFilename;
-        if (std::filesystem::exists(candidate, ec) && !ec) {
-            return candidate;
+        const std::vector<std::filesystem::path> candidates{
+            current / "bin" / "Debug" / "plugins" / kPluginFilename,
+            current / "bin" / "Release" / "plugins" / kPluginFilename,
+            current / "build" / "bin" / "Debug" / "plugins" / kPluginFilename,
+            current / "build" / "bin" / "Release" / "plugins" / kPluginFilename,
+            current / "build" / "windows-msvc-debug" / "bin" / "Debug" / "plugins" / kPluginFilename,
+            current / "plugins" / kPluginFilename,
+        };
+        for (const auto& candidate : candidates) {
+            if (std::filesystem::exists(candidate, ec) && !ec) {
+                return candidate;
+            }
+            ec.clear();
         }
 
         const auto parent = current.parent_path();

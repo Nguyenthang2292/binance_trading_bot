@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from functools import partial
+import json
 import logging
 import os
 import threading
@@ -91,6 +93,7 @@ def _run_json_score_with_routes(
     contents: Any,
     use_google_search: bool,
     component: str,
+    metrics_store: MetricsStore | None = None,
 ) -> tuple[dict[str, Any], str]:
     attempts: list[str] = []
     for model in candidates:
@@ -107,6 +110,7 @@ def _run_json_score_with_routes(
             continue
         LOGGER.info("quota reserve ok model=%s component=%s", model, component)
         try:
+            started = time.perf_counter()
             result = key_manager.run_with_rotation(
                 partial(
                     _generate_json_score_with_rotation,
@@ -115,6 +119,9 @@ def _run_json_score_with_routes(
                     use_google_search=use_google_search,
                 )
             )
+            if metrics_store is not None:
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                metrics_store.record_analyzer_latency(model=model, component=component, latency_ms=latency_ms)
             return result, model
         except Exception as exc:  # noqa: BLE001
             if _is_quota_like_error(exc):
@@ -134,6 +141,7 @@ def _run_plain_text_with_routes(
     contents: Any,
     use_google_search: bool,
     component: str,
+    metrics_store: MetricsStore | None = None,
 ) -> tuple[str, str]:
     attempts: list[str] = []
     for model in candidates:
@@ -150,6 +158,7 @@ def _run_plain_text_with_routes(
             continue
         LOGGER.info("quota reserve ok model=%s component=%s", model, component)
         try:
+            started = time.perf_counter()
             text = key_manager.run_with_rotation(
                 partial(
                     _generate_plain_text_with_rotation,
@@ -158,6 +167,9 @@ def _run_plain_text_with_routes(
                     use_google_search=use_google_search,
                 )
             )
+            if metrics_store is not None:
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                metrics_store.record_analyzer_latency(model=model, component=component, latency_ms=latency_ms)
             return text, model
         except Exception as exc:  # noqa: BLE001
             if _is_quota_like_error(exc):
@@ -223,6 +235,7 @@ def _analyze_sentiment(
                 contents=prompt,
                 use_google_search=True,
                 component="sentiment",
+                metrics_store=metrics_store,
             )
         else:
             evidence, _ = _run_plain_text_with_routes(
@@ -232,6 +245,7 @@ def _analyze_sentiment(
                 contents=prompt,
                 use_google_search=True,
                 component="sentiment_evidence",
+                metrics_store=metrics_store,
             )
             score_prompt = (
                 "Given the market evidence below, score favorability for the proposed direction. "
@@ -246,6 +260,7 @@ def _analyze_sentiment(
                 contents=score_prompt,
                 use_google_search=False,
                 component="sentiment_score",
+                metrics_store=metrics_store,
             )
     except Exception as exc:  # noqa: BLE001
         if _is_quota_like_error(exc) or "quota_exhausted" in str(exc).lower():
@@ -279,6 +294,7 @@ def _analyze_vision(
     key_manager: Any,
     route: RoutedModels,
     quota_manager: QuotaManager,
+    metrics_store: MetricsStore,
 ) -> dict[str, Any]:
     symbol = str(data["symbol"])
     direction = str(data["direction"])
@@ -318,6 +334,7 @@ def _analyze_vision(
             contents=[prompt, image_part],
             use_google_search=False,
             component="vision",
+            metrics_store=metrics_store,
         )
         score = float(result["score"])
         if route.vision_pro_escalation_enabled and route.vision_pro_escalation_min_score <= score <= route.vision_pro_escalation_max_score:
@@ -331,6 +348,7 @@ def _analyze_vision(
                     contents=[prompt, image_part],
                     use_google_search=False,
                     component="vision_escalation",
+                    metrics_store=metrics_store,
                 )
                 result = escalated
         LOGGER.info("vision analysis completed eval_id=%s score=%.4f model=%s", eval_id, float(result["score"]), used_model)
@@ -383,6 +401,134 @@ def _build_quota_manager(data: dict[str, Any], metrics_store: MetricsStore) -> Q
 def _build_metrics_store(data: dict[str, Any]) -> MetricsStore:
     runtime_base = Path(str(data.get("runtime_base_dir") or data.get("runtime_dir") or "."))
     return MetricsStore(runtime_base)
+
+
+def _parse_utc_iso(text: str) -> int | None:
+    value = text.strip()
+    if not value:
+        return None
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(value)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def _apply_autotune_override(data: dict[str, Any]) -> dict[str, Any]:
+    raw_autotune = data.get("autotune", {})
+    if not isinstance(raw_autotune, dict):
+        return data
+    if not bool(raw_autotune.get("enabled", False)):
+        return data
+
+    runtime_base = Path(str(data.get("runtime_base_dir") or data.get("runtime_dir") or "."))
+    override_path = runtime_base / "cache" / "autotune" / "active_override.json"
+    if not override_path.exists():
+        return data
+    try:
+        raw = json.loads(override_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise RuntimeError("override payload must be object")
+        override = cast(dict[str, Any], raw)
+        if int(override.get("schema_version", 0)) != 1:
+            raise RuntimeError("unsupported schema_version")
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("autotune override ignored reason=load_failed err=%s", exc)
+        return data
+
+    expiry_at = str(override.get("expiry_at", "")).strip()
+    expiry_epoch = _parse_utc_iso(expiry_at)
+    if expiry_epoch is None or expiry_epoch <= int(time.time()):
+        LOGGER.info("autotune override ignored reason=expired expiry_at=%s", expiry_at)
+        return data
+
+    updated = dict(data)
+
+    static_routing_raw = updated.get("model_routing", {})
+    static_routing = static_routing_raw if isinstance(static_routing_raw, dict) else {}
+    override_routing_raw = override.get("model_routing_override", {})
+    override_routing = override_routing_raw if isinstance(override_routing_raw, dict) else {}
+    merged_routing = dict(static_routing)
+
+    static_sentiment = static_routing.get("sentiment", {}) if isinstance(static_routing.get("sentiment"), dict) else {}
+    static_vision = static_routing.get("vision", {}) if isinstance(static_routing.get("vision"), dict) else {}
+    merged_sentiment = dict(static_sentiment)
+    merged_vision = dict(static_vision)
+
+    sentiment_override = override_routing.get("sentiment", {}) if isinstance(override_routing.get("sentiment"), dict) else {}
+    vision_override = override_routing.get("vision", {}) if isinstance(override_routing.get("vision"), dict) else {}
+
+    if "candidates" in sentiment_override and isinstance(sentiment_override.get("candidates"), list):
+        static_candidates_raw = static_sentiment.get("candidates", [])
+        static_candidates = [str(x) for x in static_candidates_raw if str(x).strip()] if isinstance(static_candidates_raw, list) else []
+        allowed = set(static_candidates + [str(updated.get("sentiment_model", ""))])
+        filtered = [str(x).strip() for x in sentiment_override.get("candidates", []) if str(x).strip() in allowed]
+        if filtered:
+            merged_sentiment["candidates"] = filtered
+
+    if "candidates" in vision_override and isinstance(vision_override.get("candidates"), list):
+        static_candidates_raw = static_vision.get("candidates", [])
+        static_candidates = [str(x) for x in static_candidates_raw if str(x).strip()] if isinstance(static_candidates_raw, list) else []
+        allowed = set(static_candidates + [str(updated.get("vision_model", ""))])
+        filtered = [str(x).strip() for x in vision_override.get("candidates", []) if str(x).strip() in allowed]
+        if filtered:
+            merged_vision["candidates"] = filtered
+    if "pro_escalation_enabled" in vision_override:
+        merged_vision["pro_escalation_enabled"] = bool(vision_override.get("pro_escalation_enabled"))
+    if "pro_escalation_min_score" in vision_override:
+        merged_vision["pro_escalation_min_score"] = float(vision_override.get("pro_escalation_min_score"))
+    if "pro_escalation_max_score" in vision_override:
+        merged_vision["pro_escalation_max_score"] = float(vision_override.get("pro_escalation_max_score"))
+    if float(merged_vision.get("pro_escalation_min_score", 0.45)) > float(merged_vision.get("pro_escalation_max_score", 0.65)):
+        low = float(merged_vision.get("pro_escalation_max_score", 0.65))
+        high = float(merged_vision.get("pro_escalation_min_score", 0.45))
+        merged_vision["pro_escalation_min_score"] = low
+        merged_vision["pro_escalation_max_score"] = high
+
+    merged_routing["sentiment"] = merged_sentiment
+    merged_routing["vision"] = merged_vision
+    updated["model_routing"] = merged_routing
+
+    static_quota_raw = updated.get("quota", {})
+    static_quota = static_quota_raw if isinstance(static_quota_raw, dict) else {}
+    override_quota_raw = override.get("quota_override", {})
+    override_quota = override_quota_raw if isinstance(override_quota_raw, dict) else {}
+    merged_quota = dict(static_quota)
+    static_models = static_quota.get("models", {}) if isinstance(static_quota.get("models"), dict) else {}
+    merged_models = dict(static_models)
+    override_models = override_quota.get("models", {}) if isinstance(override_quota.get("models"), dict) else {}
+    for model_name, item in override_models.items():
+        if model_name not in merged_models or not isinstance(item, dict):
+            continue
+        try:
+            rpm = int(item.get("rpm", 0))
+            rpd = int(item.get("rpd", 0))
+        except Exception:
+            continue
+        if rpm <= 0 or rpd <= 0:
+            continue
+        static_model = merged_models.get(model_name, {})
+        if not isinstance(static_model, dict):
+            continue
+        try:
+            static_rpm = int(static_model.get("rpm", 0))
+            static_rpd = int(static_model.get("rpd", 0))
+        except Exception:
+            continue
+        if static_rpm <= 0 or static_rpd <= 0:
+            continue
+        merged_models[str(model_name)] = {
+            "rpm": min(rpm, static_rpm),
+            "rpd": min(rpd, static_rpd),
+        }
+    merged_quota["models"] = merged_models
+    updated["quota"] = merged_quota
+    LOGGER.info("autotune override applied expiry_at=%s", expiry_at)
+    return updated
 
 
 def _log_metrics_summary(eval_id: str, metrics_store: MetricsStore) -> None:
@@ -442,11 +588,11 @@ def _log_metrics_summary(eval_id: str, metrics_store: MetricsStore) -> None:
 def analyze(data: dict[str, Any], key_manager: Any) -> dict[str, Any]:
     started = time.perf_counter()
     eval_id = str(data.get("eval_id", ""))
+    data = _apply_autotune_override(dict(data))
     resolved = resolve_models(data, key_manager)
     metrics_store = _build_metrics_store(data)
     quota_manager = _build_quota_manager(data, metrics_store)
 
-    data = dict(data)
     data["sentiment_model"] = resolved.sentiment_model
     data["vision_model"] = resolved.vision_model
     route = build_model_route(data, resolved.sentiment_model, resolved.vision_model)
@@ -477,7 +623,7 @@ def analyze(data: dict[str, Any], key_manager: Any) -> dict[str, Any]:
     def run_vision() -> None:
         nonlocal vision_result
         try:
-            vision_result = _analyze_vision(data, key_manager, route, quota_manager)
+            vision_result = _analyze_vision(data, key_manager, route, quota_manager, metrics_store)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("vision analysis failed eval_id=%s", eval_id)
             with lock:
@@ -503,6 +649,7 @@ def analyze(data: dict[str, Any], key_manager: Any) -> dict[str, Any]:
             error_code = "quota_exhausted"
         LOGGER.error("analysis blocked eval_id=%s error=%s latency_ms=%d", eval_id, error_text, latency_ms)
         _log_metrics_summary(eval_id, metrics_store)
+        metrics_store.record_decision("Block", error_code)
         return {
             "eval_id": data.get("eval_id", ""),
             "decision": "Block",
@@ -539,6 +686,7 @@ def analyze(data: dict[str, Any], key_manager: Any) -> dict[str, Any]:
         latency_ms,
     )
     _log_metrics_summary(eval_id, metrics_store)
+    metrics_store.record_decision(decision, None)
     return {
         "eval_id": data.get("eval_id", ""),
         "decision": decision,

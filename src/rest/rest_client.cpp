@@ -391,6 +391,7 @@ Position parsePosition(simdjson::ondemand::object& doc) {
     p.positionSide = parsePositionSide(stringField(doc, "positionSide"));
     p.positionAmt = doubleField(doc, "positionAmt");
     p.entryPrice = doubleField(doc, "entryPrice");
+    p.breakEvenPrice = doubleField(doc, "breakEvenPrice");
     p.markPrice = doubleField(doc, "markPrice");
     p.unrealizedProfit = doubleField(doc, "unrealizedProfit");
     p.liquidationPrice = doubleField(doc, "liquidationPrice");
@@ -772,6 +773,100 @@ asio::awaitable<Result<std::vector<Position>>> RestClient::positions(std::option
         }
         return out;
     });
+}
+
+asio::awaitable<Result<FuturesAccountConfig>> RestClient::accountConfig() {
+    auto body = co_await signedGet("/fapi/v1/accountConfig", {});
+    if (!body) co_return std::unexpected(body.error());
+    co_return parseResponse<FuturesAccountConfig>(*body, [](simdjson::ondemand::document& doc) {
+        FuturesAccountConfig config;
+        auto object = doc.get_object().value();
+        config.canTrade = boolField(object, "canTrade");
+        config.dualSidePosition = boolField(object, "dualSidePosition");
+        config.multiAssetsMargin = boolField(object, "multiAssetsMargin");
+        return config;
+    });
+}
+
+asio::awaitable<Result<PositionModeStatus>> RestClient::positionMode() {
+    auto body = co_await signedGet("/fapi/v1/positionSide/dual", {});
+    if (!body) co_return std::unexpected(body.error());
+    co_return parseResponse<PositionModeStatus>(*body, [](simdjson::ondemand::document& doc) {
+        PositionModeStatus mode;
+        auto object = doc.get_object().value();
+        mode.dualSidePosition = boolField(object, "dualSidePosition");
+        return mode;
+    });
+}
+
+asio::awaitable<Result<MultiAssetsModeStatus>> RestClient::multiAssetsMode() {
+    auto body = co_await signedGet("/fapi/v1/multiAssetsMargin", {});
+    if (!body) co_return std::unexpected(body.error());
+    co_return parseResponse<MultiAssetsModeStatus>(*body, [](simdjson::ondemand::document& doc) {
+        MultiAssetsModeStatus mode;
+        auto object = doc.get_object().value();
+        mode.multiAssetsMargin = boolField(object, "multiAssetsMargin");
+        return mode;
+    });
+}
+
+asio::awaitable<Result<void>> RestClient::testOrder(OrderRequest req) {
+    std::string params;
+    appendParam(params, "symbol", upper(req.symbol));
+    appendParam(params, "side", sideToString(req.side));
+    appendParam(params, "type", typeToString(req.type));
+    appendParam(params, "positionSide", positionSideToString(req.positionSide));
+    appendParam(params, "quantity", req.quantity);
+    appendParam(params, "price", req.price.value_or(""));
+    appendParam(params, "stopPrice", req.stopPrice.value_or(""));
+    appendParam(params, "activationPrice", req.activationPrice.value_or(""));
+    appendParam(params, "callbackRate", req.callbackRate.value_or(""));
+    appendParam(params,
+                "timeInForce",
+                req.timeInForce ? tifToString(*req.timeInForce) : (req.type == OrderType::Limit ? "GTC" : ""));
+    appendParam(params, "reduceOnly", req.reduceOnly ? boolParam(*req.reduceOnly) : "");
+    appendParam(params, "closePosition", req.closePosition ? boolParam(*req.closePosition) : "");
+    appendParam(params, "workingType", req.workingType ? workingTypeToString(*req.workingType) : "");
+    appendParam(params, "newClientOrderId", req.newClientOrderId.value_or(""));
+    appendParam(params, "newOrderRespType", req.newOrderRespType.value_or(""));
+    appendParam(params, "recvWindow", req.recvWindow ? std::to_string(*req.recvWindow) : "");
+    for (const auto& [k, v] : req.extraParams) {
+        appendParam(params, k, v);
+    }
+    auto body = co_await signedPost("/fapi/v1/order/test", params);
+    if (!body) co_return std::unexpected(body.error());
+    co_return Result<void>{};
+}
+
+asio::awaitable<Result<std::vector<SymbolLeverageBrackets>>> RestClient::leverageBrackets(
+    std::optional<std::string> symbol) {
+    auto body = co_await signedGet("/fapi/v1/leverageBracket", symbol ? query({{"symbol", upper(*symbol)}}) : "");
+    if (!body) co_return std::unexpected(body.error());
+    co_return parseResponse<std::vector<SymbolLeverageBrackets>>(
+        *body,
+        [](simdjson::ondemand::document& doc) {
+            std::vector<SymbolLeverageBrackets> out;
+            auto array = doc.get_array().value();
+            for (auto itemValue : array) {
+                auto item = itemValue.get_object().value();
+                SymbolLeverageBrackets entry;
+                entry.symbol = stringField(item, "symbol");
+                auto brackets = item.find_field_unordered("brackets").get_array().value();
+                for (auto bracketValue : brackets) {
+                    auto bracketObj = bracketValue.get_object().value();
+                    LeverageBracketTier tier;
+                    tier.bracket = static_cast<int>(intField(bracketObj, "bracket"));
+                    tier.initialLeverage = static_cast<int>(intField(bracketObj, "initialLeverage"));
+                    tier.notionalCap = doubleField(bracketObj, "notionalCap");
+                    tier.notionalFloor = doubleField(bracketObj, "notionalFloor");
+                    tier.maintMarginRatio = doubleField(bracketObj, "maintMarginRatio");
+                    tier.cum = doubleField(bracketObj, "cum");
+                    entry.brackets.push_back(tier);
+                }
+                out.push_back(std::move(entry));
+            }
+            return out;
+        });
 }
 
 asio::awaitable<Result<LeverageResult>> RestClient::setLeverage(std::string symbol, int leverage) {

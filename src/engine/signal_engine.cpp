@@ -286,7 +286,17 @@ SignalEngine::SignalEngine(
       m_config(config),
       m_scanSleepTimer(m_scanner.ioContext()),
       m_timeExitTimer(m_scanner.ioContext()),
-      m_trailingTimer(m_scanner.ioContext()) {}
+      m_trailingTimer(m_scanner.ioContext()) {
+    if (m_config.lossManager.enabled) {
+        m_lossManager = std::make_unique<LossManager>(
+            m_config.lossManager,
+            m_orders,
+            m_orderCap,
+            m_exposure,
+            m_tracker,
+            [this](std::string_view symbol) { return m_scanner.symbolInfo(symbol); });
+    }
+}
 
 SignalEngine::SignalEngine(
     IScannerPort& scanner,
@@ -433,16 +443,6 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
                 "risk onScanCycle skipped: snapshot failed reason=" +
                     quoteString(accountErrorToString(snapshotResult.error())));
         }
-    }
-
-    if (!symbols.empty() && allStrategies.size() > symbols.size()) {
-        Logger::instance().log(
-            LogLevel::Warning,
-            "strategy scheduling warning policy=zip_strategy_symbol skipped_strategies=" +
-                std::to_string(allStrategies.size() - symbols.size()) +
-                " symbols=" + std::to_string(symbols.size()) +
-                " strategies=" + std::to_string(allStrategies.size()) +
-                " reason=\"strategies exceed symbols\"");
     }
 
     for (const auto& item : queue) {
@@ -1068,7 +1068,20 @@ boost::asio::awaitable<void> SignalEngine::monitorTimeExit() {
             co_return;
         }
 
-        co_await reconcileTrackedPositions();
+        account::AccountSnapshotRequest request;
+        request.includePositions = true;
+        const auto snapshotResult = co_await m_account.snapshot(request);
+        if (!snapshotResult) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "monitor time-exit snapshot failed reason=" + quoteString(accountErrorToString(snapshotResult.error())));
+            continue;
+        }
+
+        co_await reconcileTrackedPositions(*snapshotResult);
+        if (m_lossManager && m_lossManager->enabled()) {
+            co_await m_lossManager->evaluate(*snapshotResult, snapshotResult->account.availableBalance);
+        }
         co_await processExpiredPositions(std::chrono::system_clock::now());
     }
 }
@@ -1084,16 +1097,21 @@ boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions() {
         co_return;
     }
 
+    co_await reconcileTrackedPositions(*snapshotResult);
+    co_return;
+}
+
+boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions(const account::AccountSnapshot& snapshot) {
     std::unordered_map<std::string, double> liveQtyBySymbol;
     auto collectLive = [&liveQtyBySymbol](const std::vector<Position>& positions) {
         for (const auto& position : positions) {
             liveQtyBySymbol[position.symbol] += std::abs(position.positionAmt);
         }
     };
-    if (snapshotResult->positions.has_value()) {
-        collectLive(*snapshotResult->positions);
+    if (snapshot.positions.has_value()) {
+        collectLive(*snapshot.positions);
     } else {
-        collectLive(snapshotResult->account.positions);
+        collectLive(snapshot.account.positions);
     }
 
     for (const auto& tracked : m_tracker.all()) {
@@ -1104,13 +1122,14 @@ boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions() {
         }
         if (m_tracker.removeIfOpenedAt(tracked.symbol, tracked.openedAt)) {
             if (m_riskPort) {
-                m_riskPort->onPositionClosed(*snapshotResult, nowMs());
+                m_riskPort->onPositionClosed(snapshot, nowMs());
             }
             Logger::instance().log(
                 LogLevel::Info,
                 "tracker reconciliation removed stale symbol=" + tracked.symbol);
         }
     }
+    co_return;
 }
 
 boost::asio::awaitable<void> SignalEngine::monitorTrailingStops() {

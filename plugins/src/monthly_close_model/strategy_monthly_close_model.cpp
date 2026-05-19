@@ -1,6 +1,6 @@
 // strategy_monthly_close_model.cpp
 // Strategy: Monthly Close Model (Adapted for MTF)
-// Design: docs/design/2026-05-17-strategy-monthly_close_model-v1.0.md
+// Design: docs/archives/design/2026-05-17-strategy-monthly_close_model-v1.0.md
 //
 // Tham khảo: docs/sdk/writing-a-strategy-plugin.md
 

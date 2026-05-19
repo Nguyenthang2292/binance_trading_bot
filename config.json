@@ -21,6 +21,15 @@
     "monitor_trailing_stops": true,
     "place_stop_loss": false
   },
+  "loss_manager": {
+    "enabled": true,
+    "roi_be_threshold": -0.5,
+    "roi_dca_threshold": -0.8,
+    "max_dca_count": 2,
+    "fallback_taker_fee_rate": 0.0004,
+    "allow_dca_on_recovered_positions": true,
+    "dca_pending_timeout_cycles": 3
+  },
   "order_cap": {
     "enabled": true,
     "max_total_notional_pct": 8.0,
@@ -38,7 +47,7 @@
     "failure_mode": "closed"
   },
   "gemini_filter": {
-    "enabled": true,
+    "enabled": false,
     "mode": "enforce",
     "python_path": ".venv\\Scripts\\python.exe",
     "module_name": "tools.gemini_filter.gemini_filter",
@@ -52,11 +61,11 @@
       "fallback_on_error": true,
       "allow_preview": true
     },
-    "sentiment_search_then_score": true,
-    "sentiment_weight": 0.6,
-    "vision_weight": 0.4,
+    "sentiment_search_then_score": false,
+    "sentiment_weight": 0.65,
+    "vision_weight": 0.35,
     "confidence_threshold": 0.55,
-    "timeout_seconds": 45,
+    "timeout_seconds": 150,
     "max_evaluations_per_scan_cycle": 123,
     "stale_runtime_ttl_hours": 24,
     "result_cache_ttl_seconds": 1800,
@@ -101,6 +110,27 @@
         "gemini-3.1-pro-preview": { "rpm": 2, "rpd": 50 }
       }
     },
+    "autotune": {
+      "enabled": true,
+      "mode": "apply",
+      "interval_seconds": 900,
+      "controller_timeout_seconds": 60,
+      "override_ttl_seconds": 1800,
+      "min_samples_per_model": 10,
+      "quota_pressure_demote_threshold": 0.4,
+      "success_rate_promote_threshold": 0.95,
+      "latency_promote_improvement_pct": 20,
+      "max_block_rate_increase_pct": 10,
+      "block_rate_window_seconds": 300,
+      "bucket_retention_seconds": 90000,
+      "emergency_quota_exhausted_cycles": 3,
+      "weights": {
+        "reserve_success_rate": 0.45,
+        "quota_pressure": 0.3,
+        "normalized_latency": 0.15,
+        "decision_quality_proxy": 0.1
+      }
+    },
     "extra_tfs": ["1h", "4h"]
   },
   "risk_analytics": {
@@ -129,7 +159,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 20.0,
-      "takeProfitPercent": 10.0,
+      "takeProfitPercent": 20.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.5,
@@ -149,7 +179,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
-      "takeProfitPercent": 10.0,
+      "takeProfitPercent": 20.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.5,
@@ -169,7 +199,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
-      "takeProfitPercent": 10.0,
+      "takeProfitPercent": 20.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.5,
@@ -187,7 +217,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
-      "takeProfitPercent": 10.0,
+      "takeProfitPercent": 20.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.5,
@@ -210,7 +240,7 @@
       },
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
-      "takeProfitPercent": 10.0,
+      "takeProfitPercent": 20.0,
       "tp_multiplier": 3.0,
       "min_notional": 1.0,
       "atr_period": 14,
@@ -225,7 +255,7 @@
     "interval": "15m",
     "tradeQuantity": 0.001,
     "stopLossPercent": 0.0,
-    "takeProfitPercent": 10.0,
+    "takeProfitPercent": 20.0,
     "rsiPeriod": 14,
     "rsiOversold": 30.0,
     "rsiOverbought": 70.0,

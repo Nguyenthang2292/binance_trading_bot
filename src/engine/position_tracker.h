@@ -33,6 +33,7 @@ struct TrackedPosition {
     std::chrono::seconds trailingCheckInterval{0};
     double currentTrailLevel{0.0};
     bool openingInFlight{false};
+    bool recoveredFromSnapshot{false};
 };
 
 class PositionTracker {
@@ -58,6 +59,16 @@ public:
         int64_t slOrderId,
         std::string slClientOrderId,
         double currentTrailLevel);
+    bool updateTakeProfit(
+        std::string_view symbol,
+        int64_t tpOrderId,
+        std::string tpClientOrderId);
+    bool clearTakeProfit(std::string_view symbol);
+    bool refreshPositionView(
+        std::string_view symbol,
+        double entryPrice,
+        double quantity);
+    bool markRecoveredFromSnapshot(std::string_view symbol);
 
 private:
     mutable std::mutex m_mutex;

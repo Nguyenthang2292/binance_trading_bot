@@ -3,6 +3,7 @@
 **Type:** `trend_breakout`  
 **Version:** 1.1  
 **Date:** 2026-05-15  
+**Source ref:** `penfold-2020-universal-tactics` — Chapter 6, "Random Trend Trader"  
 **Design doc:** [docs/design/strategies/2026-05-15-strategy-trend-breakout-v1.0.md](../design/strategies/2026-05-15-strategy-trend-breakout-v1.0.md)
 
 ---

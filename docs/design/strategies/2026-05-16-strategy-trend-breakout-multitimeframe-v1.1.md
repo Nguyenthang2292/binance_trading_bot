@@ -7,7 +7,7 @@
 
 - `docs/strategies/trend_breakout.md`
 - `docs/design/strategies/2026-05-15-strategy-trend-breakout-v1.0.md`
-- `docs/design/2026-05-14-market-scanner-strategy-engine-v1.0.md`
+- `docs/archives/design/2026-05-14-market-scanner-strategy-engine-v1.0.md`
 
 ---
 

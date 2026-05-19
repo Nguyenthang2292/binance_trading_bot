@@ -80,6 +80,7 @@ set(LIB_SOURCES
     src/engine/order_cap_controller.cpp
     src/engine/exposure_controller.cpp
     src/engine/gemini_filter.cpp
+    src/engine/loss_manager.cpp
     src/engine/price_filter.cpp
     src/engine/trailing_stop_controller.cpp
     src/engine/signal_engine.cpp
@@ -146,6 +147,7 @@ set(LIB_HEADERS
     src/engine/order_cap_controller.h
     src/engine/exposure_controller.h
     src/engine/gemini_filter.h
+    src/engine/loss_manager.h
     src/engine/price_filter.h
     src/engine/trailing_stop_controller.h
     src/engine/signal_engine.h

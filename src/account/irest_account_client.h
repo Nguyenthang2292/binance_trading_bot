@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/expected_compat.h"
+#include "types/trade.h"
 #include "types/account.h"
 #include "types/error.h"
 
@@ -21,5 +22,6 @@ public:
     virtual boost::asio::awaitable<AccountRestResult<std::vector<Balance>>> balance() = 0;
     virtual boost::asio::awaitable<AccountRestResult<std::vector<Position>>> positions(
         std::optional<std::string> symbol = {}) = 0;
+    virtual boost::asio::awaitable<AccountRestResult<FuturesAccountConfig>> accountConfig() = 0;
+    virtual boost::asio::awaitable<AccountRestResult<void>> testOrder(OrderRequest req) = 0;
 };
-

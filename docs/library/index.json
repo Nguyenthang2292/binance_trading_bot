@@ -1,0 +1,48 @@
+{
+  "generator": "tools/build_library_index.py",
+  "version": "1.0",
+  "entries": [
+    {
+      "book_id": "penfold-2020-universal-tactics",
+      "type": "book",
+      "title": "The Universal Tactics of Successful Trend Trading",
+      "authors": [
+        "Brent Norman Lindsay Penfold"
+      ],
+      "year": 2020,
+      "publisher": "Wiley",
+      "identifiers": {
+        "isbn_hardback": "9781119734512",
+        "isbn_pdf": "9781119734550",
+        "isbn_epub": "9781119734499",
+        "lccn": "2020020364",
+        "doi": null,
+        "url": null
+      },
+      "purchase_url": "https://www.amazon.com/dp/1119734517",
+      "implemented_in": [
+        {
+          "file": "docs/strategies/donchian_5_20_crossover.md",
+          "chapter": "Chapter 7 — Donchian 5/20"
+        },
+        {
+          "file": "docs/strategies/gartley_day_crossover.md",
+          "chapter": "Chapter 7 — Gartley 3 and 6 Week Crossover"
+        },
+        {
+          "file": "docs/strategies/golden_crossover.md",
+          "chapter": "Chapter 7 — Golden 50/200"
+        },
+        {
+          "file": "docs/strategies/monthly_close_model.md",
+          "chapter": "Chapter 7 — Monthly Close"
+        },
+        {
+          "file": "docs/strategies/trend_breakout.md",
+          "chapter": "Chapter 6 — Random Trend Trader"
+        }
+      ],
+      "source_file": "docs/strategies/universal-tactics-trend-trading/00-book-references.md"
+    }
+  ]
+}

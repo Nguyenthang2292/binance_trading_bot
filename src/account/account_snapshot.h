@@ -69,7 +69,7 @@ using AccountMappingResult = std::expected<T, AccountMappingError>;
 struct AccountSnapshotRequest {
     bool includeBalanceEndpoint{false};    // call /fapi/v2/balance in addition to account.assets
     bool includePositions{false};          // call /fapi/v2/positionRisk
-    bool includeAccountConfig{false};      // Phase D: call /fapi/v1/accountConfig for canTrade, dualSidePosition
+    bool includeAccountConfig{false};      // call /fapi/v1/accountConfig for canTrade, dualSidePosition, multiAssetsMargin
     std::optional<std::string> positionFilter;  // scope positionRisk to single symbol when set
 };
 
