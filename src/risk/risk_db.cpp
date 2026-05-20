@@ -9,6 +9,7 @@
 #endif
 
 #include <filesystem>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -36,6 +37,16 @@ void bindText(sqlite3_stmt* stmt, int idx, std::string_view value) {
 std::string columnTextOrEmpty(sqlite3_stmt* stmt, int col) {
     const char* raw = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
     return raw ? std::string(raw) : std::string{};
+}
+
+using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+
+Statement prepareStatement(sqlite3* db, const char* sql, const char* context) {
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw std::runtime_error(std::string("RiskDb prepare ") + context + " failed");
+    }
+    return Statement(raw, sqlite3_finalize);
 }
 
 } // namespace
@@ -111,165 +122,137 @@ void RiskDb::initSchema() {
 
 void RiskDb::insertEquityPoint(const EquityPoint& p) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "INSERT INTO equity_points(timestamp_ms, equity, year, source, basis) VALUES(?, ?, ?, ?, ?);";
-    if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        throw std::runtime_error("RiskDb prepare insertEquityPoint failed");
-    }
-    sqlite3_bind_int64(stmt, 1, p.timestampMs);
-    sqlite3_bind_double(stmt, 2, p.equity);
-    sqlite3_bind_int(stmt, 3, p.year);
-    bindText(stmt, 4, p.source);
-    bindText(stmt, 5, p.basis);
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
-        sqlite3_finalize(stmt);
+    auto stmt = prepareStatement(m_db, sql, "insertEquityPoint");
+    sqlite3_bind_int64(stmt.get(), 1, p.timestampMs);
+    sqlite3_bind_double(stmt.get(), 2, p.equity);
+    sqlite3_bind_int(stmt.get(), 3, p.year);
+    bindText(stmt.get(), 4, p.source);
+    bindText(stmt.get(), 5, p.basis);
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         throw std::runtime_error("RiskDb step insertEquityPoint failed");
     }
-    sqlite3_finalize(stmt);
 }
 
 std::vector<EquityPoint> RiskDb::getByYear(int year) const {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::vector<EquityPoint> out;
-    sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "SELECT id, timestamp_ms, equity, year, source, basis FROM equity_points "
         "WHERE year = ? ORDER BY timestamp_ms ASC, id ASC;";
-    if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        throw std::runtime_error("RiskDb prepare getByYear failed");
-    }
-    sqlite3_bind_int(stmt, 1, year);
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    auto stmt = prepareStatement(m_db, sql, "getByYear");
+    sqlite3_bind_int(stmt.get(), 1, year);
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
         EquityPoint p;
-        p.id = sqlite3_column_int64(stmt, 0);
-        p.timestampMs = sqlite3_column_int64(stmt, 1);
-        p.equity = sqlite3_column_double(stmt, 2);
-        p.year = sqlite3_column_int(stmt, 3);
-        p.source = columnTextOrEmpty(stmt, 4);
-        p.basis = columnTextOrEmpty(stmt, 5);
+        p.id = sqlite3_column_int64(stmt.get(), 0);
+        p.timestampMs = sqlite3_column_int64(stmt.get(), 1);
+        p.equity = sqlite3_column_double(stmt.get(), 2);
+        p.year = sqlite3_column_int(stmt.get(), 3);
+        p.source = columnTextOrEmpty(stmt.get(), 4);
+        p.basis = columnTextOrEmpty(stmt.get(), 5);
         out.push_back(std::move(p));
     }
-    sqlite3_finalize(stmt);
     return out;
 }
 
 std::vector<EquityPoint> RiskDb::getByTimeRange(std::string_view basis, int64_t startMs, int64_t endMs) const {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::vector<EquityPoint> out;
-    sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "SELECT id, timestamp_ms, equity, year, source, basis FROM equity_points "
         "WHERE basis = ? AND timestamp_ms >= ? AND timestamp_ms <= ? "
         "ORDER BY timestamp_ms ASC, id ASC;";
-    if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        throw std::runtime_error("RiskDb prepare getByTimeRange failed");
-    }
-    bindText(stmt, 1, basis);
-    sqlite3_bind_int64(stmt, 2, startMs);
-    sqlite3_bind_int64(stmt, 3, endMs);
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    auto stmt = prepareStatement(m_db, sql, "getByTimeRange");
+    bindText(stmt.get(), 1, basis);
+    sqlite3_bind_int64(stmt.get(), 2, startMs);
+    sqlite3_bind_int64(stmt.get(), 3, endMs);
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
         EquityPoint p;
-        p.id = sqlite3_column_int64(stmt, 0);
-        p.timestampMs = sqlite3_column_int64(stmt, 1);
-        p.equity = sqlite3_column_double(stmt, 2);
-        p.year = sqlite3_column_int(stmt, 3);
-        p.source = columnTextOrEmpty(stmt, 4);
-        p.basis = columnTextOrEmpty(stmt, 5);
+        p.id = sqlite3_column_int64(stmt.get(), 0);
+        p.timestampMs = sqlite3_column_int64(stmt.get(), 1);
+        p.equity = sqlite3_column_double(stmt.get(), 2);
+        p.year = sqlite3_column_int(stmt.get(), 3);
+        p.source = columnTextOrEmpty(stmt.get(), 4);
+        p.basis = columnTextOrEmpty(stmt.get(), 5);
         out.push_back(std::move(p));
     }
-    sqlite3_finalize(stmt);
     return out;
 }
 
 void RiskDb::insertMetrics(const RiskMetricsResult& m) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "INSERT INTO risk_metrics_cache("
         "computed_at_ms, window_kind, window_start_ms, window_end_ms, basis, "
         "data_points, valid, annual_return, excess_return, std_dev_all, std_dev_downside, "
         "ulcer_index, max_drawdown, sharpe_ratio, sortino_ratio, upi"
         ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
-    if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        throw std::runtime_error("RiskDb prepare insertMetrics failed");
-    }
-    sqlite3_bind_int64(stmt, 1, m.computedAtMs);
-    bindText(stmt, 2, m.windowKind);
-    sqlite3_bind_int64(stmt, 3, m.windowStartMs);
-    sqlite3_bind_int64(stmt, 4, m.windowEndMs);
-    bindText(stmt, 5, m.basis);
-    sqlite3_bind_int(stmt, 6, m.dataPoints);
-    sqlite3_bind_int(stmt, 7, m.valid ? 1 : 0);
-    sqlite3_bind_double(stmt, 8, m.annualReturn);
-    sqlite3_bind_double(stmt, 9, m.excessReturn);
-    sqlite3_bind_double(stmt, 10, m.stdDevAll);
-    sqlite3_bind_double(stmt, 11, m.stdDevDownside);
-    sqlite3_bind_double(stmt, 12, m.ulcerIndex);
-    sqlite3_bind_double(stmt, 13, m.maxDrawdown);
-    sqlite3_bind_double(stmt, 14, m.sharpeRatio);
-    sqlite3_bind_double(stmt, 15, m.sortinoRatio);
-    sqlite3_bind_double(stmt, 16, m.upi);
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
-        sqlite3_finalize(stmt);
+    auto stmt = prepareStatement(m_db, sql, "insertMetrics");
+    sqlite3_bind_int64(stmt.get(), 1, m.computedAtMs);
+    bindText(stmt.get(), 2, m.windowKind);
+    sqlite3_bind_int64(stmt.get(), 3, m.windowStartMs);
+    sqlite3_bind_int64(stmt.get(), 4, m.windowEndMs);
+    bindText(stmt.get(), 5, m.basis);
+    sqlite3_bind_int(stmt.get(), 6, m.dataPoints);
+    sqlite3_bind_int(stmt.get(), 7, m.valid ? 1 : 0);
+    sqlite3_bind_double(stmt.get(), 8, m.annualReturn);
+    sqlite3_bind_double(stmt.get(), 9, m.excessReturn);
+    sqlite3_bind_double(stmt.get(), 10, m.stdDevAll);
+    sqlite3_bind_double(stmt.get(), 11, m.stdDevDownside);
+    sqlite3_bind_double(stmt.get(), 12, m.ulcerIndex);
+    sqlite3_bind_double(stmt.get(), 13, m.maxDrawdown);
+    sqlite3_bind_double(stmt.get(), 14, m.sharpeRatio);
+    sqlite3_bind_double(stmt.get(), 15, m.sortinoRatio);
+    sqlite3_bind_double(stmt.get(), 16, m.upi);
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         throw std::runtime_error("RiskDb step insertMetrics failed");
     }
-    sqlite3_finalize(stmt);
 }
 
 std::optional<RiskMetricsResult> RiskDb::getLatestMetrics(std::string_view windowKind, std::string_view basis) const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "SELECT computed_at_ms, window_kind, window_start_ms, window_end_ms, basis, "
         "data_points, valid, annual_return, excess_return, std_dev_all, std_dev_downside, "
         "ulcer_index, max_drawdown, sharpe_ratio, sortino_ratio, upi "
         "FROM risk_metrics_cache WHERE window_kind = ? AND basis = ? "
         "ORDER BY window_end_ms DESC, id DESC LIMIT 1;";
-    if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        throw std::runtime_error("RiskDb prepare getLatestMetrics failed");
-    }
-    bindText(stmt, 1, windowKind);
-    bindText(stmt, 2, basis);
-    const int rc = sqlite3_step(stmt);
+    auto stmt = prepareStatement(m_db, sql, "getLatestMetrics");
+    bindText(stmt.get(), 1, windowKind);
+    bindText(stmt.get(), 2, basis);
+    const int rc = sqlite3_step(stmt.get());
     if (rc != SQLITE_ROW) {
-        sqlite3_finalize(stmt);
         return std::nullopt;
     }
     RiskMetricsResult m;
-    m.computedAtMs = sqlite3_column_int64(stmt, 0);
-    m.windowKind = columnTextOrEmpty(stmt, 1);
-    m.windowStartMs = sqlite3_column_int64(stmt, 2);
-    m.windowEndMs = sqlite3_column_int64(stmt, 3);
-    m.basis = columnTextOrEmpty(stmt, 4);
-    m.dataPoints = sqlite3_column_int(stmt, 5);
-    m.valid = sqlite3_column_int(stmt, 6) != 0;
-    m.annualReturn = sqlite3_column_double(stmt, 7);
-    m.excessReturn = sqlite3_column_double(stmt, 8);
-    m.stdDevAll = sqlite3_column_double(stmt, 9);
-    m.stdDevDownside = sqlite3_column_double(stmt, 10);
-    m.ulcerIndex = sqlite3_column_double(stmt, 11);
-    m.maxDrawdown = sqlite3_column_double(stmt, 12);
-    m.sharpeRatio = sqlite3_column_double(stmt, 13);
-    m.sortinoRatio = sqlite3_column_double(stmt, 14);
-    m.upi = sqlite3_column_double(stmt, 15);
-    sqlite3_finalize(stmt);
+    m.computedAtMs = sqlite3_column_int64(stmt.get(), 0);
+    m.windowKind = columnTextOrEmpty(stmt.get(), 1);
+    m.windowStartMs = sqlite3_column_int64(stmt.get(), 2);
+    m.windowEndMs = sqlite3_column_int64(stmt.get(), 3);
+    m.basis = columnTextOrEmpty(stmt.get(), 4);
+    m.dataPoints = sqlite3_column_int(stmt.get(), 5);
+    m.valid = sqlite3_column_int(stmt.get(), 6) != 0;
+    m.annualReturn = sqlite3_column_double(stmt.get(), 7);
+    m.excessReturn = sqlite3_column_double(stmt.get(), 8);
+    m.stdDevAll = sqlite3_column_double(stmt.get(), 9);
+    m.stdDevDownside = sqlite3_column_double(stmt.get(), 10);
+    m.ulcerIndex = sqlite3_column_double(stmt.get(), 11);
+    m.maxDrawdown = sqlite3_column_double(stmt.get(), 12);
+    m.sharpeRatio = sqlite3_column_double(stmt.get(), 13);
+    m.sortinoRatio = sqlite3_column_double(stmt.get(), 14);
+    m.upi = sqlite3_column_double(stmt.get(), 15);
     return m;
 }
 
 void RiskDb::deleteEquityPointsOlderThan(int64_t cutoffMs) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    sqlite3_stmt* stmt = nullptr;
     const char* sql = "DELETE FROM equity_points WHERE timestamp_ms < ?;";
-    if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        throw std::runtime_error("RiskDb prepare deleteEquityPointsOlderThan failed");
-    }
-    sqlite3_bind_int64(stmt, 1, cutoffMs);
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
-        sqlite3_finalize(stmt);
+    auto stmt = prepareStatement(m_db, sql, "deleteEquityPointsOlderThan");
+    sqlite3_bind_int64(stmt.get(), 1, cutoffMs);
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         throw std::runtime_error("RiskDb step deleteEquityPointsOlderThan failed");
     }
-    sqlite3_finalize(stmt);
 }
 
 } // namespace engine

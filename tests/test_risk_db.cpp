@@ -3,7 +3,9 @@
 #include "risk/risk_db.h"
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
+#include <limits>
 #include <string>
 
 namespace {
@@ -92,6 +94,35 @@ TEST(RiskDbTest, ReturnsLatestMetricsByWindowAndBasis) {
 
         const auto none = db.getLatestMetrics("calendar_year", "margin");
         EXPECT_FALSE(none.has_value());
+    }
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(RiskDbTest, PreservesInfiniteMetricsAcrossCacheRoundTrip) {
+    const auto dbPath = uniqueDbPath("metrics_inf");
+    const auto root = dbPath.parent_path();
+    {
+        engine::RiskDb db(dbPath.string());
+
+        engine::RiskMetricsResult metrics;
+        metrics.windowKind = "rolling";
+        metrics.windowStartMs = 1000;
+        metrics.windowEndMs = 2000;
+        metrics.computedAtMs = 2100;
+        metrics.basis = "margin";
+        metrics.dataPoints = 10;
+        metrics.valid = true;
+        metrics.sortinoRatio = std::numeric_limits<double>::infinity();
+        metrics.upi = std::numeric_limits<double>::infinity();
+        db.insertMetrics(metrics);
+
+        const auto latest = db.getLatestMetrics("rolling", "margin");
+        ASSERT_TRUE(latest.has_value());
+        EXPECT_TRUE(std::isinf(latest->sortinoRatio));
+        EXPECT_GT(latest->sortinoRatio, 0.0);
+        EXPECT_TRUE(std::isinf(latest->upi));
+        EXPECT_GT(latest->upi, 0.0);
     }
 
     std::filesystem::remove_all(root);

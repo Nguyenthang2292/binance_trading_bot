@@ -26,6 +26,10 @@
           "chapter": "Chapter 7 — Donchian 5/20"
         },
         {
+          "file": "docs/strategies/dow_theory.md",
+          "chapter": "Chapter 7 — Dow Theory"
+        },
+        {
           "file": "docs/strategies/gartley_day_crossover.md",
           "chapter": "Chapter 7 — Gartley 3 and 6 Week Crossover"
         },
@@ -36,6 +40,10 @@
         {
           "file": "docs/strategies/monthly_close_model.md",
           "chapter": "Chapter 7 — Monthly Close"
+        },
+        {
+          "file": "docs/strategies/ricardo_rules.md",
+          "chapter": "Chapter 7 — Ricardo Rules"
         },
         {
           "file": "docs/strategies/trend_breakout.md",

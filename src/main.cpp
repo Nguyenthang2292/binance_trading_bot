@@ -347,6 +347,8 @@ int minWarmupCandles(const nlohmann::json& strategyCfg) {
             maLong = 200;
         }
         minCandles = std::max(minCandles, maLong);
+    } else if (type == "dow_theory") {
+        minCandles = std::max(minCandles, 80);
     }
 
     return std::max(1, minCandles);
@@ -816,7 +818,6 @@ int main(int argc, char* argv[]) {
     engine::NoOpRiskPort noOpRisk;
     std::unique_ptr<engine::RiskDb> riskDb;
     std::unique_ptr<engine::EquityCurve> riskCurve;
-    std::unique_ptr<engine::RiskMetrics> riskMetrics;
     std::unique_ptr<engine::RiskController> riskController;
     engine::IRiskPort* riskPort = &noOpRisk;
 
@@ -824,14 +825,13 @@ int main(int argc, char* argv[]) {
         try {
             riskDb = std::make_unique<engine::RiskDb>(riskConfig.dbPath);
             riskCurve = std::make_unique<engine::EquityCurve>(*riskDb);
-            riskMetrics = std::make_unique<engine::RiskMetrics>(
-                riskConfig.riskFreeRate,
-                riskConfig.minDataPoints,
-                std::chrono::minutes{riskConfig.sampleIntervalMinutes});
             riskController = std::make_unique<engine::RiskController>(
                 *riskDb,
                 *riskCurve,
-                *riskMetrics,
+                engine::RiskMetrics(
+                    riskConfig.riskFreeRate,
+                    riskConfig.minDataPoints,
+                    std::chrono::minutes{riskConfig.sampleIntervalMinutes}),
                 riskConfig);
             riskPort = riskController.get();
             Logger::instance().log(

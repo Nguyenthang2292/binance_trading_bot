@@ -5,6 +5,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace engine {
 
@@ -20,6 +21,8 @@ public:
         const scanner::KlineCache& cache) const;
 
 private:
+    static std::optional<double> latestConfirmedSwingLow(const std::vector<Kline>& closedKlines, int lookback);
+    static std::optional<double> latestConfirmedSwingHigh(const std::vector<Kline>& closedKlines, int lookback);
     static bool isFavorableMove(const TrackedPosition& position, double newLevel);
 };
 

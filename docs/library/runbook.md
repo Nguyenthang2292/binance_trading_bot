@@ -62,6 +62,7 @@ if entry:
 **Khi nào dùng:** Agent tạo strategy mới, sách đã có trong `index.json`.
 
 **Bước 1 — Xác nhận sách tồn tại:**
+
 ```python
 import json
 
@@ -74,6 +75,7 @@ assert entry is not None, f"book_id '{book_id}' not found in library"
 ```
 
 **Bước 2 — Tạo strategy file, thêm dòng `Source ref` vào header:**
+
 ```markdown
 # <Strategy Name>
 
@@ -95,6 +97,7 @@ Nếu có nhiều nguồn, thêm nhiều dòng `**Source ref:**`. Generator sẽ
 **Bước 3 — Cập nhật `implemented_chapters` trong `00-book-references.md`:**
 
 Mở file `docs/strategies/universal-tactics-trend-trading/00-book-references.md`, thêm entry vào YAML frontmatter:
+
 ```yaml
 implemented_chapters:
   # ... entries hiện có ...
@@ -105,6 +108,7 @@ implemented_chapters:
 `file` phải là canonical strategy file có dòng `Source ref` tương ứng. Không dùng `pass-*.md` hoặc chapter note làm target của `implemented_chapters`.
 
 **Bước 4 — Regenerate index:**
+
 ```bash
 python tools/build_library_index.py
 # Phải thấy exit code 0
@@ -118,6 +122,7 @@ python tools/build_library_index.py
 **Khi nào dùng:** Agent cần tạo strategy từ một cuốn sách chưa có trong library.
 
 **Bước 1 — Tạo folder và file source:**
+
 ```bash
 mkdir docs/strategies/<book-slug>/
 # Ví dụ: docs/strategies/elder-2002-come-into-my-trading-room/
@@ -154,12 +159,14 @@ implemented_chapters: []
 ```
 
 **Quy tắc `book_id`:**
+
 - Format: `<lastname>-<year>-<slug>` — lowercase, dùng `-`
 - Ví dụ: `elder-2002-come-into-my-trading-room`
 - Paper: `fama-1970-efficient-market`
 - Online: `investopedia-2024-golden-cross`
 
 **Bước 3 — Regenerate index:**
+
 ```bash
 python tools/build_library_index.py
 ```
@@ -215,18 +222,21 @@ implemented_chapters: []
 ## 6. Validate Library (Kiểm Tra Tính Nhất Quán)
 
 **Chạy generator và kiểm tra:**
+
 ```bash
 python tools/build_library_index.py
 echo "Exit code: $?"
 ```
 
 **Cross-reference do generator kiểm tra:**
+
 - Mỗi strategy file có `**Source ref:**` → `book_id` phải tồn tại trong `index.json`
 - Mỗi strategy file có `**Source ref:**` → phải có link ngược trong `implemented_chapters`
 - Mỗi entry trong `implemented_in[]` → nếu file tồn tại, file phải có `Source ref` tương ứng
 - Mỗi entry trong `implemented_in[]` → nếu file chưa tồn tại, generator chỉ warn
 
 **Tìm sách chưa được triển khai:**
+
 ```python
 import json
 

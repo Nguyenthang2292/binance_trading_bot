@@ -248,6 +248,43 @@
       "params": {
         "period": 30
       }
+    },
+    {
+      "name": "Ricardo Rules",
+      "type": "ricardo_rules",
+      "intervals": ["1d", "4h", "1h", "30m"],
+      "scan_interval_seconds": 900,
+      "max_hold_duration_seconds": 86400,
+      "risk_pct": 0.01,
+      "sl_multiplier": 1.5,
+      "takeProfitPercent": 0.0,
+      "tp_multiplier": 0.0,
+      "min_notional": 1.0,
+      "atr_period": 14,
+      "min_confidence": 0.0,
+      "params": {
+        "initial_stop_policy": "setup_entry_extreme",
+        "exit_policy": "swing_trailing",
+        "fixed_take_profit": false,
+        "swing_lookback": 3
+      }
+    },
+    {
+      "name": "Dow Theory",
+      "type": "dow_theory",
+      "intervals": ["4h", "1h", "30m"],
+      "scan_interval_seconds": 900,
+      "max_hold_duration_seconds": 86400,
+      "risk_pct": 0.01,
+      "sl_multiplier": 1.5,
+      "takeProfitPercent": 20.0,
+      "tp_multiplier": 3.0,
+      "min_notional": 1.0,
+      "atr_period": 14,
+      "min_confidence": 0.5,
+      "params": {
+        "swing_atr_mult": 1.5
+      }
     }
   ],
   "legacy_trading_engine": {

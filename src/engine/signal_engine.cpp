@@ -556,7 +556,18 @@ boost::asio::awaitable<void> SignalEngine::processItem(const WorkItem& item) {
         co_return;
     }
 
-    (void)co_await openPosition(item.symbol, item.interval, signal.direction, atr, currentPrice, cfg, signal.reason);
+    (void)co_await openPosition(
+        item.symbol,
+        item.interval,
+        signal.direction,
+        atr,
+        currentPrice,
+        cfg,
+        signal.reason,
+        signal.initialStopPrice,
+        signal.disableFixedTakeProfit,
+        signal.exitPolicy,
+        signal.swingLookback);
 }
 
 boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
@@ -566,7 +577,11 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     double atr,
     double currentPrice,
     const strategy::StrategyConfig& cfg,
-    std::string_view signalReason) {
+    std::string_view signalReason,
+    double initialStopPrice,
+    bool disableFixedTakeProfit,
+    strategy::Signal::ExitPolicy exitPolicy,
+    int swingLookback) {
     const auto symbolMeta = m_scanner.symbolInfo(symbol);
     const double stepSize = symbolMeta.has_value() && symbolMeta->stepSize > 0.0 ? symbolMeta->stepSize : 0.001;
     const double tickSize = symbolMeta.has_value() ? symbolMeta->tickSize : 0.0;
@@ -862,74 +877,90 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
                 "market placement returned invalid avgPrice for symbol=" + std::string(symbol));
         }
     }
-    const double tpDistance = takeProfitDistance(entryPrice, atr, cfg, activeLeverage);
-    const double tpPriceValue = direction == strategy::Signal::Direction::Long
-        ? entryPrice + tpDistance
-        : entryPrice - tpDistance;
-    const auto tpRounding = direction == strategy::Signal::Direction::Long
-        ? PriceRounding::Down
-        : PriceRounding::Up;
-    const auto tpPrice = priceToTickDecimal(tpPriceValue, tickSize, tpRounding);
-    if (!tpPrice) {
-        co_return std::unexpected(BinanceError::fromParse("invalid tp decimal"));
-    }
-
     const auto close = closeSide(direction);
-    const std::string tpClientOrderId = makeExitClientOrderId(symbol, "tp");
+    std::string tpClientOrderId;
     std::string slClientOrderId;
+    std::optional<NormalPlacementResult> tpResult;
 
-    auto tpResult = co_await m_orders.limit(LimitOrderDraft{
-        .symbol = std::string(symbol),
-        .side = close,
-        .quantity = *qty,
-        .price = *tpPrice,
-        .timeInForce = TimeInForce::GTC,
-        .positionSide = PositionSide::Both,
-        .reduceOnly = true,
-        .clientOrderId = tpClientOrderId,
-        .metadata = metadata,
-    });
-    if (!tpResult || tpResult->state != PlacementState::Accepted) {
-        if (tpResult) {
-            Logger::instance().log(
-                LogLevel::Warning,
-                "take-profit placement rejected symbol=" + std::string(symbol) +
-                    " state=" + std::to_string(static_cast<int>(tpResult->state)) +
-                    " code=" + std::to_string(tpResult->binanceCode.value_or(-1)) +
-                    " message=" + quoteString(tpResult->binanceMessage.value_or("unknown")));
-        } else {
-            Logger::instance().log(
-                LogLevel::Warning,
-                "take-profit placement failed symbol=" + std::string(symbol) +
-                    " error=" + quoteString(tpResult.error().toString()));
+    const bool shouldPlaceFixedTakeProfit =
+        !disableFixedTakeProfit && (cfg.takeProfitPercent > 0.0 || cfg.tpMultiplier > 0.0);
+    if (shouldPlaceFixedTakeProfit) {
+        const double tpDistance = takeProfitDistance(entryPrice, atr, cfg, activeLeverage);
+        const double tpPriceValue = direction == strategy::Signal::Direction::Long
+            ? entryPrice + tpDistance
+            : entryPrice - tpDistance;
+        const auto tpRounding = direction == strategy::Signal::Direction::Long
+            ? PriceRounding::Down
+            : PriceRounding::Up;
+        const auto tpPrice = priceToTickDecimal(tpPriceValue, tickSize, tpRounding);
+        if (!tpPrice) {
+            co_return std::unexpected(BinanceError::fromParse("invalid tp decimal"));
         }
 
-        if (qty) {
-            (void)co_await m_orders.closeByMarket(CloseByMarketDraft{
-                std::string(symbol),
-                close,
-                *qty,
-            });
+        tpClientOrderId = makeExitClientOrderId(symbol, "tp");
+        auto placedTp = co_await m_orders.limit(LimitOrderDraft{
+            .symbol = std::string(symbol),
+            .side = close,
+            .quantity = *qty,
+            .price = *tpPrice,
+            .timeInForce = TimeInForce::GTC,
+            .positionSide = PositionSide::Both,
+            .reduceOnly = true,
+            .clientOrderId = tpClientOrderId,
+            .metadata = metadata,
+        });
+        if (!placedTp || placedTp->state != PlacementState::Accepted) {
+            if (placedTp) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "take-profit placement rejected symbol=" + std::string(symbol) +
+                        " state=" + std::to_string(static_cast<int>(placedTp->state)) +
+                        " code=" + std::to_string(placedTp->binanceCode.value_or(-1)) +
+                        " message=" + quoteString(placedTp->binanceMessage.value_or("unknown")));
+            } else {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "take-profit placement failed symbol=" + std::string(symbol) +
+                        " error=" + quoteString(placedTp.error().toString()));
+            }
+
+            if (qty) {
+                (void)co_await m_orders.closeByMarket(CloseByMarketDraft{
+                    std::string(symbol),
+                    close,
+                    *qty,
+                });
+            }
+            m_tracker.remove(symbol);
+            if (placedTp) {
+                co_return std::unexpected(BinanceError::fromApiResponse(
+                    placedTp->binanceCode.value_or(-91002),
+                    placedTp->binanceMessage.value_or("take-profit placement rejected")));
+            }
+            co_return std::unexpected(placedTp.error());
         }
-        m_tracker.remove(symbol);
-        if (tpResult) {
-            co_return std::unexpected(BinanceError::fromApiResponse(
-                tpResult->binanceCode.value_or(-91002),
-                tpResult->binanceMessage.value_or("take-profit placement rejected")));
-        }
-        co_return std::unexpected(tpResult.error());
+        tpResult = *placedTp;
     }
+
     std::optional<NormalPlacementResult> slResult;
     double initialStopLevel = 0.0;
-    if (m_config.placeStopLoss) {
-        const double slPriceValue = direction == strategy::Signal::Direction::Long
+    if (initialStopPrice > 0.0) {
+        const double stopTickOffset = tickSize > 0.0 ? tickSize : 0.0;
+        initialStopLevel = direction == strategy::Signal::Direction::Long
+            ? initialStopPrice - stopTickOffset
+            : initialStopPrice + stopTickOffset;
+    } else {
+        initialStopLevel = direction == strategy::Signal::Direction::Long
             ? entryPrice - (atr * cfg.slMultiplier)
             : entryPrice + (atr * cfg.slMultiplier);
-        initialStopLevel = slPriceValue;
+    }
+
+    if (m_config.placeStopLoss || initialStopPrice > 0.0) {
+        const bool customStop = initialStopPrice > 0.0;
         const auto slRounding = direction == strategy::Signal::Direction::Long
-            ? PriceRounding::Up
-            : PriceRounding::Down;
-        const auto slPrice = priceToTickDecimal(slPriceValue, tickSize, slRounding);
+            ? (customStop ? PriceRounding::Down : PriceRounding::Up)
+            : (customStop ? PriceRounding::Up : PriceRounding::Down);
+        const auto slPrice = priceToTickDecimal(initialStopLevel, tickSize, slRounding);
         if (!slPrice) {
             co_return std::unexpected(BinanceError::fromParse("invalid sl decimal"));
         }
@@ -966,7 +997,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     tracked.signalReason = std::string(signalReason);
     tracked.tpClientOrderId = tpClientOrderId;
     tracked.slClientOrderId = slClientOrderId;
-    tracked.trailingEnabled = cfg.trailingStop.enabled;
+    tracked.trailingEnabled = cfg.trailingStop.enabled || exitPolicy == strategy::Signal::ExitPolicy::SwingTrailing;
     tracked.trailingInterval = signalInterval.empty()
         ? (cfg.trailingStop.interval.empty()
               ? (cfg.intervals.empty() ? std::string{} : cfg.intervals.front())
@@ -975,7 +1006,9 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     tracked.trailingCandles = cfg.trailingStop.candles;
     tracked.trailingCheckInterval = cfg.trailingStop.checkInterval;
     tracked.currentTrailLevel = initialStopLevel;
-    if (tpResult->orderId.has_value()) {
+    tracked.trailingPolicy = exitPolicy;
+    tracked.swingLookback = std::max(0, swingLookback);
+    if (tpResult && tpResult->orderId.has_value()) {
         tracked.tpOrderId = *tpResult->orderId;
     }
     if (slResult && slResult->orderId.has_value()) {

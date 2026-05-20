@@ -3,6 +3,7 @@
 **Type:** `ricardo_rules`
 **Version:** 1.0
 **Date:** 2026-05-19
+**Source ref:** `penfold-2020-universal-tactics` — Chapter 7, "Ricardo Rules"
 **Design doc:** [docs/design/2026-05-19-strategy-ricardo_rules-v1.0.md](../design/2026-05-19-strategy-ricardo_rules-v1.0.md)
 
 ---

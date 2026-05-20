@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -109,7 +110,16 @@ RiskController::RiskController(RiskDb& db, EquityCurve& curve, RiskMetrics metri
     : m_db(db),
       m_curve(curve),
       m_metrics(std::move(metrics)),
-      m_config(std::move(config)) {}
+      m_config(std::move(config)) {
+    if (!m_config.enabled) {
+        return;
+    }
+    if (auto cached = m_db.getLatestMetrics("rolling", basisString())) {
+        m_latest = *cached;
+        m_status = evaluate(m_latest);
+        m_lastComputeMs = m_latest.computedAtMs;
+    }
+}
 
 bool RiskController::canOpenPosition() const {
     if (!m_config.enabled) {
@@ -151,23 +161,7 @@ boost::asio::awaitable<void> RiskController::maybeRecompute(int64_t nowMs) {
         }
     }
 
-    try {
-        recomputeMetrics(nowMs);
-    } catch (const std::exception& e) {
-        Logger::instance().log(LogLevel::Error, std::string("risk recompute failed: ") + e.what());
-        std::unique_lock lock(m_mutex);
-        if (m_config.failureMode == RiskFailureMode::Closed) {
-            m_status = RiskStatus::HARD_BREACH;
-            m_latest.valid = false;
-        }
-    } catch (...) {
-        Logger::instance().log(LogLevel::Error, "risk recompute failed: unknown exception");
-        std::unique_lock lock(m_mutex);
-        if (m_config.failureMode == RiskFailureMode::Closed) {
-            m_status = RiskStatus::HARD_BREACH;
-            m_latest.valid = false;
-        }
-    }
+    recomputeMetrics(nowMs);
 
     co_return;
 }
@@ -183,25 +177,39 @@ RiskMetricsResult RiskController::latestMetrics() const {
 }
 
 void RiskController::recomputeMetrics(int64_t nowMs) {
-    const auto [startMs, endMs] = rollingWindow(nowMs);
-    const int64_t lookbackMs = static_cast<int64_t>(m_config.controlLookbackDays) * 24 * 60 * 60 * 1000;
-    m_db.deleteEquityPointsOlderThan(nowMs - (lookbackMs * 2));
-    const auto raw = m_curve.getByTimeRange(basisString(), startMs, endMs);
-    const auto sampled = sampleEquity(raw, startMs, endMs, std::chrono::minutes{m_config.sampleIntervalMinutes});
-    RiskMetricsResult result = m_metrics.compute(sampled, "rolling", startMs, endMs, basisString());
-    result.computedAtMs = nowMs;
+    const auto started = std::chrono::steady_clock::now();
+    try {
+        const auto [startMs, endMs] = rollingWindow(nowMs);
+        const int64_t lookbackMs = static_cast<int64_t>(m_config.controlLookbackDays) * 24 * 60 * 60 * 1000;
+        m_db.deleteEquityPointsOlderThan(nowMs - (lookbackMs * 2));
+        const auto raw = m_curve.getByTimeRange(basisString(), startMs, endMs);
+        const auto sampled = sampleEquity(raw, startMs, endMs, std::chrono::minutes{m_config.sampleIntervalMinutes});
+        RiskMetricsResult result = m_metrics.compute(sampled, "rolling", startMs, endMs, basisString());
+        result.computedAtMs = nowMs;
 
-    m_db.insertMetrics(result);
-    const RiskStatus status = evaluate(result);
-    logMetrics(result, status);
+        m_db.insertMetrics(result);
+        const RiskStatus status = evaluate(result);
+        const auto durationMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - started)
+                                    .count();
+        logMetrics(result, status, durationMs);
 
-    std::unique_lock lock(m_mutex);
-    m_latest = result;
-    m_status = status;
-    m_lastComputeMs = nowMs;
+        std::unique_lock lock(m_mutex);
+        m_latest = result;
+        m_status = status;
+        m_lastComputeMs = nowMs;
+    } catch (const std::exception& e) {
+        handleRecomputeFailure(std::string("risk recompute failed: ") + e.what());
+    } catch (...) {
+        handleRecomputeFailure("risk recompute failed: unknown exception");
+    }
 }
 
 RiskStatus RiskController::evaluate(const RiskMetricsResult& metrics) const {
+    if (!metrics.isValid()) {
+        return RiskStatus::OK;
+    }
+
     // maxDrawdown is stored as a negative ratio (e.g., -0.35 for a 35% drawdown).
     const double hardDrawdownLimit = -m_config.hardMaxDrawdown;
     const double softDrawdownLimit = -m_config.softMaxDrawdown;
@@ -209,19 +217,19 @@ RiskStatus RiskController::evaluate(const RiskMetricsResult& metrics) const {
     if (metrics.maxDrawdown < hardDrawdownLimit) {
         return RiskStatus::HARD_BREACH;
     }
-    if (metrics.isValid() && metrics.upi < m_config.hardMinUpi) {
+    if (metrics.upi < m_config.hardMinUpi) {
         return RiskStatus::HARD_BREACH;
     }
     if (metrics.maxDrawdown < softDrawdownLimit) {
         return RiskStatus::SOFT_BREACH;
     }
-    if (metrics.isValid() && metrics.upi < m_config.softMinUpi) {
+    if (metrics.upi < m_config.softMinUpi) {
         return RiskStatus::SOFT_BREACH;
     }
     return RiskStatus::OK;
 }
 
-void RiskController::logMetrics(const RiskMetricsResult& metrics, RiskStatus status) const {
+void RiskController::logMetrics(const RiskMetricsResult& metrics, RiskStatus status, int64_t durationMs) const {
     std::string statusText = "OK";
     LogLevel level = LogLevel::Info;
     if (status == RiskStatus::SOFT_BREACH) {
@@ -236,6 +244,7 @@ void RiskController::logMetrics(const RiskMetricsResult& metrics, RiskStatus sta
     out << "risk metrics"
         << " status=" << statusText
         << " basis=" << quoteString(metrics.basis)
+        << " duration_ms=" << durationMs
         << " points=" << metrics.dataPoints
         << " valid=" << (metrics.valid ? "true" : "false")
         << " annual_return=" << metrics.annualReturn
@@ -245,6 +254,15 @@ void RiskController::logMetrics(const RiskMetricsResult& metrics, RiskStatus sta
         << " max_drawdown=" << metrics.maxDrawdown
         << " upi=" << metrics.upi;
     Logger::instance().log(level, out.str());
+}
+
+void RiskController::handleRecomputeFailure(const std::string& message) {
+    Logger::instance().log(LogLevel::Error, message);
+    std::unique_lock lock(m_mutex);
+    if (m_config.failureMode == RiskFailureMode::Closed) {
+        m_status = RiskStatus::HARD_BREACH;
+        m_latest.valid = false;
+    }
 }
 
 std::pair<int64_t, int64_t> RiskController::rollingWindow(int64_t nowMs) const {

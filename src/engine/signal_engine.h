@@ -131,7 +131,11 @@ public:
         double atr,
         double currentPrice,
         const strategy::StrategyConfig& cfg,
-        std::string_view signalReason);
+        std::string_view signalReason,
+        double initialStopPrice = 0.0,
+        bool disableFixedTakeProfit = false,
+        strategy::Signal::ExitPolicy exitPolicy = strategy::Signal::ExitPolicy::Default,
+        int swingLookback = 0);
     boost::asio::awaitable<void> monitorTimeExit();
     boost::asio::awaitable<void> monitorTrailingStops();
     boost::asio::awaitable<void> reconcileTrackedPositions();

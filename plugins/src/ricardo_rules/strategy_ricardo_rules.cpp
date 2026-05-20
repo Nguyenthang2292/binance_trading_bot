@@ -1,16 +1,12 @@
-// strategy_ricardo_rules.cpp
-// Strategy: Ricardo Rules
-// Design: docs/design/2026-05-19-strategy-ricardo_rules-v1.0.md
-//
-// TODO: Review evaluate() pseudocode in design doc Section 3 before shipping.
-// Tham khảo: docs/sdk/writing-a-strategy-plugin.md
-
+#include "strategy/indicators/atr.h"
 #include "strategy/istrategy.h"
 #include "strategy/strategy_config.h"
-#include "strategy/indicators/atr.h"
 
+#include <chrono>
 #include <nlohmann/json.hpp>
+
 #include <algorithm>
+#include <cstddef>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -20,7 +16,7 @@
 
 namespace {
 
-// ── Helpers ───────────────────────────────────────────────────────────────
+const std::vector<std::string> kDefaultIntervals{"1d", "4h", "1h", "30m"};
 
 std::string fmtVal(double v) {
     std::ostringstream out;
@@ -34,45 +30,54 @@ std::string fmtVal(double v) {
     return s.empty() || s == "-0" ? "0" : s;
 }
 
-// ── Params ────────────────────────────────────────────────────────────────
+const nlohmann::json& paramsObject(const nlohmann::json& j) {
+    static const nlohmann::json empty = nlohmann::json::object();
+    if (!j.contains("params") || !j.at("params").is_object()) {
+        return empty;
+    }
+    return j.at("params");
+}
 
 struct RicardoRulesParams {
-    // N bars on each side required to qualify a local extreme as a swing point.
-    // Reserved for future swing-point trailing stop implementation — not used
-    // in evaluate() until engine supports custom trailing stop via plugin ABI.
     int swingLookback{3};
+    bool fixedTakeProfit{false};
+    bool swingTrailingExit{true};
 };
 
 RicardoRulesParams parseParams(const nlohmann::json& j) {
+    const auto& params = paramsObject(j);
     RicardoRulesParams p;
-    const auto& params = j.contains("params") && j.at("params").is_object()
-        ? j.at("params")
-        : nlohmann::json::object();
     p.swingLookback = params.value("swing_lookback", 3);
-    if (p.swingLookback < 1) p.swingLookback = 1;
+    if (p.swingLookback < 1) {
+        p.swingLookback = 1;
+    }
+    p.fixedTakeProfit = params.value("fixed_take_profit", false);
+    p.swingTrailingExit = params.value("exit_policy", std::string("swing_trailing")) == "swing_trailing";
     return p;
 }
 
 strategy::StrategyConfig parseConfig(const nlohmann::json& j) {
     strategy::StrategyConfig cfg;
-    cfg.name            = j.value("name", "Ricardo Rules");
-    cfg.type            = j.value("type", "ricardo_rules");
-    cfg.intervals       = j.value("intervals", std::vector<std::string>{"1d", "4h", "1h", "30m"});
-    if (cfg.intervals.empty()) cfg.intervals = {"1d", "4h", "1h", "30m"};
-    cfg.scanInterval    = std::chrono::seconds(j.value("scan_interval_seconds", 900));
+    cfg.name = j.value("name", "Ricardo Rules");
+    cfg.type = j.value("type", "ricardo_rules");
+    cfg.intervals = j.value("intervals", kDefaultIntervals);
+    if (cfg.intervals.empty()) {
+        cfg.intervals = kDefaultIntervals;
+    }
+    cfg.scanInterval = std::chrono::seconds(j.value("scan_interval_seconds", 900));
     cfg.maxHoldDuration = std::chrono::seconds(j.value("max_hold_duration_seconds", 86400));
-    cfg.riskPct         = j.value("risk_pct", 0.01);
-    cfg.slMultiplier    = j.value("sl_multiplier", 1.5);
-    cfg.tpMultiplier    = j.value("tp_multiplier", 3.0);
-    // takeProfitPercent is Binance Futures PNL/ROI%, not direct price move percent.
-    cfg.takeProfitPercent = j.value("takeProfitPercent", j.value("take_profit_percent", 20.0));
-    cfg.minNotional     = j.value("min_notional", 1.0);
-    cfg.atrPeriod       = j.value("atr_period", 14);
-    cfg.minConfidence   = j.value("min_confidence", 0.5);
+    cfg.riskPct = j.value("risk_pct", 0.01);
+    cfg.slMultiplier = j.value("sl_multiplier", 1.5);
+    cfg.tpMultiplier = j.value("tp_multiplier", 0.0);
+    cfg.takeProfitPercent = j.value("takeProfitPercent", j.value("take_profit_percent", 0.0));
+    cfg.minNotional = j.value("min_notional", 1.0);
+    cfg.atrPeriod = j.value("atr_period", 14);
+    if (cfg.atrPeriod <= 0) {
+        cfg.atrPeriod = 14;
+    }
+    cfg.minConfidence = j.value("min_confidence", 0.0);
     return cfg;
 }
-
-// ── Strategy ──────────────────────────────────────────────────────────────
 
 class RicardoRulesStrategy final : public strategy::IStrategy {
 public:
@@ -90,31 +95,33 @@ public:
     {
         (void)symbol;
 
-        // ── Guard ─────────────────────────────────────────────────────────
-        // Need: ATR warmup (atrPeriod) + setupBar + kEval + forming bar = atrPeriod + 3
-        const auto minCandles = static_cast<std::size_t>(m_cfg.atrPeriod + 3);
+        if (std::find(m_cfg.intervals.begin(), m_cfg.intervals.end(), interval) == m_cfg.intervals.end()) {
+            return {};
+        }
+
+        // Need ATR window on closed candles and one extra forming candle we ignore.
+        const auto minCandles = static_cast<std::size_t>(m_cfg.atrPeriod + 2);
         if (klines.size() < minCandles) {
             return {};
         }
 
-        // ── ATR ───────────────────────────────────────────────────────────
-        const double atr = strategy::indicators::lastAtr(klines, m_cfg.atrPeriod);
+        const std::vector<Kline> closedKlines(klines.begin(), klines.end() - 1);
+        if (closedKlines.size() < static_cast<std::size_t>(m_cfg.atrPeriod + 1)) {
+            return {};
+        }
+
+        const double atr = strategy::indicators::lastAtr(closedKlines, m_cfg.atrPeriod);
         if (atr <= 0.0) {
             return {};
         }
 
-        // ── Bars ──────────────────────────────────────────────────────────
-        // klines.back() may still be forming — evaluate against last two closed bars.
-        const std::size_t n = klines.size();
-        const Kline& kEval    = klines[n - 2];  // last fully closed candle (entry bar)
-        const Kline& setupBar = klines[n - 3];  // bar before kEval (setup bar)
+        const Kline& kEval = closedKlines.back();
+        const Kline& setupBar = closedKlines[closedKlines.size() - 2];
 
-        // ── Long: close breaks above setup bar's high ─────────────────────
         if (kEval.close > setupBar.high) {
             const double dist       = kEval.close - setupBar.high;
             const double confidence = std::clamp(dist / atr, 0.0, 1.0);
-            // initial_stop_hint: engine uses ATR-based SL; this is for log reference only
-            const double stopHint = std::min(setupBar.low, kEval.low);
+            const double initialStop = std::min(setupBar.low, kEval.low);
             return strategy::Signal{
                 .direction  = strategy::Signal::Direction::Long,
                 .confidence = confidence,
@@ -122,15 +129,20 @@ public:
                 .reason     = std::string(interval)
                     + " Ricardo breakout long: close=" + fmtVal(kEval.close)
                     + " > prev_high=" + fmtVal(setupBar.high)
-                    + " | initial_stop_hint=" + fmtVal(stopHint),
+                    + " | initial_stop=" + fmtVal(initialStop),
+                .initialStopPrice = initialStop,
+                .disableFixedTakeProfit = !m_params.fixedTakeProfit,
+                .exitPolicy = m_params.swingTrailingExit
+                    ? strategy::Signal::ExitPolicy::SwingTrailing
+                    : strategy::Signal::ExitPolicy::Default,
+                .swingLookback = m_params.swingLookback,
             };
         }
 
-        // ── Short: close breaks below setup bar's low ─────────────────────
         if (kEval.close < setupBar.low) {
             const double dist       = setupBar.low - kEval.close;
             const double confidence = std::clamp(dist / atr, 0.0, 1.0);
-            const double stopHint = std::max(setupBar.high, kEval.high);
+            const double initialStop = std::max(setupBar.high, kEval.high);
             return strategy::Signal{
                 .direction  = strategy::Signal::Direction::Short,
                 .confidence = confidence,
@@ -138,7 +150,13 @@ public:
                 .reason     = std::string(interval)
                     + " Ricardo breakout short: close=" + fmtVal(kEval.close)
                     + " < prev_low=" + fmtVal(setupBar.low)
-                    + " | initial_stop_hint=" + fmtVal(stopHint),
+                    + " | initial_stop=" + fmtVal(initialStop),
+                .initialStopPrice = initialStop,
+                .disableFixedTakeProfit = !m_params.fixedTakeProfit,
+                .exitPolicy = m_params.swingTrailingExit
+                    ? strategy::Signal::ExitPolicy::SwingTrailing
+                    : strategy::Signal::ExitPolicy::Default,
+                .swingLookback = m_params.swingLookback,
             };
         }
 
@@ -151,8 +169,6 @@ private:
 };
 
 } // namespace
-
-// ── C ABI Exports ─────────────────────────────────────────────────────────
 
 extern "C" {
 
@@ -176,7 +192,7 @@ __declspec(dllexport) const char* strategyType() {
 }
 
 __declspec(dllexport) const char* pluginVersion() {
-    return "1.0.0";
+    return "1.1.0";
 }
 
 } // extern "C"

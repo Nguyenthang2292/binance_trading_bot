@@ -1,6 +1,9 @@
 #include "risk/equity_curve.h"
 
+#include "logger.h"
+
 #include <chrono>
+#include <sstream>
 
 namespace engine {
 
@@ -24,6 +27,13 @@ std::vector<EquityPoint> EquityCurve::getByTimeRange(std::string_view basis, int
 
 void EquityCurve::record(double equity, int64_t timestampMs, std::string_view source, std::string_view basis) {
     if (equity <= 0.0 || timestampMs <= 0 || basis.empty()) {
+        std::ostringstream out;
+        out << "risk equity point dropped"
+            << " equity=" << equity
+            << " timestamp_ms=" << timestampMs
+            << " source=" << source
+            << " basis=" << basis;
+        Logger::instance().log(LogLevel::Warning, out.str());
         return;
     }
     EquityPoint p;
@@ -43,4 +53,3 @@ int EquityCurve::extractYear(int64_t timestampMs) {
 }
 
 } // namespace engine
-

@@ -201,6 +201,8 @@ add_subdirectory(plugins/src/gartley_day_crossover)
 add_subdirectory(plugins/src/donchian_5_20_crossover)
 add_subdirectory(plugins/src/golden_crossover)
 add_subdirectory(plugins/src/monthly_close_model)
+add_subdirectory(plugins/src/ricardo_rules)
+add_subdirectory(plugins/src/dow_theory)
 
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
 
@@ -226,6 +228,8 @@ add_dependencies(${PROJECT_NAME}_tests
     strategy_donchian_5_20_crossover
     strategy_golden_crossover
     strategy_monthly_close_model
+    strategy_ricardo_rules
+    strategy_dow_theory
 )
 target_include_directories(${PROJECT_NAME}_tests PRIVATE src)
 target_compile_definitions(${PROJECT_NAME}_tests PRIVATE BOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

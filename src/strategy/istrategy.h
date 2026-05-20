@@ -11,11 +11,16 @@ namespace strategy {
 
 struct Signal {
     enum class Direction { Long, Short, None };
+    enum class ExitPolicy { Default, SwingTrailing };
 
     Direction direction{Direction::None};
     double confidence{0.0};
     double atr{0.0};
     std::string reason;
+    double initialStopPrice{0.0};
+    bool disableFixedTakeProfit{false};
+    ExitPolicy exitPolicy{ExitPolicy::Default};
+    int swingLookback{0};
 };
 
 class IStrategy {
@@ -29,4 +34,3 @@ public:
 };
 
 } // namespace strategy
-

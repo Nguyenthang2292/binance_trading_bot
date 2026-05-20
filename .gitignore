@@ -37,6 +37,7 @@ plugins/*.pdb
 plugins/*.lib
 plugins/*.exp
 plugins/*.ilk
+build_codex/
 
 # Local IDE metadata
 .vs/

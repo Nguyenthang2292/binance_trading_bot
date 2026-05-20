@@ -28,7 +28,8 @@ public:
 
 private:
     RiskStatus evaluate(const RiskMetricsResult& metrics) const;
-    void logMetrics(const RiskMetricsResult& metrics, RiskStatus status) const;
+    void logMetrics(const RiskMetricsResult& metrics, RiskStatus status, int64_t durationMs) const;
+    void handleRecomputeFailure(const std::string& message);
     std::pair<int64_t, int64_t> rollingWindow(int64_t nowMs) const;
     double selectEquity(const account::AccountSnapshot& snapshot) const;
     std::string basisString() const;

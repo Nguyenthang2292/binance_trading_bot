@@ -32,6 +32,8 @@ struct TrackedPosition {
     int trailingCandles{0};
     std::chrono::seconds trailingCheckInterval{0};
     double currentTrailLevel{0.0};
+    strategy::Signal::ExitPolicy trailingPolicy{strategy::Signal::ExitPolicy::Default};
+    int swingLookback{0};
     bool openingInFlight{false};
     bool recoveredFromSnapshot{false};
 };
