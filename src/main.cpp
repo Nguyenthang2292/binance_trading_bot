@@ -693,12 +693,15 @@ int main(int argc, char* argv[]) {
         geminiConfig.autotuneControllerTimeoutSeconds = 60;
     }
 
-    const std::unordered_set<std::string> scannerIntervalSet(scannerIntervals.begin(), scannerIntervals.end());
-    for (const auto& tf : geminiConfig.extraTfs) {
-        if (scannerIntervalSet.find(tf) == scannerIntervalSet.end()) {
-            Logger::instance().log(
-                LogLevel::Warning,
-                "gemini extra_tf not present in scanner intervals tf=" + quoteString(tf));
+    const bool geminiActive = geminiConfig.enabled && geminiConfig.mode != engine::GeminiFilterMode::Disabled;
+    if (geminiActive) {
+        const std::unordered_set<std::string> scannerIntervalSet(scannerIntervals.begin(), scannerIntervals.end());
+        for (const auto& tf : geminiConfig.extraTfs) {
+            if (scannerIntervalSet.find(tf) == scannerIntervalSet.end()) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "gemini extra_tf not present in scanner intervals tf=" + quoteString(tf));
+            }
         }
     }
 

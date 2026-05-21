@@ -1,0 +1,8 @@
+OpenSSH_for_Windows_9.5p2, LibreSSL 3.8.2
+debug3: Failed to open file:C:/Users/Admin/.ssh/config error:2
+debug3: Failed to open file:C:/ProgramData/ssh/ssh_config error:2
+debug3: expanded UserKnownHostsFile '~/.ssh/known_hosts' -> 'C:\\Users\\Admin/.ssh/known_hosts'
+debug3: expanded UserKnownHostsFile '~/.ssh/known_hosts2' -> 'C:\\Users\\Admin/.ssh/known_hosts2'
+debug2: resolving "`$log" port 22
+debug3: resolve_host: lookup `$log:22
+ssh: Could not resolve hostname `$log: No such host is known. 
