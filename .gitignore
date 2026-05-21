@@ -53,3 +53,5 @@ infra/prod.env
 
 # SSH private keys
 *.pem
+@data
+data/

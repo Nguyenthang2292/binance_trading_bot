@@ -24,3 +24,11 @@ target_include_directories(strategy_dow_theory PRIVATE
 target_link_libraries(strategy_dow_theory PRIVATE
     nlohmann_json::nlohmann_json
 )
+
+set(SAFE_COPY_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/../../../cmake/safe_copy_if_different.cmake")
+add_custom_command(TARGET strategy_dow_theory POST_BUILD
+    COMMAND "${CMAKE_COMMAND}"
+        -Dsrc="$<TARGET_FILE:strategy_dow_theory>"
+        -Ddst="$<TARGET_FILE_DIR:binance_trading_bot>/plugins/$<TARGET_FILE_NAME:strategy_dow_theory>"
+        -P "${SAFE_COPY_SCRIPT}"
+)
