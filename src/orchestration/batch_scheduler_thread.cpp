@@ -209,6 +209,18 @@ std::vector<std::string> BatchSchedulerThread::buildPhase2Cmd() const {
     return cmd;
 }
 
+std::vector<std::string> BatchSchedulerThread::buildWatcherCmd() const {
+    std::vector<std::string> cmd;
+    cmd.reserve(16);
+    cmd.push_back(m_config.pythonExe);
+    cmd.push_back((std::filesystem::path(m_config.scriptsDir) / "run_execution_plan_watcher.py").string());
+    cmd.push_back("--db-path");
+    cmd.push_back(m_config.dbPath);
+    cmd.push_back("--model-id");
+    cmd.push_back(m_config.modelId);
+    return cmd;
+}
+
 void BatchSchedulerThread::pruneOldLogs() const {
     if (m_config.logRetentionDays <= 0) {
         return;
@@ -328,17 +340,31 @@ std::chrono::system_clock::time_point BatchSchedulerThread::nextWakeTime(
     return now + std::chrono::hours(1);
 }
 
+void BatchSchedulerThread::superviseExecutionWatcher() {
+    const std::string daemonName = "execution_watcher_" + m_config.modelId;
+    if (!m_runner.isDaemonRunning(daemonName)) {
+        Logger::instance().log(LogLevel::Info, "[BATCH] Starting execution watcher daemon: " + daemonName);
+        if (!m_runner.startDaemon(daemonName, buildWatcherCmd())) {
+            Logger::instance().log(LogLevel::Warning, "[BATCH] Failed to start execution watcher daemon: " + daemonName);
+        }
+    }
+}
+
 void BatchSchedulerThread::run(std::stop_token stopToken) {
     while (!stopToken.stop_requested()) {
         const auto now = std::chrono::system_clock::now();
         (void)runScheduledCycleAt(now);
 
+        superviseExecutionWatcher();
+
         const auto wakeAt = nextWakeTime(std::chrono::system_clock::now());
+        const auto sleepTarget = std::min(wakeAt, std::chrono::system_clock::now() + std::chrono::seconds(15));
+        
         std::unique_lock<std::mutex> lock(m_sleepMutex);
         std::stop_callback stopWake(stopToken, [this]() {
             m_sleepCv.notify_all();
         });
-        m_sleepCv.wait_until(lock, wakeAt, [&]() {
+        m_sleepCv.wait_until(lock, sleepTarget, [&]() {
             return stopToken.stop_requested();
         });
     }

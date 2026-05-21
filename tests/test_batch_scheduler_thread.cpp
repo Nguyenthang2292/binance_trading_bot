@@ -43,6 +43,10 @@ public:
         return m_scripted[nextIndex++];
     }
 
+    bool startDaemon(const std::string& name, const std::vector<std::string>& cmd) override { return true; }
+    bool isDaemonRunning(const std::string& name) override { return false; }
+    void stopDaemon(const std::string& name) override {}
+
     std::vector<std::vector<std::string>> calls;
     size_t nextIndex{0};
 

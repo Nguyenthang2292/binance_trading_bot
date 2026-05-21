@@ -8,6 +8,7 @@
 #include "engine/position_tracker.h"
 #include "engine/trailing_stop_controller.h"
 #include "engine/work_queue.h"
+#include "engine/iexecution_planner.h"
 #include "orchestration/runtime_ports.h"
 #include "orders/orders.h"
 #include "risk/irisk_port.h"
@@ -80,6 +81,8 @@ public:
         int randomLeverageMin{2};
         int randomLeverageMax{20};
         LossManagerConfig lossManager;
+        std::optional<int> qlibAggregateMaxConcurrentPositions;
+        std::optional<double> qlibAggregateMaxTotalRiskPct;
     };
 
     SignalEngine(
@@ -127,8 +130,35 @@ public:
     boost::asio::awaitable<void> run();
     void stop();
 
+    static bool isQlibStrategyType(std::string_view type) {
+        return type == "qlib_model_signal" || type == "qlib_strategy_signal";
+    }
+
+    struct ArbiterCandidate {
+        std::string strategyId;
+        strategy::StrategyConfig cfg;
+        strategy::Signal signal;
+    };
+
+    struct DecisionArbiter {
+        std::vector<ArbiterCandidate> candidates;
+
+        void add(std::string_view strategyId, const strategy::StrategyConfig& cfg, const strategy::Signal& signal) {
+            candidates.push_back({std::string(strategyId), cfg, signal});
+        }
+
+        std::optional<ArbiterCandidate> arbitrate(
+            std::string_view symbol, 
+            int maxPositions, 
+            double maxRiskPct, 
+            int currentPositions, 
+            double currentRiskPct,
+            std::vector<ArbiterCandidate>& outRejected);
+    };
+
     boost::asio::awaitable<void> runScanCycle();
     boost::asio::awaitable<void> processItem(const WorkItem& item);
+    boost::asio::awaitable<void> processQlibCandidates(const std::string& symbol, const std::string& interval, DecisionArbiter& arbiter);
     boost::asio::awaitable<Result<void>> openPosition(
         std::string_view symbol,
         std::string_view signalInterval,
@@ -160,6 +190,7 @@ public:
     void setScanCycleStatusCallback(ScanCycleStatusCb cb);
     void setExecutionStatePort(orchestration::IExecutionStatePort* port) { m_executionStatePort = port; }
     void setShadowMetricsPort(orchestration::IShadowMetricsPort* port) { m_shadowMetricsPort = port; }
+    void setExecutionPlanner(IExecutionPlanner* planner) { m_executionPlanner = planner; }
 
 private:
     struct GeminiCycleGate {
@@ -202,6 +233,7 @@ private:
     TrailingStopController m_trailingStops;
     orchestration::IExecutionStatePort* m_executionStatePort{nullptr};
     orchestration::IShadowMetricsPort* m_shadowMetricsPort{nullptr};
+    IExecutionPlanner* m_executionPlanner{nullptr};
     OpenDecisionState m_lastOpenDecision;
     std::atomic<bool> m_running{false};
     ScanCycleStatusCb m_scanCycleStatusCb;

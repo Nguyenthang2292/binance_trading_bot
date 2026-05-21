@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -28,8 +29,12 @@ struct StrategyConfig {
     double minNotional{1.0};
     int atrPeriod{14};
     double minConfidence{0.0};
+    int priority{1000};
     TrailingStopConfig trailingStop;
     std::unordered_map<std::string, std::chrono::seconds> maxHoldDurationByInterval;
+    
+    std::optional<int> maxConcurrentPositions;
+    std::optional<double> maxTotalRiskPct;
 };
 
 } // namespace strategy

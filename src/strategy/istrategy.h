@@ -21,6 +21,8 @@ struct Signal {
     bool disableFixedTakeProfit{false};
     ExitPolicy exitPolicy{ExitPolicy::Default};
     int swingLookback{0};
+    bool shadowOnly{false};
+    bool wouldPlaceOrder{false};
 };
 
 class IStrategy {

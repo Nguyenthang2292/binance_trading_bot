@@ -239,6 +239,8 @@ std::string QlibStateStore::modeToDb(ExecutionMode mode) {
             return "disabled";
         case ExecutionMode::Shadow:
             return "shadow";
+        case ExecutionMode::ShadowOnly:
+            return "shadow_only";
         case ExecutionMode::LiveCanary:
             return "live_canary";
         case ExecutionMode::Live:
@@ -256,6 +258,9 @@ ExecutionMode QlibStateStore::modeFromDb(const std::string& modeText) {
     }
     if (modeText == "live") {
         return ExecutionMode::Live;
+    }
+    if (modeText == "shadow_only") {
+        return ExecutionMode::ShadowOnly;
     }
     return ExecutionMode::Shadow;
 }

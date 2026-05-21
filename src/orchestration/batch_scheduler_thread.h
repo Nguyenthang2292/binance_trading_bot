@@ -40,7 +40,9 @@ public:
     std::string todayDateStr(std::chrono::system_clock::time_point now) const;
     std::vector<std::string> buildPhase1Cmd() const;
     std::vector<std::string> buildPhase2Cmd() const;
+    std::vector<std::string> buildWatcherCmd() const;
     void pruneOldLogs() const;
+    void superviseExecutionWatcher();
 
 private:
     std::chrono::system_clock::time_point nextWakeTime(std::chrono::system_clock::time_point now) const;

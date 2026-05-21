@@ -84,6 +84,8 @@ set(LIB_SOURCES
     src/engine/price_filter.cpp
     src/engine/trailing_stop_controller.cpp
     src/engine/signal_engine.cpp
+    src/engine/qlib_execution_planner.cpp
+    src/engine/iexecution_planner.cpp
     src/risk/risk_db.cpp
     src/risk/equity_curve.cpp
     src/risk/risk_metrics.cpp
@@ -223,6 +225,7 @@ add_subdirectory(plugins/src/monthly_close_model)
 add_subdirectory(plugins/src/ricardo_rules)
 add_subdirectory(plugins/src/dow_theory)
 add_subdirectory(plugins/src/qlib_model_signal)
+add_subdirectory(plugins/src/qlib_strategy_signal)
 
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
 
@@ -251,6 +254,7 @@ add_dependencies(${PROJECT_NAME}_tests
     strategy_ricardo_rules
     strategy_dow_theory
     strategy_qlib_model_signal
+    strategy_qlib_strategy_signal
 )
 target_include_directories(${PROJECT_NAME}_tests PRIVATE src)
 target_compile_definitions(${PROJECT_NAME}_tests PRIVATE BOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

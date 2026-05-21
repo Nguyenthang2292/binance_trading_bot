@@ -10,6 +10,7 @@ namespace orchestration {
 enum class ExecutionMode {
     Disabled,
     Shadow,
+    ShadowOnly,
     LiveCanary,
     Live,
 };
@@ -33,6 +34,7 @@ public:
 struct ShadowSignalRecord {
     std::string modelId;
     std::string runId;
+    std::string adapterId;
     std::string symbol;
     std::string interval;
     int64_t asofOpenTimeMs{0};

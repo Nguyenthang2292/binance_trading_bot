@@ -17,6 +17,7 @@
 #include <cmath>
 #include <exception>
 #include <iomanip>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <type_traits>
@@ -79,6 +80,8 @@ std::string executionModeToString(orchestration::ExecutionMode mode) {
             return "disabled";
         case orchestration::ExecutionMode::Shadow:
             return "shadow";
+        case orchestration::ExecutionMode::ShadowOnly:
+            return "shadow_only";
         case orchestration::ExecutionMode::LiveCanary:
             return "live_canary";
         case orchestration::ExecutionMode::Live:
@@ -525,6 +528,8 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
         }
     }
 
+    std::unordered_map<std::string, DecisionArbiter> qlibArbiters;
+
     for (const auto& item : queue) {
         if (!m_running) {
             co_return;
@@ -533,7 +538,37 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
             ++m_geminiCycleGate.skippedItems;
             continue;
         }
-        co_await processItem(item);
+
+        if (item.strategy && item.strategy->config().type == "qlib_strategy_signal") {
+            const auto klines = m_scanner.cache().snapshot(item.symbol, item.interval);
+            if (!klines || klines->empty()) continue;
+
+            try {
+                auto signal = item.strategy->evaluate(item.symbol, item.interval, *klines);
+                std::string key = item.symbol + "|" + item.interval;
+                qlibArbiters[key].add(item.strategy->config().name, item.strategy->config(), signal);
+            } catch (const std::exception& e) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "strategy evaluate exception strategy=" + item.strategy->config().name + " symbol=" + item.symbol +
+                        " reason=" + e.what());
+            } catch (...) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "strategy evaluate unknown exception strategy=" + item.strategy->config().name + " symbol=" + item.symbol);
+            }
+        } else {
+            co_await processItem(item);
+        }
+    }
+
+    for (auto& [key, arbiter] : qlibArbiters) {
+        if (!m_running) co_return;
+        auto pipePos = key.find('|');
+        if (pipePos == std::string::npos) continue;
+        std::string symbol = key.substr(0, pipePos);
+        std::string interval = key.substr(pipePos + 1);
+        co_await processQlibCandidates(symbol, interval, arbiter);
     }
 
     if (m_geminiCycleGate.closed) {
@@ -566,6 +601,202 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
     co_await m_scanSleepTimer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
     if (ec) {
         co_return;
+    }
+}
+
+std::optional<SignalEngine::ArbiterCandidate> SignalEngine::DecisionArbiter::arbitrate(
+    std::string_view symbol, 
+    int maxPositions, 
+    double maxRiskPct, 
+    int currentPositions, 
+    double currentRiskPct,
+    std::vector<SignalEngine::ArbiterCandidate>& outRejected) 
+{
+    if (candidates.empty()) return std::nullopt;
+
+    std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+        if (a.cfg.priority != b.cfg.priority) {
+            return a.cfg.priority < b.cfg.priority;
+        }
+        if (a.signal.confidence != b.signal.confidence) {
+            return a.signal.confidence > b.signal.confidence;
+        }
+        return a.strategyId < b.strategyId;
+    });
+
+    std::optional<ArbiterCandidate> selected;
+
+    for (auto& cand : candidates) {
+        if (cand.signal.shadowOnly) {
+            if (cand.signal.reason.find("shadow_only") == std::string::npos) {
+                cand.signal.reason += " (shadow_only)";
+            }
+            outRejected.push_back(cand);
+            continue;
+        }
+
+        if (cand.signal.direction == strategy::Signal::Direction::None && cand.signal.reason.empty()) {
+            // purely none, no reason, drop silently or reject depending on shadow requirements
+            // let's record it as direction_none for shadow metrics
+            cand.signal.reason = "direction_none";
+            outRejected.push_back(cand);
+            continue;
+        }
+
+        if (cand.signal.direction == strategy::Signal::Direction::None) {
+            outRejected.push_back(cand);
+            continue;
+        }
+
+        if (!selected) {
+            // Check exposure caps for the candidate
+            bool capped = false;
+            if (maxPositions > 0 && currentPositions >= maxPositions) {
+                cand.signal.reason += " (capped_by_aggregate_concurrent_positions)";
+                capped = true;
+            } else if (std::isfinite(maxRiskPct) && (currentRiskPct + cand.cfg.riskPct) > maxRiskPct) {
+                cand.signal.reason += " (capped_by_aggregate_total_risk)";
+                capped = true;
+            } else if (cand.cfg.maxConcurrentPositions.has_value() && currentPositions >= cand.cfg.maxConcurrentPositions.value()) {
+                cand.signal.reason += " (capped_by_concurrent_positions)";
+                capped = true;
+            } else if (cand.cfg.maxTotalRiskPct.has_value() && (currentRiskPct + cand.cfg.riskPct) > cand.cfg.maxTotalRiskPct.value()) {
+                cand.signal.reason += " (capped_by_total_risk)";
+                capped = true;
+            }
+
+            if (capped) {
+                outRejected.push_back(cand);
+            } else {
+                selected = cand;
+            }
+        } else {
+            cand.signal.reason += " (rejected_by_arbiter)";
+            outRejected.push_back(cand);
+        }
+    }
+
+    return selected;
+}
+
+boost::asio::awaitable<void> SignalEngine::processQlibCandidates(const std::string& symbol, const std::string& interval, DecisionArbiter& arbiter) {
+    if (arbiter.candidates.empty()) co_return;
+
+    orchestration::RuntimeStateSnapshot runtimeState;
+    if (m_executionStatePort) {
+        runtimeState = m_executionStatePort->snapshot();
+    }
+
+    const auto klines = m_scanner.cache().snapshot(symbol, interval);
+    if (!klines || klines->empty()) co_return;
+
+    const double currentPrice = klines->back().close;
+    const bool globalShadow =
+        runtimeState.available &&
+        (runtimeState.mode == orchestration::ExecutionMode::Shadow ||
+         runtimeState.mode == orchestration::ExecutionMode::ShadowOnly);
+
+    auto recordShadow = [&](const ArbiterCandidate& cand, std::string blockedStage, bool wouldPlaceOrder, double atr, double currentPrice) {
+        if (!m_shadowMetricsPort) return;
+        if (!globalShadow && !cand.signal.shadowOnly) return;
+
+        orchestration::ShadowSignalRecord rec;
+        rec.modelId = runtimeState.modelId.empty() ? cand.strategyId : runtimeState.modelId;
+        rec.runId = runtimeState.activeRunId;
+        rec.adapterId = cand.strategyId;
+        rec.symbol = symbol;
+        rec.interval = interval;
+        rec.asofOpenTimeMs = (klines && !klines->empty()) ? klines->back().openTime : 0;
+        rec.capturedAtMs = nowMs();
+        rec.direction = cand.signal.direction;
+        rec.confidence = cand.signal.confidence;
+        rec.executionMode = cand.signal.shadowOnly ? orchestration::ExecutionMode::ShadowOnly : runtimeState.mode;
+        rec.blockedStage = std::move(blockedStage);
+        rec.wouldPlaceOrder = wouldPlaceOrder;
+        rec.currentPrice = currentPrice;
+        rec.atr = atr;
+        rec.reason = cand.signal.reason;
+        
+        try {
+            m_shadowMetricsPort->recordShadowSignal(rec);
+        } catch (const std::exception& e) {
+            Logger::instance().log(LogLevel::Warning, "shadow metrics record failed symbol=" + symbol + " reason=" + e.what());
+        } catch (...) {
+            Logger::instance().log(LogLevel::Warning, "shadow metrics record failed with unknown error symbol=" + symbol);
+        }
+    };
+
+    std::vector<ArbiterCandidate> rejected;
+
+    const auto trackedPositions = m_tracker.all();
+    int currentPositions = static_cast<int>(trackedPositions.size());
+    double currentRiskPct = 0.0;
+    for (const auto& pos : trackedPositions) {
+        currentRiskPct += pos.riskPct;
+    }
+    int maxPos = m_config.qlibAggregateMaxConcurrentPositions.value_or(std::numeric_limits<int>::max());
+    double maxRisk = m_config.qlibAggregateMaxTotalRiskPct.value_or(std::numeric_limits<double>::infinity());
+    
+    auto selectedOpt = arbiter.arbitrate(symbol, maxPos, maxRisk, currentPositions, currentRiskPct, rejected);
+
+    if (selectedOpt) {
+        for (const auto& rej : rejected) {
+            if (rej.signal.shadowOnly || rej.signal.direction == strategy::Signal::Direction::None) {
+                continue;
+            }
+            Logger::instance().log(
+                LogLevel::Info,
+                "[ARBITER][CONFLICT] symbol=" + symbol +
+                    " interval=" + interval +
+                    " winner=" + selectedOpt->strategyId +
+                    " loser=" + rej.strategyId +
+                    " winner_dir=" + directionToString(selectedOpt->signal.direction) +
+                    " loser_dir=" + directionToString(rej.signal.direction) +
+                    " reason=" + rej.signal.reason);
+        }
+    }
+
+    for (const auto& rej : rejected) {
+        const double atr = strategy::indicators::lastAtr(*klines, rej.cfg.atrPeriod);
+        recordShadow(rej, rej.signal.shadowOnly ? "shadow_only" : "arbitration", rej.signal.wouldPlaceOrder, atr, currentPrice);
+    }
+
+    if (!selectedOpt) {
+        co_return;
+    }
+
+    auto& selected = *selectedOpt;
+
+    const double atr = strategy::indicators::lastAtr(*klines, selected.cfg.atrPeriod);
+
+    if (m_tracker.has(symbol)) {
+        recordShadow(selected, "duplicate_position", false, atr, currentPrice);
+        co_return;
+    }
+
+    const bool placeOrders = !globalShadow;
+    double riskPctOverride = -1.0;
+
+    auto res = co_await openPosition(
+        symbol,
+        interval,
+        selected.signal.direction,
+        atr,
+        currentPrice,
+        selected.cfg,
+        selected.signal.reason,
+        0.0,
+        false,
+        strategy::Signal::ExitPolicy::Default,
+        0,
+        riskPctOverride,
+        placeOrders
+    );
+    (void)res;
+
+    if (globalShadow) {
+        const std::string blocked = m_lastOpenDecision.blockedStage;
+        recordShadow(selected, blocked, m_lastOpenDecision.wouldPlaceOrder, atr, currentPrice);
     }
 }
 
@@ -613,7 +844,9 @@ boost::asio::awaitable<void> SignalEngine::processItem(const WorkItem& item) {
         if (!isQlibStrategy || !m_shadowMetricsPort) {
             return;
         }
-        if (!runtimeState.available || runtimeState.mode != orchestration::ExecutionMode::Shadow) {
+        if (!runtimeState.available ||
+            (runtimeState.mode != orchestration::ExecutionMode::Shadow &&
+             runtimeState.mode != orchestration::ExecutionMode::ShadowOnly)) {
             return;
         }
         orchestration::ShadowSignalRecord rec;
@@ -688,9 +921,10 @@ boost::asio::awaitable<void> SignalEngine::processItem(const WorkItem& item) {
     bool placeOrders = true;
     double riskPctOverride = -1.0;
     if (isQlibStrategy && runtimeState.available) {
-        if (runtimeState.mode == orchestration::ExecutionMode::Shadow) {
-            placeOrders = false;
-        } else if (runtimeState.mode == orchestration::ExecutionMode::LiveCanary) {
+            if (runtimeState.mode == orchestration::ExecutionMode::Shadow ||
+                runtimeState.mode == orchestration::ExecutionMode::ShadowOnly) {
+                placeOrders = false;
+            } else if (runtimeState.mode == orchestration::ExecutionMode::LiveCanary) {
             const double mult = m_executionStatePort ? m_executionStatePort->canaryRiskMultiplier() : 1.0;
             riskPctOverride = cfg.riskPct * std::clamp(mult, 0.0, 1.0);
         }
@@ -1021,13 +1255,17 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
 
     const auto metadata = buildOrderMetadata(cfg.name, signalInterval, signalReason);
     const auto side = openSide(direction);
-    auto marketResult = co_await m_orders.market(MarketOrderDraft{
+    MarketOrderDraft marketDraft{
         .symbol = std::string(symbol),
         .side = side,
         .quantity = *qty,
         .positionSide = PositionSide::Both,
         .metadata = metadata,
-    });
+    };
+    
+    auto marketResult = m_executionPlanner 
+        ? co_await m_executionPlanner->executeMarket(std::move(marketDraft))
+        : co_await m_orders.market(std::move(marketDraft));
     if (!marketResult) {
         m_lastOpenDecision.blockedStage = "market_order_error";
         m_tracker.remove(symbol);
@@ -1228,6 +1466,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     tracked.maxHoldDuration = maxHoldDurationForInterval(cfg, signalInterval);
     tracked.entryPrice = entryPrice;
     tracked.quantity = size.quantity;
+    tracked.riskPct = cfg.riskPct;
     tracked.activeLeverage = activeLeverage;
     tracked.strategyName = cfg.name;
     tracked.signalInterval = std::string(signalInterval);

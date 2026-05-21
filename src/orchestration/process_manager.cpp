@@ -412,4 +412,169 @@ ProcessResult ProcessManager::spawnOnce(const std::vector<std::string>& cmd, con
     return out;
 }
 
+ProcessManager::~ProcessManager() {
+    std::vector<std::string> daemons;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (const auto& [name, _] : m_daemons) {
+            daemons.push_back(name);
+        }
+    }
+    for (const auto& name : daemons) {
+        stopDaemon(name);
+    }
+}
+
+bool ProcessManager::startDaemon(const std::string& name, const std::vector<std::string>& cmd) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_daemons.count(name)) {
+        return true;
+    }
+    if (cmd.empty()) return false;
+    
+    std::string logPath = makeLogPath(name + "_daemon", 1);
+    
+#if defined(_WIN32)
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = TRUE;
+
+    HANDLE readPipe = nullptr;
+    HANDLE writePipe = nullptr;
+    if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) {
+        return false;
+    }
+    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(STARTUPINFOA);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = writePipe;
+    si.hStdError = writePipe;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+    PROCESS_INFORMATION pi{};
+    std::string cmdline = buildWindowsCmdline(cmd);
+    std::vector<char> cmdBuf(cmdline.begin(), cmdline.end());
+    cmdBuf.push_back('\0');
+
+    const DWORD creationFlags = CREATE_NO_WINDOW | CREATE_SUSPENDED;
+    const BOOL started = CreateProcessA(
+        nullptr, cmdBuf.data(), nullptr, nullptr, TRUE, creationFlags, nullptr, nullptr, &si, &pi);
+
+    if (!started) {
+        CloseHandle(readPipe);
+        CloseHandle(writePipe);
+        return false;
+    }
+
+    HANDLE jobHandle = CreateJobObjectA(nullptr, nullptr);
+    if (jobHandle) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo{};
+        jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(jobHandle, JobObjectExtendedLimitInformation, &jobInfo, sizeof(jobInfo)) ||
+            !AssignProcessToJobObject(jobHandle, pi.hProcess)) {
+            CloseHandle(jobHandle);
+            jobHandle = nullptr;
+        }
+    }
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    CloseHandle(writePipe);
+
+    std::thread([logPath, readPipe]() {
+        std::ofstream log(logPath, std::ios::binary | std::ios::trunc);
+        char buffer[4096];
+        DWORD bytesRead = 0;
+        while (ReadFile(readPipe, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
+            log.write(buffer, bytesRead);
+        }
+        CloseHandle(readPipe);
+    }).detach();
+
+    m_daemons[name] = { pi.hProcess, jobHandle };
+    return true;
+#else
+    const std::filesystem::path logFile(logPath);
+    if (logFile.has_parent_path()) {
+        std::filesystem::create_directories(logFile.parent_path());
+    }
+
+    const int logFd = ::open(logPath.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (logFd < 0) return false;
+
+    std::vector<char*> argv;
+    argv.reserve(cmd.size() + 1);
+    for (const auto& arg : cmd) {
+        argv.push_back(const_cast<char*>(arg.c_str()));
+    }
+    argv.push_back(nullptr);
+
+    const pid_t child = ::fork();
+    if (child < 0) {
+        ::close(logFd);
+        return false;
+    }
+    if (child == 0) {
+        ::dup2(logFd, STDOUT_FILENO);
+        ::dup2(logFd, STDERR_FILENO);
+        ::close(logFd);
+        ::execvp(argv[0], argv.data());
+        _exit(127);
+    }
+    ::close(logFd);
+    m_daemons[name] = { child };
+    return true;
+#endif
+}
+
+bool ProcessManager::isDaemonRunning(const std::string& name) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_daemons.find(name);
+    if (it == m_daemons.end()) return false;
+    
+#if defined(_WIN32)
+    if (WaitForSingleObject(static_cast<HANDLE>(it->second.hProcess), 0) == WAIT_TIMEOUT) {
+        return true;
+    }
+    if (it->second.jobHandle) CloseHandle(static_cast<HANDLE>(it->second.jobHandle));
+    CloseHandle(static_cast<HANDLE>(it->second.hProcess));
+    m_daemons.erase(it);
+    return false;
+#else
+    int status = 0;
+    pid_t res = ::waitpid(it->second.pid, &status, WNOHANG);
+    if (res == 0) {
+        return true;
+    }
+    m_daemons.erase(it);
+    return false;
+#endif
+}
+
+void ProcessManager::stopDaemon(const std::string& name) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_daemons.find(name);
+    if (it == m_daemons.end()) return;
+
+#if defined(_WIN32)
+    if (it->second.jobHandle) {
+        CloseHandle(static_cast<HANDLE>(it->second.jobHandle));
+    } else {
+        TerminateProcess(static_cast<HANDLE>(it->second.hProcess), 1);
+    }
+    WaitForSingleObject(static_cast<HANDLE>(it->second.hProcess), INFINITE);
+    CloseHandle(static_cast<HANDLE>(it->second.hProcess));
+#else
+    ::kill(it->second.pid, SIGTERM);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    int status = 0;
+    if (::waitpid(it->second.pid, &status, WNOHANG) == 0) {
+        ::kill(it->second.pid, SIGKILL);
+        ::waitpid(it->second.pid, &status, 0);
+    }
+#endif
+    m_daemons.erase(it);
+}
+
 } // namespace orchestration

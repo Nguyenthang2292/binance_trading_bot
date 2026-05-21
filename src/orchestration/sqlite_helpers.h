@@ -60,4 +60,24 @@ inline std::string sqliteError(sqlite3* db, std::string_view prefix) {
     return std::string(prefix) + ": " + (db ? sqlite3_errmsg(db) : "sqlite error");
 }
 
+inline int readUserVersion(sqlite3* db) {
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        throw std::runtime_error(sqliteError(db, "Failed to prepare PRAGMA user_version"));
+    }
+    
+    int version = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        version = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return version;
+}
+
+inline void setUserVersion(sqlite3* db, int version) {
+    std::string sql = "PRAGMA user_version = " + std::to_string(version) + ";";
+    execOrThrow(db, sql.c_str());
+}
+
 } // namespace orchestration::sqlite_helpers

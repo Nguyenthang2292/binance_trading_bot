@@ -20,6 +20,7 @@ struct TrackedPosition {
     std::chrono::seconds maxHoldDuration{0};
     double entryPrice{0.0};
     double quantity{0.0};
+    double riskPct{0.0};
     int activeLeverage{0};
     std::string strategyName;
     std::string signalInterval;

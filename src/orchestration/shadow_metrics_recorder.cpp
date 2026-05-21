@@ -111,6 +111,7 @@ void ShadowMetricsRecorder::initializeSchema() {
         "shadow_id TEXT PRIMARY KEY,"
         "model_id TEXT NOT NULL,"
         "run_id TEXT,"
+        "adapter_id TEXT,"
         "symbol TEXT NOT NULL,"
         "interval TEXT NOT NULL,"
         "asof_open_time_ms INTEGER NOT NULL,"
@@ -181,6 +182,9 @@ void ShadowMetricsRecorder::initializeSchema() {
     }
     if (!hasColumn("qlib_predictions", "horizon_bars")) {
         execOrThrow(m_db, "ALTER TABLE qlib_predictions ADD COLUMN horizon_bars INTEGER NOT NULL DEFAULT 1;");
+    }
+    if (!hasColumn("qlib_shadow_signals", "adapter_id")) {
+        execOrThrow(m_db, "ALTER TABLE qlib_shadow_signals ADD COLUMN adapter_id TEXT;");
     }
 }
 
@@ -257,38 +261,43 @@ void ShadowMetricsRecorder::recordShadowSignal(const ShadowSignalRecord& record)
     bindText(insertStmt, 1, shadowId);
     bindText(insertStmt, 2, record.modelId.empty() ? m_config.modelId : record.modelId);
     bindText(insertStmt, 3, runId);
-    bindText(insertStmt, 4, record.symbol);
-    bindText(insertStmt, 5, record.interval);
-    sqlite3_bind_int64(insertStmt, 6, asofOpenMs);
-    sqlite3_bind_int64(insertStmt, 7, generatedAtMs);
-    sqlite3_bind_int(insertStmt, 8, horizonBars);
-    sqlite3_bind_double(insertStmt, 9, score);
+    if (record.adapterId.empty()) {
+        sqlite3_bind_null(insertStmt, 4);
+    } else {
+        bindText(insertStmt, 4, record.adapterId);
+    }
+    bindText(insertStmt, 5, record.symbol);
+    bindText(insertStmt, 6, record.interval);
+    sqlite3_bind_int64(insertStmt, 7, asofOpenMs);
+    sqlite3_bind_int64(insertStmt, 8, generatedAtMs);
+    sqlite3_bind_int(insertStmt, 9, horizonBars);
+    sqlite3_bind_double(insertStmt, 10, score);
     if (hasScorePercentile) {
-        sqlite3_bind_double(insertStmt, 10, scorePercentile);
+        sqlite3_bind_double(insertStmt, 11, scorePercentile);
     } else {
-        sqlite3_bind_null(insertStmt, 10);
+        sqlite3_bind_null(insertStmt, 11);
     }
-    bindText(insertStmt, 11, directionToDb(record.direction));
-    sqlite3_bind_double(insertStmt, 12, record.confidence);
-    bindText(insertStmt, 13, modeToDb(record.executionMode));
+    bindText(insertStmt, 12, directionToDb(record.direction));
+    sqlite3_bind_double(insertStmt, 13, record.confidence);
+    bindText(insertStmt, 14, modeToDb(record.executionMode));
     if (record.blockedStage.empty()) {
-        sqlite3_bind_null(insertStmt, 14);
+        sqlite3_bind_null(insertStmt, 15);
     } else {
-        bindText(insertStmt, 14, record.blockedStage);
+        bindText(insertStmt, 15, record.blockedStage);
     }
-    sqlite3_bind_int(insertStmt, 15, record.wouldPlaceOrder ? 1 : 0);
+    sqlite3_bind_int(insertStmt, 16, record.wouldPlaceOrder ? 1 : 0);
     if (record.currentPrice > 0.0) {
-        sqlite3_bind_double(insertStmt, 16, record.currentPrice);
-    } else {
-        sqlite3_bind_null(insertStmt, 16);
-    }
-    if (record.atr > 0.0) {
-        sqlite3_bind_double(insertStmt, 17, record.atr);
+        sqlite3_bind_double(insertStmt, 17, record.currentPrice);
     } else {
         sqlite3_bind_null(insertStmt, 17);
     }
-    bindText(insertStmt, 18, record.reason);
-    sqlite3_bind_int64(insertStmt, 19, record.capturedAtMs);
+    if (record.atr > 0.0) {
+        sqlite3_bind_double(insertStmt, 18, record.atr);
+    } else {
+        sqlite3_bind_null(insertStmt, 18);
+    }
+    bindText(insertStmt, 19, record.reason);
+    sqlite3_bind_int64(insertStmt, 20, record.capturedAtMs);
     if (sqlite3_step(insertStmt) != SQLITE_DONE) {
         sqlite3_reset(insertStmt);
         throw std::runtime_error("ShadowMetricsRecorder insert shadow signal failed");
@@ -322,6 +331,8 @@ std::string ShadowMetricsRecorder::modeToDb(ExecutionMode mode) {
             return "disabled";
         case ExecutionMode::Shadow:
             return "shadow";
+        case ExecutionMode::ShadowOnly:
+            return "shadow_only";
         case ExecutionMode::LiveCanary:
             return "live_canary";
         case ExecutionMode::Live:
@@ -378,10 +389,10 @@ sqlite3_stmt* ShadowMetricsRecorder::insertShadowSignalStmtLocked() {
     }
     const char* sql =
         "INSERT OR REPLACE INTO qlib_shadow_signals("
-        "shadow_id, model_id, run_id, symbol, interval, asof_open_time_ms, generated_at_ms, horizon_bars,"
+        "shadow_id, model_id, run_id, adapter_id, symbol, interval, asof_open_time_ms, generated_at_ms, horizon_bars,"
         "score, score_percentile, direction, confidence, execution_mode, blocked_stage, would_place_order,"
         "current_price, atr, reason, captured_at_ms"
-        ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+        ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     if (sqlite3_prepare_v2(m_db, sql, -1, &m_insertShadowSignalStmt, nullptr) != SQLITE_OK ||
         m_insertShadowSignalStmt == nullptr) {
         throw std::runtime_error("ShadowMetricsRecorder prepare insert shadow signal failed");
