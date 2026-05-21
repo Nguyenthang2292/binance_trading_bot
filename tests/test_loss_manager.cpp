@@ -24,9 +24,12 @@ public:
     int marketCalls{0};
     int limitCalls{0};
     int amendLimitCalls{0};
+    int protectionCalls{0};
+    int cancelAlgoByAlgoIdCalls{0};
     std::optional<MarketOrderDraft> lastMarketDraft;
     std::optional<LimitOrderDraft> lastLimitDraft;
     std::optional<AmendLimitOrderDraft> lastAmendDraft;
+    std::optional<ProtectionOrderDraft> lastProtectionDraft;
 
     OrdersResult<NormalPlacementResult> marketResult = [] {
         NormalPlacementResult out;
@@ -53,6 +56,14 @@ public:
         return OrdersResult<NormalOrderSnapshot>(out);
     }();
 
+    OrdersResult<NormalPlacementResult> protectionResult = [] {
+        NormalPlacementResult out;
+        out.state = PlacementState::Accepted;
+        out.orderId = 404;
+        out.clientOrderId = "sl-404";
+        return OrdersResult<NormalPlacementResult>(out);
+    }();
+
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> market(MarketOrderDraft draft) override {
         ++marketCalls;
         lastMarketDraft = std::move(draft);
@@ -71,8 +82,10 @@ public:
         co_return amendResult;
     }
 
-    boost::asio::awaitable<OrdersResult<NormalPlacementResult>> protection(ProtectionOrderDraft) override {
-        co_return NormalPlacementResult{};
+    boost::asio::awaitable<OrdersResult<NormalPlacementResult>> protection(ProtectionOrderDraft draft) override {
+        ++protectionCalls;
+        lastProtectionDraft = std::move(draft);
+        co_return protectionResult;
     }
 
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> closeByMarket(CloseByMarketDraft) override {
@@ -92,6 +105,7 @@ public:
     }
 
     boost::asio::awaitable<OrdersResult<NormalCancelResult>> cancelAlgoByAlgoId(Symbol, int64_t) override {
+        ++cancelAlgoByAlgoIdCalls;
         co_return NormalCancelResult{};
     }
 
@@ -188,6 +202,8 @@ TEST(LossManagerTest, PlacesBreakEvenTakeProfitWhenThresholdHit) {
     tracked.direction = strategy::Signal::Direction::Long;
     tracked.quantity = 0.01;
     tracked.entryPrice = 100.0;
+    tracked.slOrderId = 505;
+    tracked.slClientOrderId = "sl-existing";
     tracked.openedAt = std::chrono::system_clock::now();
     tracked.maxHoldDuration = std::chrono::hours(24);
     ASSERT_TRUE(tracker.add(tracked));
@@ -322,6 +338,9 @@ TEST(LossManagerTest, DcaPendingSkipsBreakEvenUntilPositionAmountIncreases) {
     tracked.direction = strategy::Signal::Direction::Long;
     tracked.quantity = 0.01;
     tracked.entryPrice = 100.0;
+    tracked.slOrderId = 505;
+    tracked.slClientOrderId = "sl-existing";
+    tracked.currentTrailLevel = 85.0;
     tracked.openedAt = std::chrono::system_clock::now();
     tracked.maxHoldDuration = std::chrono::hours(24);
     ASSERT_TRUE(tracker.add(tracked));
@@ -365,11 +384,58 @@ TEST(LossManagerTest, DcaPendingSkipsBreakEvenUntilPositionAmountIncreases) {
     runAwaitable(ioc, manager.evaluate(finalizedSnapshot, finalizedSnapshot.account.availableBalance));
 
     EXPECT_EQ(orders.marketCalls, 1);
+    EXPECT_EQ(orders.protectionCalls, 1);
+    EXPECT_EQ(orders.cancelAlgoByAlgoIdCalls, 1);
+    ASSERT_TRUE(orders.lastProtectionDraft.has_value());
+    EXPECT_EQ(orders.lastProtectionDraft->closeSide, OrderSide::Sell);
+    EXPECT_EQ(orders.lastProtectionDraft->triggerPrice.value(), "81");
     EXPECT_EQ(orders.limitCalls + orders.amendLimitCalls, 1);
     const auto updated = tracker.bySymbol("BTCUSDT");
     ASSERT_TRUE(updated.has_value());
     EXPECT_NEAR(updated->quantity, 0.02, 1e-12);
     EXPECT_NEAR(updated->entryPrice, 96.0, 1e-12);
+    EXPECT_EQ(updated->slOrderId, 404);
+    EXPECT_EQ(updated->slClientOrderId, "sl-404");
+    EXPECT_NEAR(updated->currentTrailLevel, 81.0, 1e-12);
+}
+
+TEST(LossManagerTest, DcaSkippedWhenTrackedStopLossIsMissing) {
+    boost::asio::io_context ioc;
+
+    engine::PositionTracker tracker;
+    engine::TrackedPosition tracked;
+    tracked.symbol = "BTCUSDT";
+    tracked.direction = strategy::Signal::Direction::Long;
+    tracked.quantity = 0.01;
+    tracked.entryPrice = 100.0;
+    tracked.openedAt = std::chrono::system_clock::now();
+    tracked.maxHoldDuration = std::chrono::hours(24);
+    ASSERT_TRUE(tracker.add(tracked));
+
+    Position live;
+    live.symbol = "BTCUSDT";
+    live.positionSide = PositionSide::Both;
+    live.positionAmt = 0.01;
+    live.entryPrice = 100.0;
+    live.breakEvenPrice = 100.1;
+    live.markPrice = 92.0;
+    live.leverage = 10;
+
+    MockOrdersPort orders;
+    MockOrderCapPort orderCap;
+    MockExposurePort exposure;
+    engine::LossManagerConfig cfg;
+    cfg.enabled = true;
+    cfg.roiBeThreshold = -0.50;
+    cfg.roiDcaThreshold = -0.80;
+    cfg.maxDcaCount = 1;
+    engine::LossManager manager(cfg, orders, orderCap, exposure, tracker, symbolInfo);
+
+    auto snapshot = singlePositionSnapshot(live);
+    runAwaitable(ioc, manager.evaluate(snapshot, snapshot.account.availableBalance));
+
+    EXPECT_EQ(orders.marketCalls, 0);
+    EXPECT_EQ(orders.protectionCalls, 0);
 }
 
 TEST(LossManagerTest, RecoveredPositionsDoNotDcaByDefault) {

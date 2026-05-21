@@ -1,0 +1,81 @@
+{
+  "dataset": "data\\qlib_csv\\binance_1h.parquet",
+  "interval": "1h",
+  "horizon_bars": 6,
+  "train_window_days": 180,
+  "test_window_days": 30,
+  "embargo_bars": 6,
+  "purging": true,
+  "feature_columns": [
+    "ret_1",
+    "ret_4",
+    "ret_12",
+    "ma_dist_8",
+    "ma_dist_24",
+    "vol_24",
+    "breakout_high_24",
+    "breakout_low_24",
+    "volume_z_24",
+    "atr_14"
+  ],
+  "model_path": "data\\qlib\\models\\lightgbm_1h_v1.txt",
+  "folds": [
+    {
+      "train_start": "2025-06-30 18:00:00+00:00",
+      "train_end": "2025-12-27 18:00:00+00:00",
+      "test_start": "2025-12-28 00:00:00+00:00",
+      "test_end": "2026-01-27 00:00:00+00:00",
+      "train_rows": 8580,
+      "test_rows": 1440,
+      "ic": -0.0442190168012303,
+      "rank_ic": -0.07083442041268989
+    },
+    {
+      "train_start": "2025-07-30 18:00:00+00:00",
+      "train_end": "2026-01-26 18:00:00+00:00",
+      "test_start": "2026-01-27 00:00:00+00:00",
+      "test_end": "2026-02-26 00:00:00+00:00",
+      "train_rows": 8640,
+      "test_rows": 1440,
+      "ic": 0.05353905862834864,
+      "rank_ic": 0.04616992806548743
+    },
+    {
+      "train_start": "2025-08-29 18:00:00+00:00",
+      "train_end": "2026-02-25 18:00:00+00:00",
+      "test_start": "2026-02-26 00:00:00+00:00",
+      "test_end": "2026-03-28 00:00:00+00:00",
+      "train_rows": 8640,
+      "test_rows": 1440,
+      "ic": -0.041569295837139864,
+      "rank_ic": -0.005315323743886837
+    },
+    {
+      "train_start": "2025-09-28 18:00:00+00:00",
+      "train_end": "2026-03-27 18:00:00+00:00",
+      "test_start": "2026-03-28 00:00:00+00:00",
+      "test_end": "2026-04-27 00:00:00+00:00",
+      "train_rows": 8640,
+      "test_rows": 1440,
+      "ic": -0.0056160287901149755,
+      "rank_ic": 0.0008708208932070923
+    },
+    {
+      "train_start": "2025-10-28 18:00:00+00:00",
+      "train_end": "2026-04-26 18:00:00+00:00",
+      "test_start": "2026-04-27 00:00:00+00:00",
+      "test_end": "2026-05-27 00:00:00+00:00",
+      "train_rows": 8640,
+      "test_rows": 1098,
+      "ic": 0.03382733293502926,
+      "rank_ic": 0.0611689683944704
+    }
+  ],
+  "oos_metrics": {
+    "ic": 0.0005600937170511361,
+    "rank_ic": 0.006719744414278239,
+    "score_percentile_mean": 0.75,
+    "score_percentile_std": 0.25,
+    "oos_rows": 6858
+  }
+}

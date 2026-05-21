@@ -24,6 +24,12 @@ std::string makeLossManagerTpClientId(std::string_view symbol) {
     return "lm_tp_" + std::string(symbol) + "_" + std::to_string(now);
 }
 
+std::string makeLossManagerSlClientId(std::string_view symbol) {
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    return "lm_sl_" + std::string(symbol) + "_" + std::to_string(now);
+}
+
 bool nearEqual(double lhs, double rhs, double epsilon) {
     return std::abs(lhs - rhs) <= std::max(epsilon, std::max(std::abs(lhs), std::abs(rhs)) * 1e-9);
 }
@@ -146,6 +152,7 @@ boost::asio::awaitable<void> LossManager::processTrackedPosition(
             state.dcaPendingCycles = 0;
             state.beCurrent = false;
             m_tracker.refreshPositionView(tracked.symbol, livePosition.entryPrice, absLiveQty);
+            (void)co_await refreshStopLossAfterDca(tracked, livePosition, state);
         } else {
             if (state.dcaPendingCycles <= m_config.dcaPendingTimeoutCycles) {
                 ++state.dcaPendingCycles;
@@ -363,6 +370,12 @@ boost::asio::awaitable<bool> LossManager::placeDca(
     if (!isStillTracked(tracked)) {
         co_return false;
     }
+    if (tracked.slOrderId <= 0 && tracked.slClientOrderId.empty()) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "loss manager skip DCA because stop-loss protection is not tracked symbol=" + tracked.symbol);
+        co_return false;
+    }
     auto dcaResult = co_await m_orders.market(MarketOrderDraft{
         .symbol = tracked.symbol,
         .side = dcaSideFor(livePosition),
@@ -407,6 +420,109 @@ boost::asio::awaitable<bool> LossManager::placeDca(
             " order_id=" + std::to_string(state.dcaOrderId) +
             " client_order_id=" + quoteString(state.dcaClientOrderId) +
             " quantity=" + std::string(dcaQty->value()));
+    co_return true;
+}
+
+boost::asio::awaitable<bool> LossManager::refreshStopLossAfterDca(
+    const TrackedPosition& tracked,
+    const Position& livePosition,
+    const LossManagerState& state) {
+    const auto latest = m_tracker.bySymbol(tracked.symbol);
+    if (!latest.has_value() || latest->openedAt != tracked.openedAt) {
+        co_return false;
+    }
+    if (latest->slOrderId <= 0 && latest->slClientOrderId.empty()) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "loss manager skip DCA SL refresh because stop-loss protection is not tracked symbol=" + tracked.symbol);
+        co_return false;
+    }
+    if (latest->currentTrailLevel <= 0.0 || state.entryPriceBeforeDca <= 0.0 || livePosition.entryPrice <= 0.0) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "loss manager skip DCA SL refresh because stop level is unavailable symbol=" + tracked.symbol);
+        co_return false;
+    }
+
+    const bool isLong = livePosition.positionAmt > 0.0;
+    const double originalStopDistance = isLong
+        ? state.entryPriceBeforeDca - latest->currentTrailLevel
+        : latest->currentTrailLevel - state.entryPriceBeforeDca;
+    if (originalStopDistance <= 0.0) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "loss manager skip DCA SL refresh because stop distance is invalid symbol=" + tracked.symbol);
+        co_return false;
+    }
+
+    const double nextStopLevel = isLong
+        ? livePosition.entryPrice - originalStopDistance
+        : livePosition.entryPrice + originalStopDistance;
+    if (nextStopLevel <= 0.0) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "loss manager skip DCA SL refresh because adjusted stop is invalid symbol=" + tracked.symbol);
+        co_return false;
+    }
+
+    const auto symbolInfo = m_symbolInfoResolver ? m_symbolInfoResolver(tracked.symbol) : std::nullopt;
+    const double tickSize = symbolInfo.has_value() ? symbolInfo->tickSize : 0.0;
+    const double stepSize = symbolInfo.has_value() ? symbolInfo->stepSize : 0.0;
+    const auto closeQty = quantityToStepDecimal(std::abs(livePosition.positionAmt), stepSize);
+    const auto trigger = priceToTickDecimal(
+        nextStopLevel,
+        tickSize,
+        isLong ? PriceRounding::Up : PriceRounding::Down);
+    if (!closeQty || !trigger) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "loss manager skip DCA SL refresh because decimal conversion failed symbol=" + tracked.symbol);
+        co_return false;
+    }
+
+    const auto clientAlgoId = makeLossManagerSlClientId(tracked.symbol);
+    auto protection = co_await m_orders.protection(ProtectionOrderDraft{
+        .symbol = tracked.symbol,
+        .positionSide = PositionSide::Both,
+        .closeSide = closeSideFor(livePosition),
+        .kind = ProtectionKind::StopLoss,
+        .triggerPrice = *trigger,
+        .closeQuantity = *closeQty,
+        .clientAlgoId = clientAlgoId,
+    });
+    if (!protection || protection->state != PlacementState::Accepted) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "loss manager DCA SL refresh placement failed symbol=" + tracked.symbol);
+        co_return false;
+    }
+
+    bool cancelSucceeded = false;
+    if (latest->slOrderId > 0) {
+        auto cancel = co_await m_orders.cancelAlgoByAlgoId(tracked.symbol, latest->slOrderId);
+        cancelSucceeded = cancel.has_value();
+    } else if (!latest->slClientOrderId.empty()) {
+        auto cancel = co_await m_orders.cancelAlgoByClientAlgoId(tracked.symbol, latest->slClientOrderId);
+        cancelSucceeded = cancel.has_value();
+    }
+    if (!cancelSucceeded) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "loss manager DCA old SL cancel failed symbol=" + tracked.symbol);
+    }
+
+    m_tracker.updateStopLoss(
+        tracked.symbol,
+        protection->orderId.value_or(0),
+        protection->clientOrderId.empty() ? clientAlgoId : protection->clientOrderId,
+        trigger->toDouble());
+    Logger::instance().log(
+        LogLevel::Info,
+        "loss manager DCA SL refreshed symbol=" + tracked.symbol +
+            " order_id=" + std::to_string(protection->orderId.value_or(0)) +
+            " client_order_id=" + quoteString(
+                protection->clientOrderId.empty() ? clientAlgoId : protection->clientOrderId) +
+            " stop_price=" + std::string(trigger->value()));
     co_return true;
 }
 

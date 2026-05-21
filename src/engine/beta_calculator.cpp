@@ -10,7 +10,7 @@ namespace engine {
 
 namespace {
 
-constexpr double kMinVariance = 1e-12;
+constexpr double kMinScatter = 1e-12;
 
 std::vector<double> tail(const std::vector<double>& in, size_t n) {
     if (n >= in.size()) {
@@ -110,21 +110,19 @@ double BetaCalculator::ols(const std::vector<double>& coinReturns, const std::ve
     const double muY = std::accumulate(coinReturns.begin(), coinReturns.begin() + static_cast<std::ptrdiff_t>(n), 0.0) /
         static_cast<double>(n);
 
-    double cov = 0.0;
-    double var = 0.0;
+    double sumDxDy = 0.0;
+    double sumDxDx = 0.0;
     for (size_t i = 0; i < n; ++i) {
         const double dx = btcReturns[i] - muX;
         const double dy = coinReturns[i] - muY;
-        cov += dx * dy;
-        var += dx * dx;
+        sumDxDy += dx * dy;
+        sumDxDx += dx * dx;
     }
-    cov /= static_cast<double>(n - 1);
-    var /= static_cast<double>(n - 1);
 
-    if (std::abs(var) < kMinVariance) {
+    if (std::abs(sumDxDx) < kMinScatter) {
         return std::numeric_limits<double>::quiet_NaN();
     }
-    return cov / var;
+    return sumDxDy / sumDxDx;
 }
 
 } // namespace engine

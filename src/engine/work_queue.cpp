@@ -21,31 +21,22 @@ std::vector<WorkItem> WorkQueue::build(
     std::mt19937_64 rng(rngSeed);
     std::shuffle(strategies.begin(), strategies.end(), rng);
 
-    if (strategies.size() > symbols.size()) {
-        const size_t unscheduled = strategies.size() - symbols.size();
-        Logger::instance().log(
-            LogLevel::Warning,
-            "work queue per-cycle strategy rotation active unscheduled_this_cycle=" + std::to_string(unscheduled) +
-                " symbols=" + std::to_string(symbols.size()) +
-                " strategies=" + std::to_string(strategies.size()) +
-                " (probabilistically fair over time via shuffle)");
-    }
-
     auto shuffledSymbols = symbols;
     std::shuffle(shuffledSymbols.begin(), shuffledSymbols.end(), rng);
 
-    for (size_t symbolIndex = 0; symbolIndex < shuffledSymbols.size(); ++symbolIndex) {
-        const auto* strategy = strategies[symbolIndex % strategies.size()];
+    for (const auto* strategy : strategies) {
         if (!strategy) {
             continue;
         }
         const auto& cfg = strategy->config();
-        for (const auto& interval : cfg.intervals) {
-            out.push_back(WorkItem{
-                .symbol = shuffledSymbols[symbolIndex],
-                .interval = interval,
-                .strategy = strategy,
-            });
+        for (const auto& symbol : shuffledSymbols) {
+            for (const auto& interval : cfg.intervals) {
+                out.push_back(WorkItem{
+                    .symbol = symbol,
+                    .interval = interval,
+                    .strategy = strategy,
+                });
+            }
         }
     }
     return out;

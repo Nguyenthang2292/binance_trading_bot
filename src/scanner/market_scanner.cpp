@@ -382,7 +382,11 @@ boost::asio::awaitable<void> MarketScanner::subscribeStreams(const std::vector<s
                 if (const auto* kline = std::get_if<KlineEvent>(&event)) {
                     m_cache.update(kline->symbol, kline->interval, kline->kline);
                     if (kline->kline.isClosed && m_onKlineClosed) {
-                        m_onKlineClosed(kline->symbol, kline->interval);
+                        m_onKlineClosed(
+                            kline->symbol,
+                            kline->interval,
+                            kline->kline.openTime,
+                            kline->kline.closeTime);
                     }
                 }
             });

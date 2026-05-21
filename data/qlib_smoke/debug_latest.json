@@ -1,0 +1,1 @@
+{"generated_at_ms":1779351399766,"model_id":"lightgbm_30m_v1","run_id":"bootstrap_20260521","horizon_bars":1,"interval":"30m","scores":[{"symbol":"ETHUSDT","score":0.00013171046058799645,"rank":1,"score_percentile":1.0,"asof_open_time_ms":1779350400000},{"symbol":"BTCUSDT","score":-3.089083405071809e-05,"rank":2,"score_percentile":0.5,"asof_open_time_ms":1779350400000}]}

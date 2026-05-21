@@ -1,0 +1,61 @@
+{
+  "dataset": "data\\qlib_smoke\\klines_30m.csv",
+  "interval": "30m",
+  "horizon_bars": 1,
+  "train_window_days": 180,
+  "test_window_days": 30,
+  "embargo_bars": 1,
+  "purging": true,
+  "feature_columns": [
+    "ret_1",
+    "ret_4",
+    "ret_12",
+    "ma_dist_8",
+    "ma_dist_24",
+    "vol_24",
+    "breakout_high_24",
+    "breakout_low_24",
+    "volume_z_24",
+    "atr_14"
+  ],
+  "model_path": "data\\qlib_smoke\\models\\lightgbm_30m.txt",
+  "folds": [
+    {
+      "train_start": "2025-09-22 23:30:00+00:00",
+      "train_end": "2026-03-21 23:30:00+00:00",
+      "test_start": "2026-03-22 00:00:00+00:00",
+      "test_end": "2026-04-21 00:00:00+00:00",
+      "train_rows": 17196,
+      "test_rows": 2880,
+      "ic": 0.02814474918344418,
+      "rank_ic": 0.0014400387905141112
+    },
+    {
+      "train_start": "2025-10-22 23:30:00+00:00",
+      "train_end": "2026-04-20 23:30:00+00:00",
+      "test_start": "2026-04-21 00:00:00+00:00",
+      "test_end": "2026-05-21 00:00:00+00:00",
+      "train_rows": 17280,
+      "test_rows": 2880,
+      "ic": -0.017977115012323547,
+      "rank_ic": -0.005246318584064801
+    },
+    {
+      "train_start": "2025-11-21 23:30:00+00:00",
+      "train_end": "2026-05-20 23:30:00+00:00",
+      "test_start": "2026-05-21 00:00:00+00:00",
+      "test_end": "2026-06-20 00:00:00+00:00",
+      "train_rows": 17280,
+      "test_rows": 32,
+      "ic": 0.12924255442869115,
+      "rank_ic": 0.14919354838709678
+    }
+  ],
+  "oos_metrics": {
+    "ic": 0.014218084097592013,
+    "rank_ic": -0.0009470202891953512,
+    "score_percentile_mean": 0.75,
+    "score_percentile_std": 0.25,
+    "oos_rows": 5792
+  }
+}

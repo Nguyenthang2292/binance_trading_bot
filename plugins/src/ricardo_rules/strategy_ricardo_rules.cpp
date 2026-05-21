@@ -70,6 +70,7 @@ strategy::StrategyConfig parseConfig(const nlohmann::json& j) {
     cfg.slMultiplier = j.value("sl_multiplier", 1.5);
     cfg.tpMultiplier = j.value("tp_multiplier", 0.0);
     cfg.takeProfitPercent = j.value("takeProfitPercent", j.value("take_profit_percent", 0.0));
+    cfg.leverage = j.value("leverage", 10);
     cfg.minNotional = j.value("min_notional", 1.0);
     cfg.atrPeriod = j.value("atr_period", 14);
     if (cfg.atrPeriod <= 0) {

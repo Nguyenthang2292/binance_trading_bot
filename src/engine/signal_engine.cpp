@@ -4,8 +4,10 @@
 #include "engine/sizing_policy.h"
 #include "logger.h"
 
+#include <boost/asio/async_result.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -14,7 +16,6 @@
 #include <cctype>
 #include <cmath>
 #include <exception>
-#include <future>
 #include <iomanip>
 #include <random>
 #include <sstream>
@@ -24,6 +25,11 @@
 namespace engine {
 
 namespace {
+
+struct GeminiEvalOutcome {
+    std::exception_ptr exception;
+    GeminiFilterResult result;
+};
 
 std::optional<DecimalString> toDecimal(double value) {
     std::ostringstream out;
@@ -65,6 +71,20 @@ std::string directionToString(strategy::Signal::Direction direction) {
             return "None";
     }
     return "None";
+}
+
+std::string executionModeToString(orchestration::ExecutionMode mode) {
+    switch (mode) {
+        case orchestration::ExecutionMode::Disabled:
+            return "disabled";
+        case orchestration::ExecutionMode::Shadow:
+            return "shadow";
+        case orchestration::ExecutionMode::LiveCanary:
+            return "live_canary";
+        case orchestration::ExecutionMode::Live:
+            return "live";
+    }
+    return "shadow";
 }
 
 std::string geminiDecisionToString(GeminiDecision decision) {
@@ -144,12 +164,32 @@ std::optional<OrderMetadata> buildOrderMetadata(
     return metadata;
 }
 
-constexpr int kMinOrderLeverage = 2;
-constexpr int kMaxOrderLeverage = 20;
+int clampOrderLeverage(int leverage) {
+    constexpr int kMinLeverage = 1;
+    constexpr int kMaxLeverage = 125;
+    return std::clamp(leverage, kMinLeverage, kMaxLeverage);
+}
 
-int randomOrderLeverage() {
+std::pair<int, int> randomOrderLeverageRange(const SignalEngine::Config& engineConfig) {
+    int minLeverage = clampOrderLeverage(engineConfig.randomLeverageMin);
+    int maxLeverage = clampOrderLeverage(engineConfig.randomLeverageMax);
+    if (minLeverage > maxLeverage) {
+        std::swap(minLeverage, maxLeverage);
+    }
+    return {minLeverage, maxLeverage};
+}
+
+int configuredOrderLeverage(const strategy::StrategyConfig& cfg) {
+    return clampOrderLeverage(cfg.leverage > 0 ? cfg.leverage : strategy::StrategyConfig{}.leverage);
+}
+
+int requestedOrderLeverage(const strategy::StrategyConfig& cfg, const SignalEngine::Config& engineConfig) {
+    if (!engineConfig.randomLeverageEnabled) {
+        return configuredOrderLeverage(cfg);
+    }
+    const auto [minLeverage, maxLeverage] = randomOrderLeverageRange(engineConfig);
     thread_local std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<int> distribution(kMinOrderLeverage, kMaxOrderLeverage);
+    std::uniform_int_distribution<int> distribution(minLeverage, maxLeverage);
     return distribution(rng);
 }
 
@@ -169,6 +209,22 @@ std::chrono::seconds maxHoldDurationForInterval(
         return it->second;
     }
     return cfg.maxHoldDuration;
+}
+
+std::optional<int64_t> latestClosedCandleOpenTime(
+    const scanner::KlineCache& cache,
+    std::string_view symbol,
+    std::string_view interval) {
+    const auto klines = cache.snapshot(symbol, interval);
+    if (!klines) {
+        return std::nullopt;
+    }
+    for (auto it = klines->rbegin(); it != klines->rend(); ++it) {
+        if (it->isClosed) {
+            return it->openTime;
+        }
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -247,20 +303,44 @@ boost::asio::awaitable<GeminiFilterResult> SignalEngine::evaluateGeminiNonBlocki
     std::string symbol,
     strategy::Signal::Direction direction,
     std::string signalInterval) {
-    auto evalFuture = std::async(
-        std::launch::async,
-        [this, symbol = std::move(symbol), direction, signalInterval = std::move(signalInterval)]() {
-            return m_geminiFilter.evaluate(symbol, direction, signalInterval, m_scanner.cache());
-        });
+    auto token = boost::asio::use_awaitable;
+    auto outcome = co_await boost::asio::async_initiate<
+        decltype(token),
+        void(GeminiEvalOutcome)>(
+        [this, symbol = std::move(symbol), direction, signalInterval = std::move(signalInterval)](
+            auto completionHandler) mutable {
+            auto completionExecutor = boost::asio::get_associated_executor(
+                completionHandler,
+                m_scanner.ioContext().get_executor());
+            boost::asio::post(
+                m_geminiEvaluationPool,
+                [this,
+                 symbol = std::move(symbol),
+                 direction,
+                 signalInterval = std::move(signalInterval),
+                 completionExecutor,
+                 completionHandler = std::move(completionHandler)]() mutable {
+                    GeminiEvalOutcome outcome;
+                    try {
+                        outcome.result = m_geminiFilter.evaluate(symbol, direction, signalInterval, m_scanner.cache());
+                    } catch (...) {
+                        outcome.exception = std::current_exception();
+                    }
 
-    boost::asio::steady_timer waitTimer(m_scanner.ioContext());
-    while (evalFuture.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
-        waitTimer.expires_after(std::chrono::milliseconds(25));
-        boost::system::error_code ec;
-        co_await waitTimer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+                    boost::asio::post(
+                        completionExecutor,
+                        [outcome = std::move(outcome), completionHandler = std::move(completionHandler)]()
+                            mutable {
+                            completionHandler(std::move(outcome));
+                        });
+                });
+        },
+        token);
+
+    if (outcome.exception) {
+        std::rethrow_exception(outcome.exception);
     }
-
-    co_return evalFuture.get();
+    co_return outcome.result;
 }
 
 SignalEngine::SignalEngine(
@@ -519,20 +599,68 @@ boost::asio::awaitable<void> SignalEngine::processItem(const WorkItem& item) {
         co_return;
     }
 
+    const auto& cfg = item.strategy->config();
+    const bool isQlibStrategy = cfg.type == "qlib_model_signal";
+    orchestration::RuntimeStateSnapshot runtimeState;
+    if (isQlibStrategy && m_executionStatePort) {
+        runtimeState = m_executionStatePort->snapshot();
+        if (runtimeState.available && runtimeState.mode == orchestration::ExecutionMode::Disabled) {
+            co_return;
+        }
+    }
+
+    auto recordShadow = [&](std::string blockedStage, bool wouldPlaceOrder, double atr, double currentPrice) {
+        if (!isQlibStrategy || !m_shadowMetricsPort) {
+            return;
+        }
+        if (!runtimeState.available || runtimeState.mode != orchestration::ExecutionMode::Shadow) {
+            return;
+        }
+        orchestration::ShadowSignalRecord rec;
+        rec.modelId = runtimeState.modelId;
+        rec.runId = runtimeState.activeRunId;
+        rec.symbol = item.symbol;
+        rec.interval = item.interval;
+        rec.asofOpenTimeMs = klines->empty() ? 0 : klines->back().openTime;
+        rec.capturedAtMs = nowMs();
+        rec.direction = signal.direction;
+        rec.confidence = signal.confidence;
+        rec.executionMode = runtimeState.mode;
+        rec.blockedStage = std::move(blockedStage);
+        rec.wouldPlaceOrder = wouldPlaceOrder;
+        rec.currentPrice = currentPrice;
+        rec.atr = atr;
+        rec.reason = signal.reason;
+        try {
+            m_shadowMetricsPort->recordShadowSignal(rec);
+        } catch (const std::exception& e) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "shadow metrics record failed symbol=" + item.symbol + " reason=" + e.what());
+        } catch (...) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "shadow metrics record failed with unknown error symbol=" + item.symbol);
+        }
+    };
+
     if (signal.direction == strategy::Signal::Direction::None) {
+        recordShadow("direction_none", false, 0.0, 0.0);
         co_return;
     }
-    const auto& cfg = item.strategy->config();
     if (signal.confidence < cfg.minConfidence) {
+        recordShadow("confidence", false, 0.0, 0.0);
         co_return;
     }
 
     const double atr = signal.atr > 0.0 ? signal.atr : strategy::indicators::lastAtr(*klines, cfg.atrPeriod);
     if (atr <= 0.0) {
+        recordShadow("atr", false, atr, 0.0);
         co_return;
     }
     const double currentPrice = klines->back().close;
     if (currentPrice <= 0.0) {
+        recordShadow("price", false, atr, currentPrice);
         co_return;
     }
 
@@ -553,9 +681,22 @@ boost::asio::awaitable<void> SignalEngine::processItem(const WorkItem& item) {
                 " tf=" + item.interval +
                 " symbol=" + item.symbol +
                 " reason=" + quoteString("position already tracked"));
+        recordShadow("tracked_position", false, atr, currentPrice);
         co_return;
     }
 
+    bool placeOrders = true;
+    double riskPctOverride = -1.0;
+    if (isQlibStrategy && runtimeState.available) {
+        if (runtimeState.mode == orchestration::ExecutionMode::Shadow) {
+            placeOrders = false;
+        } else if (runtimeState.mode == orchestration::ExecutionMode::LiveCanary) {
+            const double mult = m_executionStatePort ? m_executionStatePort->canaryRiskMultiplier() : 1.0;
+            riskPctOverride = cfg.riskPct * std::clamp(mult, 0.0, 1.0);
+        }
+    }
+
+    m_lastOpenDecision = {};
     (void)co_await openPosition(
         item.symbol,
         item.interval,
@@ -567,7 +708,14 @@ boost::asio::awaitable<void> SignalEngine::processItem(const WorkItem& item) {
         signal.initialStopPrice,
         signal.disableFixedTakeProfit,
         signal.exitPolicy,
-        signal.swingLookback);
+        signal.swingLookback,
+        riskPctOverride,
+        placeOrders);
+
+    if (!placeOrders) {
+        const std::string blocked = m_lastOpenDecision.blockedStage;
+        recordShadow(blocked, m_lastOpenDecision.wouldPlaceOrder, atr, currentPrice);
+    }
 }
 
 boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
@@ -581,8 +729,13 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     double initialStopPrice,
     bool disableFixedTakeProfit,
     strategy::Signal::ExitPolicy exitPolicy,
-    int swingLookback) {
+    int swingLookback,
+    double riskPctOverride,
+    bool placeOrders) {
     const auto symbolMeta = m_scanner.symbolInfo(symbol);
+    m_lastOpenDecision = {};
+    m_lastOpenDecision.blockedStage = "unknown";
+    m_lastOpenDecision.wouldPlaceOrder = false;
     const double stepSize = symbolMeta.has_value() && symbolMeta->stepSize > 0.0 ? symbolMeta->stepSize : 0.001;
     const double tickSize = symbolMeta.has_value() ? symbolMeta->tickSize : 0.0;
     account::AccountSnapshot snapshot;
@@ -599,7 +752,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         SizingInput{
             .availableBalance = balance,
             .atr = atr,
-            .riskPct = cfg.riskPct,
+            .riskPct = riskPctOverride >= 0.0 ? riskPctOverride : cfg.riskPct,
             .slMultiplier = cfg.slMultiplier,
             .minNotional = std::max(
                 {cfg.minNotional,
@@ -625,6 +778,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         }
     }
     if (size.quantity <= 0.0) {
+        m_lastOpenDecision.blockedStage = "sizing";
         co_return std::unexpected(BinanceError::fromApiResponse(-91000, "quantity is zero after sizing"));
     }
 
@@ -636,6 +790,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             LogLevel::Error,
             "order cap check exception symbol=" + std::string(symbol) + " reason=" + e.what());
         if (m_orderCap.failureMode() == OrderCapFailureMode::Closed) {
+            m_lastOpenDecision.blockedStage = "order_cap_exception";
             co_return Result<void>{};
         }
         orderCapResult = {OrderCapDecision::Allow, "order cap check failed fail-open"};
@@ -644,12 +799,14 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             LogLevel::Error,
             "order cap check unknown exception symbol=" + std::string(symbol));
         if (m_orderCap.failureMode() == OrderCapFailureMode::Closed) {
+            m_lastOpenDecision.blockedStage = "order_cap_exception";
             co_return Result<void>{};
         }
         orderCapResult = {OrderCapDecision::Allow, "order cap check failed fail-open"};
     }
 
     if (orderCapResult.decision == OrderCapDecision::Block) {
+        m_lastOpenDecision.blockedStage = "order_cap";
         Logger::instance().log(
             LogLevel::Warning,
             "order cap blocked symbol=" + std::string(symbol) + " reason=" + orderCapResult.reason);
@@ -670,6 +827,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             LogLevel::Error,
             "exposure check exception symbol=" + std::string(symbol) + " reason=" + e.what());
         if (m_exposure.failureMode() == ExposureFailureMode::Closed) {
+            m_lastOpenDecision.blockedStage = "exposure_exception";
             co_return Result<void>{};
         }
         exposureResult = {ExposureDecision::Allow, 1.0, "exposure check failed fail-open"};
@@ -678,12 +836,14 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             LogLevel::Error,
             "exposure check unknown exception symbol=" + std::string(symbol));
         if (m_exposure.failureMode() == ExposureFailureMode::Closed) {
+            m_lastOpenDecision.blockedStage = "exposure_exception";
             co_return Result<void>{};
         }
         exposureResult = {ExposureDecision::Allow, 1.0, "exposure check failed fail-open"};
     }
 
     if (exposureResult.decision == ExposureDecision::Block) {
+        m_lastOpenDecision.blockedStage = "exposure";
         Logger::instance().log(
             LogLevel::Warning,
             "exposure blocked symbol=" + std::string(symbol) + " reason=" + exposureResult.reason);
@@ -693,6 +853,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     if (exposureResult.decision == ExposureDecision::ScaleDown) {
         const double scaledNotional = size.notional * exposureResult.scaleFactor;
         if (scaledNotional < m_exposure.minNotionalAfterScale()) {
+            m_lastOpenDecision.blockedStage = "exposure_scaled_too_small";
             Logger::instance().log(
                 LogLevel::Warning,
                 "exposure scaled too small symbol=" + std::string(symbol) + " reason=" + exposureResult.reason);
@@ -703,6 +864,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         size.quantity = std::max(0.0, scaledSteps * stepSize);
         size.notional = size.quantity * currentPrice;
         if (size.quantity <= 0.0 || size.notional < m_exposure.minNotionalAfterScale()) {
+            m_lastOpenDecision.blockedStage = "exposure_scaled_invalid";
             Logger::instance().log(
                 LogLevel::Warning,
                 "exposure scaled quantity invalid symbol=" + std::string(symbol) + " reason=" + exposureResult.reason);
@@ -711,6 +873,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     }
 
     if (m_riskPort && !m_riskPort->canOpenPosition()) {
+        m_lastOpenDecision.blockedStage = "risk";
         Logger::instance().log(
             LogLevel::Warning,
             "risk gate blocked symbol=" + std::string(symbol) +
@@ -729,6 +892,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
                     LogLevel::Warning,
                     "gemini budget exhausted symbol=" + std::string(symbol) + " tf=" + std::string(signalInterval) +
                         " decision=Block");
+                m_lastOpenDecision.blockedStage = "gemini_budget";
                 co_return Result<void>{};
             }
             Logger::instance().log(
@@ -786,6 +950,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
                             " tf=" + std::string(signalInterval) +
                             " error_code=" + quoteString(geminiResult.errorCode) +
                             " reason=" + quoteString(geminiResult.reason));
+                    m_lastOpenDecision.blockedStage = "gemini_error";
                     co_return Result<void>{};
                 }
                 Logger::instance().log(
@@ -801,6 +966,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
                         " tf=" + std::string(signalInterval) +
                         " confidence=" + fmt2(geminiResult.confidence) +
                         " reason=" + quoteString(geminiResult.reason));
+                m_lastOpenDecision.blockedStage = "gemini";
                 co_return Result<void>{};
             }
         }
@@ -808,10 +974,17 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
 
     const auto qty = quantityToStepDecimal(size.quantity, stepSize);
     if (!qty) {
+        m_lastOpenDecision.blockedStage = "qty_decimal";
         co_return std::unexpected(BinanceError::fromParse("invalid quantity decimal"));
+    }
+    if (!placeOrders) {
+        m_lastOpenDecision.blockedStage.clear();
+        m_lastOpenDecision.wouldPlaceOrder = true;
+        co_return Result<void>{};
     }
 
     if (!m_tracker.reserve(std::string(symbol))) {
+        m_lastOpenDecision.blockedStage = "tracked_position";
         Logger::instance().log(
             LogLevel::Info,
             "signal skipped strategy=" + quoteString(cfg.name) +
@@ -821,9 +994,10 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         co_return Result<void>{};
     }
 
-    const int requestedLeverage = randomOrderLeverage();
+    const int requestedLeverage = requestedOrderLeverage(cfg, m_config);
     auto leverageResult = co_await m_orders.setLeverage(std::string(symbol), requestedLeverage);
     if (!leverageResult) {
+        m_lastOpenDecision.blockedStage = "set_leverage_error";
         m_tracker.remove(symbol);
         Logger::instance().log(
             LogLevel::Warning,
@@ -842,7 +1016,8 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             " side=" + (direction == strategy::Signal::Direction::Long ? "BUY" : "SELL") +
             " qty=" + std::string(qty->value()) +
             " notional=" + fmt2(size.notional) +
-            " leverage=" + std::to_string(activeLeverage));
+            " leverage=" + std::to_string(activeLeverage) +
+            " leverage_policy=" + std::string(m_config.randomLeverageEnabled ? "random" : "configured"));
 
     const auto metadata = buildOrderMetadata(cfg.name, signalInterval, signalReason);
     const auto side = openSide(direction);
@@ -854,10 +1029,12 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         .metadata = metadata,
     });
     if (!marketResult) {
+        m_lastOpenDecision.blockedStage = "market_order_error";
         m_tracker.remove(symbol);
         co_return std::unexpected(marketResult.error());
     }
     if (marketResult->state != PlacementState::Accepted) {
+        m_lastOpenDecision.blockedStage = "market_order_rejected";
         m_tracker.remove(symbol);
         co_return std::unexpected(BinanceError::fromApiResponse(
             marketResult->binanceCode.value_or(-91001),
@@ -894,6 +1071,15 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             : PriceRounding::Up;
         const auto tpPrice = priceToTickDecimal(tpPriceValue, tickSize, tpRounding);
         if (!tpPrice) {
+            m_lastOpenDecision.blockedStage = "tp_decimal";
+            if (qty) {
+                (void)co_await m_orders.closeByMarket(CloseByMarketDraft{
+                    std::string(symbol),
+                    close,
+                    *qty,
+                });
+            }
+            m_tracker.remove(symbol);
             co_return std::unexpected(BinanceError::fromParse("invalid tp decimal"));
         }
 
@@ -933,10 +1119,12 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             }
             m_tracker.remove(symbol);
             if (placedTp) {
+                m_lastOpenDecision.blockedStage = "tp_rejected";
                 co_return std::unexpected(BinanceError::fromApiResponse(
                     placedTp->binanceCode.value_or(-91002),
                     placedTp->binanceMessage.value_or("take-profit placement rejected")));
             }
+            m_lastOpenDecision.blockedStage = "tp_error";
             co_return std::unexpected(placedTp.error());
         }
         tpResult = *placedTp;
@@ -962,6 +1150,22 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             : (customStop ? PriceRounding::Up : PriceRounding::Down);
         const auto slPrice = priceToTickDecimal(initialStopLevel, tickSize, slRounding);
         if (!slPrice) {
+            m_lastOpenDecision.blockedStage = "sl_decimal";
+            if (tpResult) {
+                if (tpResult->orderId.has_value()) {
+                    (void)co_await m_orders.cancelNormalByOrderId(std::string(symbol), *tpResult->orderId);
+                } else if (!tpClientOrderId.empty()) {
+                    (void)co_await m_orders.cancelNormalByClientOrderId(std::string(symbol), tpClientOrderId);
+                }
+            }
+            if (qty) {
+                (void)co_await m_orders.closeByMarket(CloseByMarketDraft{
+                    std::string(symbol),
+                    close,
+                    *qty,
+                });
+            }
+            m_tracker.remove(symbol);
             co_return std::unexpected(BinanceError::fromParse("invalid sl decimal"));
         }
         slClientOrderId = makeExitClientOrderId(symbol, "sl");
@@ -975,13 +1179,45 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             .clientAlgoId = slClientOrderId,
             .metadata = metadata,
         });
-        if (protectionResult) {
+        if (protectionResult && protectionResult->state == PlacementState::Accepted) {
             slResult = *protectionResult;
         } else {
-            Logger::instance().log(
-                LogLevel::Warning,
-                "stop-loss placement failed symbol=" + std::string(symbol) +
-                    " error=" + quoteString(protectionResult.error().toString()));
+            if (protectionResult) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "stop-loss placement rejected symbol=" + std::string(symbol) +
+                        " state=" + std::to_string(static_cast<int>(protectionResult->state)) +
+                        " code=" + std::to_string(protectionResult->binanceCode.value_or(-1)) +
+                        " message=" + quoteString(protectionResult->binanceMessage.value_or("unknown")));
+            } else {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "stop-loss placement failed symbol=" + std::string(symbol) +
+                        " error=" + quoteString(protectionResult.error().toString()));
+            }
+            if (tpResult) {
+                if (tpResult->orderId.has_value()) {
+                    (void)co_await m_orders.cancelNormalByOrderId(std::string(symbol), *tpResult->orderId);
+                } else if (!tpClientOrderId.empty()) {
+                    (void)co_await m_orders.cancelNormalByClientOrderId(std::string(symbol), tpClientOrderId);
+                }
+            }
+            if (qty) {
+                (void)co_await m_orders.closeByMarket(CloseByMarketDraft{
+                    std::string(symbol),
+                    close,
+                    *qty,
+                });
+            }
+            m_tracker.remove(symbol);
+            if (protectionResult) {
+                m_lastOpenDecision.blockedStage = "sl_rejected";
+                co_return std::unexpected(BinanceError::fromApiResponse(
+                    protectionResult->binanceCode.value_or(-91003),
+                    protectionResult->binanceMessage.value_or("stop-loss placement rejected")));
+            }
+            m_lastOpenDecision.blockedStage = "sl_error";
+            co_return std::unexpected(protectionResult.error());
         }
     }
 
@@ -992,6 +1228,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     tracked.maxHoldDuration = maxHoldDurationForInterval(cfg, signalInterval);
     tracked.entryPrice = entryPrice;
     tracked.quantity = size.quantity;
+    tracked.activeLeverage = activeLeverage;
     tracked.strategyName = cfg.name;
     tracked.signalInterval = std::string(signalInterval);
     tracked.signalReason = std::string(signalReason);
@@ -1015,6 +1252,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         tracked.slOrderId = *slResult->orderId;
     }
     if (!m_tracker.commitReserved(symbol, std::move(tracked))) {
+        m_lastOpenDecision.blockedStage = "tracker_commit";
         Logger::instance().log(
             LogLevel::Warning,
             "tracked position commit failed symbol=" + std::string(symbol) +
@@ -1029,6 +1267,8 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         m_tracker.remove(symbol);
         co_return Result<void>{};
     }
+    m_lastOpenDecision.blockedStage.clear();
+    m_lastOpenDecision.wouldPlaceOrder = true;
     co_return Result<void>{};
 }
 
@@ -1205,41 +1445,6 @@ boost::asio::awaitable<void> SignalEngine::processExpiredPositions(std::chrono::
             continue;
         }
 
-        bool tpCancelOk = true;
-        if (pos.tpOrderId > 0) {
-            auto cancelTp = co_await m_orders.cancelNormalByOrderId(pos.symbol, pos.tpOrderId);
-            tpCancelOk = cancelTp.has_value();
-        } else if (!pos.tpClientOrderId.empty()) {
-            auto cancelTp = co_await m_orders.cancelNormalByClientOrderId(pos.symbol, pos.tpClientOrderId);
-            tpCancelOk = cancelTp.has_value();
-        }
-
-        if (!tpCancelOk) {
-            if (liveQty.has_value() && isFlatPositionQty(*liveQty)) {
-                (void)m_tracker.removeIfOpenedAt(pos.symbol, pos.openedAt);
-                continue;
-            }
-            Logger::instance().log(
-                LogLevel::Warning,
-                "time-exit skipped close because TP cancel failed symbol=" + pos.symbol);
-            continue;
-        }
-
-        bool slCancelOk = true;
-        if (pos.slOrderId > 0) {
-            auto cancelSl = co_await m_orders.cancelAlgoByAlgoId(pos.symbol, pos.slOrderId);
-            slCancelOk = cancelSl.has_value();
-        } else if (!pos.slClientOrderId.empty()) {
-            auto cancelSl = co_await m_orders.cancelAlgoByClientAlgoId(pos.symbol, pos.slClientOrderId);
-            slCancelOk = cancelSl.has_value();
-        }
-        if (!slCancelOk) {
-            Logger::instance().log(
-                LogLevel::Warning,
-                "time-exit stop cancel failed symbol=" + pos.symbol);
-            continue;
-        }
-
         const double closeQty = liveQty.has_value() && *liveQty > 0.0 ? *liveQty : pos.quantity;
         const auto qty = toDecimal(closeQty);
         bool closeSucceeded = false;
@@ -1250,6 +1455,34 @@ boost::asio::awaitable<void> SignalEngine::processExpiredPositions(std::chrono::
         }
 
         if (closeSucceeded || (liveQty.has_value() && isFlatPositionQty(*liveQty))) {
+            bool tpCancelOk = true;
+            if (pos.tpOrderId > 0) {
+                auto cancelTp = co_await m_orders.cancelNormalByOrderId(pos.symbol, pos.tpOrderId);
+                tpCancelOk = cancelTp.has_value();
+            } else if (!pos.tpClientOrderId.empty()) {
+                auto cancelTp = co_await m_orders.cancelNormalByClientOrderId(pos.symbol, pos.tpClientOrderId);
+                tpCancelOk = cancelTp.has_value();
+            }
+            if (!tpCancelOk) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "time-exit TP cancel failed after close symbol=" + pos.symbol);
+            }
+
+            bool slCancelOk = true;
+            if (pos.slOrderId > 0) {
+                auto cancelSl = co_await m_orders.cancelAlgoByAlgoId(pos.symbol, pos.slOrderId);
+                slCancelOk = cancelSl.has_value();
+            } else if (!pos.slClientOrderId.empty()) {
+                auto cancelSl = co_await m_orders.cancelAlgoByClientAlgoId(pos.symbol, pos.slClientOrderId);
+                slCancelOk = cancelSl.has_value();
+            }
+            if (!slCancelOk) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "time-exit stop cancel failed after close symbol=" + pos.symbol);
+            }
+
             (void)m_tracker.removeIfOpenedAt(pos.symbol, pos.openedAt);
             co_await notifyRiskPositionClosed();
         } else {
@@ -1268,8 +1501,17 @@ boost::asio::awaitable<void> SignalEngine::processTrailingStops() {
             continue;
         }
 
+        const auto latestClosed = latestClosedCandleOpenTime(m_scanner.cache(), pos.symbol, pos.trailingInterval);
+        if (!latestClosed.has_value()) {
+            continue;
+        }
+        if (*latestClosed <= pos.lastTrailingEvalCandleMs) {
+            continue;
+        }
+
         const auto decision = m_trailingStops.evaluate(pos, m_scanner.cache());
         if (!decision) {
+            (void)m_tracker.markTrailingEvaluated(pos.symbol, *latestClosed);
             continue;
         }
 
@@ -1355,6 +1597,7 @@ boost::asio::awaitable<void> SignalEngine::processTrailingStops() {
             protection->orderId.value_or(0),
             clientOrderId,
             decision->newLevel);
+        (void)m_tracker.markTrailingEvaluated(pos.symbol, *latestClosed);
         Logger::instance().log(
             LogLevel::Info,
             "trailing stop updated symbol=" + pos.symbol + " reason=" + decision->reason);

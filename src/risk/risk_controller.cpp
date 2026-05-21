@@ -83,27 +83,31 @@ RiskConfig RiskConfig::fromJson(const nlohmann::json& j) {
     cfg.softMinUpi = j.value("soft_min_upi", cfg.softMinUpi);
     cfg.hardMinUpi = j.value("hard_min_upi", cfg.hardMinUpi);
 
-    if (cfg.sampleIntervalMinutes <= 0) {
-        throw std::invalid_argument("risk_analytics.sample_interval_minutes must be > 0");
-    }
-    if (cfg.controlLookbackDays <= 0) {
-        throw std::invalid_argument("risk_analytics.control_lookback_days must be > 0");
-    }
-    if (cfg.metricsComputeIntervalMinutes <= 0) {
-        throw std::invalid_argument("risk_analytics.metrics_compute_interval_minutes must be > 0");
-    }
-    if (cfg.minDataPoints < 2) {
-        throw std::invalid_argument("risk_analytics.min_data_points must be >= 2");
-    }
-    if (cfg.softMaxDrawdown <= 0.0 || cfg.hardMaxDrawdown <= 0.0 || cfg.softMaxDrawdown > cfg.hardMaxDrawdown ||
-        cfg.hardMaxDrawdown >= 1.0) {
-        throw std::invalid_argument("risk_analytics drawdown thresholds are invalid");
-    }
-    if (cfg.hardMinUpi > cfg.softMinUpi) {
-        throw std::invalid_argument("risk_analytics.hard_min_upi must be <= soft_min_upi");
-    }
+    cfg.validate();
 
     return cfg;
+}
+
+void RiskConfig::validate() const {
+    if (sampleIntervalMinutes <= 0) {
+        throw std::invalid_argument("risk_analytics.sample_interval_minutes must be > 0");
+    }
+    if (controlLookbackDays <= 0) {
+        throw std::invalid_argument("risk_analytics.control_lookback_days must be > 0");
+    }
+    if (metricsComputeIntervalMinutes <= 0) {
+        throw std::invalid_argument("risk_analytics.metrics_compute_interval_minutes must be > 0");
+    }
+    if (minDataPoints < 2) {
+        throw std::invalid_argument("risk_analytics.min_data_points must be >= 2");
+    }
+    if (softMaxDrawdown <= 0.0 || hardMaxDrawdown <= 0.0 || softMaxDrawdown > hardMaxDrawdown ||
+        hardMaxDrawdown >= 1.0) {
+        throw std::invalid_argument("risk_analytics drawdown thresholds are invalid");
+    }
+    if (hardMinUpi > softMinUpi) {
+        throw std::invalid_argument("risk_analytics.hard_min_upi must be <= soft_min_upi");
+    }
 }
 
 RiskController::RiskController(RiskDb& db, EquityCurve& curve, RiskMetrics metrics, RiskConfig config)

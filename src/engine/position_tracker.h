@@ -20,6 +20,7 @@ struct TrackedPosition {
     std::chrono::seconds maxHoldDuration{0};
     double entryPrice{0.0};
     double quantity{0.0};
+    int activeLeverage{0};
     std::string strategyName;
     std::string signalInterval;
     std::string signalReason;
@@ -32,6 +33,7 @@ struct TrackedPosition {
     int trailingCandles{0};
     std::chrono::seconds trailingCheckInterval{0};
     double currentTrailLevel{0.0};
+    int64_t lastTrailingEvalCandleMs{0};
     strategy::Signal::ExitPolicy trailingPolicy{strategy::Signal::ExitPolicy::Default};
     int swingLookback{0};
     bool openingInFlight{false};
@@ -61,6 +63,7 @@ public:
         int64_t slOrderId,
         std::string slClientOrderId,
         double currentTrailLevel);
+    bool markTrailingEvaluated(std::string_view symbol, int64_t candleOpenTimeMs);
     bool updateTakeProfit(
         std::string_view symbol,
         int64_t tpOrderId,

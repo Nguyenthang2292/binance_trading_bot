@@ -1,0 +1,81 @@
+{
+  "dataset": "data\\qlib_csv\\binance_1h_top20.parquet",
+  "interval": "1h",
+  "horizon_bars": 6,
+  "train_window_days": 180,
+  "test_window_days": 30,
+  "embargo_bars": 6,
+  "purging": true,
+  "feature_columns": [
+    "ret_1",
+    "ret_4",
+    "ret_12",
+    "ma_dist_8",
+    "ma_dist_24",
+    "vol_24",
+    "breakout_high_24",
+    "breakout_low_24",
+    "volume_z_24",
+    "atr_14"
+  ],
+  "model_path": "data\\qlib\\models\\lightgbm_1h_top20_v1.txt",
+  "folds": [
+    {
+      "train_start": "2025-06-30 18:00:00+00:00",
+      "train_end": "2025-12-27 18:00:00+00:00",
+      "test_start": "2025-12-28 00:00:00+00:00",
+      "test_end": "2026-01-27 00:00:00+00:00",
+      "train_rows": 71690,
+      "test_rows": 12960,
+      "ic": 0.041705391852593726,
+      "rank_ic": 0.03326474397656433
+    },
+    {
+      "train_start": "2025-07-30 18:00:00+00:00",
+      "train_end": "2026-01-26 18:00:00+00:00",
+      "test_start": "2026-01-27 00:00:00+00:00",
+      "test_end": "2026-02-26 00:00:00+00:00",
+      "train_rows": 74300,
+      "test_rows": 12960,
+      "ic": -0.019015855008591754,
+      "rank_ic": 0.012528065767887843
+    },
+    {
+      "train_start": "2025-08-29 18:00:00+00:00",
+      "train_end": "2026-02-25 18:00:00+00:00",
+      "test_start": "2026-02-26 00:00:00+00:00",
+      "test_end": "2026-03-28 00:00:00+00:00",
+      "train_rows": 75779,
+      "test_rows": 12997,
+      "ic": 0.10232768508386388,
+      "rank_ic": 0.033652754222828554
+    },
+    {
+      "train_start": "2025-09-28 18:00:00+00:00",
+      "train_end": "2026-03-27 18:00:00+00:00",
+      "test_start": "2026-03-28 00:00:00+00:00",
+      "test_end": "2026-04-27 00:00:00+00:00",
+      "train_rows": 77250,
+      "test_rows": 13680,
+      "ic": -0.0048855104023375695,
+      "rank_ic": 0.005514636754048618
+    },
+    {
+      "train_start": "2025-10-28 18:00:00+00:00",
+      "train_end": "2026-04-26 18:00:00+00:00",
+      "test_start": "2026-04-27 00:00:00+00:00",
+      "test_end": "2026-05-27 00:00:00+00:00",
+      "train_rows": 78511,
+      "test_rows": 10708,
+      "ic": 0.01126181578593019,
+      "rank_ic": -0.00224013275786857
+    }
+  ],
+  "oos_metrics": {
+    "ic": 0.011145277179552309,
+    "rank_ic": 0.008455561339083243,
+    "score_percentile_mean": 0.527083168786036,
+    "score_percentile_std": 0.28822058940018497,
+    "oos_rows": 63305
+  }
+}

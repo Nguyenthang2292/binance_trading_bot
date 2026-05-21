@@ -81,6 +81,7 @@ struct RiskConfig {
     double hardMinUpi{-1.0};
 
     static RiskConfig fromJson(const nlohmann::json& j);
+    void validate() const;
 };
 
 std::string toString(RiskEquityBasis basis);

@@ -1,0 +1,12 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "docs/library/small_pdf_helpers",
+    ".venv/Lib/site-packages"
+  ],
+  "reportMissingImports": "none",
+  "reportMissingTypeStubs": "none",
+  "pythonVersion": "3.13",
+  "typeCheckingMode": "standard"
+}

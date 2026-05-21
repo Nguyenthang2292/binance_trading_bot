@@ -5,8 +5,16 @@
 #include "context.h"
 #include "engine/exposure_controller.h"
 #include "engine/gemini_filter.h"
+#include "engine/risk_profile.h"
 #include "engine/signal_engine.h"
 #include "logger.h"
+#include "orchestration/batch_scheduler_thread.h"
+#include "orchestration/candle_scheduler_thread.h"
+#include "orchestration/orchestrator_config.h"
+#include "orchestration/process_manager.h"
+#include "orchestration/promotion_checker.h"
+#include "orchestration/qlib_state_store.h"
+#include "orchestration/shadow_metrics_recorder.h"
 #include "orders/orders.h"
 #include "orders/rest_client_adapter.h"
 #include "risk/equity_curve.h"
@@ -35,6 +43,7 @@
 #include <iomanip>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -407,11 +416,37 @@ int main(int argc, char* argv[]) {
         Logger::instance().log(LogLevel::Warning, std::string("Failed to parse config.json: ") + e.what());
     }
 
+    const auto riskProfile = engine::RiskProfileLoadResult::loadActive(config);
+    for (const auto& warning : riskProfile.warnings) {
+        Logger::instance().log(LogLevel::Warning, warning);
+    }
+    if (riskProfile.enabled) {
+        const auto& profile = riskProfile.profile;
+        Logger::instance().log(
+            LogLevel::Info,
+            "active risk profile: " + profile.name
+            + " risk_pct=" + std::to_string(profile.riskPct)
+            + " sl_mult=" + std::to_string(profile.slMultiplier)
+            + " max_pos_notional=" + std::to_string(profile.maxPositionNotionalXAvailableBalance)
+            + " max_total_notional_pct=" + std::to_string(profile.maxTotalNotionalPct)
+            + " soft_drawdown=" + std::to_string(profile.softMaxDrawdown)
+            + " hard_drawdown=" + std::to_string(profile.hardMaxDrawdown)
+            + " max_gross_beta=" + std::to_string(profile.maxGrossBeta));
+    } else {
+        Logger::instance().log(LogLevel::Info, "risk profile disabled: using legacy config values");
+    }
+
     const auto catalogJson = config.value("catalog", nlohmann::json::object());
     const auto pluginsDir = catalogJson.value("plugins_dir", "plugins");
     const bool enforceSha256Allowlist = catalogJson.value("enforce_sha256_allowlist", false);
     const auto sha256AllowlistFile = catalogJson.value("sha256_allowlist_file", "");
-    const auto strategyConfigs = toStrategyConfigs(config);
+    auto strategyConfigs = toStrategyConfigs(config);
+    if (riskProfile.enabled) {
+        for (auto& stratJson : strategyConfigs) {
+            stratJson["risk_pct"] = riskProfile.profile.riskPct;
+            stratJson["sl_multiplier"] = riskProfile.profile.slMultiplier;
+        }
+    }
     strategy::StrategyRegistry registry;
     catalog::PluginLoader pluginLoader(
         {.pluginsDir = pluginsDir,
@@ -462,6 +497,11 @@ int main(int argc, char* argv[]) {
     exposureConfig.softLimitNetBeta = exposureJson.value("soft_limit_net_beta", exposureConfig.softLimitNetBeta);
     exposureConfig.hardLimitNetBeta = exposureJson.value("hard_limit_net_beta", exposureConfig.hardLimitNetBeta);
     exposureConfig.maxGrossBeta = exposureJson.value("max_gross_beta", exposureConfig.maxGrossBeta);
+    if (riskProfile.enabled) {
+        exposureConfig.softLimitNetBeta = riskProfile.profile.softLimitNetBeta;
+        exposureConfig.hardLimitNetBeta = riskProfile.profile.hardLimitNetBeta;
+        exposureConfig.maxGrossBeta = riskProfile.profile.maxGrossBeta;
+    }
     exposureConfig.defaultBeta = exposureJson.value("default_beta", exposureConfig.defaultBeta);
     exposureConfig.minNotionalAfterScale =
         exposureJson.value("min_notional_after_scale", exposureConfig.minNotionalAfterScale);
@@ -477,6 +517,9 @@ int main(int argc, char* argv[]) {
     orderCapConfig.enabled = orderCapJson.value("enabled", orderCapConfig.enabled);
     orderCapConfig.maxTotalNotionalPct =
         orderCapJson.value("max_total_notional_pct", orderCapConfig.maxTotalNotionalPct);
+    if (riskProfile.enabled) {
+        orderCapConfig.maxTotalNotionalPct = riskProfile.profile.maxTotalNotionalPct;
+    }
     const auto orderCapFailureMode = orderCapJson.value("failure_mode", std::string("closed"));
     if (orderCapFailureMode == "open") {
         orderCapConfig.failureMode = engine::OrderCapFailureMode::Open;
@@ -662,6 +705,13 @@ int main(int argc, char* argv[]) {
     engine::RiskConfig riskConfig;
     try {
         riskConfig = engine::RiskConfig::fromJson(riskJson);
+        if (riskProfile.enabled) {
+            riskConfig.softMaxDrawdown = riskProfile.profile.softMaxDrawdown;
+            riskConfig.hardMaxDrawdown = riskProfile.profile.hardMaxDrawdown;
+            riskConfig.softMinUpi = riskProfile.profile.softMinUpi;
+            riskConfig.hardMinUpi = riskProfile.profile.hardMinUpi;
+            riskConfig.validate();
+        }
     } catch (const std::exception& e) {
         Logger::instance().log(LogLevel::Error, std::string("Invalid risk_analytics config: ") + e.what());
         return 1;
@@ -860,6 +910,64 @@ int main(int argc, char* argv[]) {
     lossManagerConfig.dcaPendingTimeoutCycles =
         lossJson.value("dca_pending_timeout_cycles", lossManagerConfig.dcaPendingTimeoutCycles);
 
+    const auto orchestratorConfig = orchestration::parseOrchestratorConfig(config);
+    const bool qlibOrchestrationEnabled = orchestratorConfig.enabled;
+    std::shared_ptr<orchestration::QlibStateStore> qlibStateStore;
+    std::shared_ptr<orchestration::ShadowMetricsRecorder> shadowMetricsRecorder;
+    std::shared_ptr<orchestration::ProcessManager> qlibProcessManager;
+    std::shared_ptr<orchestration::PromotionChecker> promotionChecker;
+    std::shared_ptr<orchestration::BatchSchedulerThread> batchScheduler;
+    std::shared_ptr<orchestration::CandleSchedulerThread> candleScheduler;
+    std::optional<std::jthread> batchThread;
+    std::optional<std::jthread> candleThread;
+    if (qlibOrchestrationEnabled) {
+        try {
+            qlibStateStore = orchestration::QlibStateStore::create(orchestratorConfig.stateStore);
+            qlibStateStore->initializeSchema();
+            qlibStateStore->initializeRuntimeStateIfMissing();
+            qlibStateStore->startReloadLoop(ctx.ioc());
+            shadowMetricsRecorder = std::make_shared<orchestration::ShadowMetricsRecorder>(
+                orchestratorConfig.shadowMetrics);
+            shadowMetricsRecorder->initializeSchema();
+
+            qlibProcessManager = std::make_shared<orchestration::ProcessManager>(orchestratorConfig.process);
+            promotionChecker = std::make_shared<orchestration::PromotionChecker>(orchestratorConfig.promotion);
+            batchScheduler = std::make_shared<orchestration::BatchSchedulerThread>(
+                orchestratorConfig.batch,
+                *qlibProcessManager);
+            candleScheduler = std::make_shared<orchestration::CandleSchedulerThread>(
+                orchestratorConfig.candle,
+                *qlibProcessManager,
+                *qlibStateStore,
+                *promotionChecker);
+            batchThread.emplace([batchScheduler](std::stop_token st) { batchScheduler->run(st); });
+            candleThread.emplace([candleScheduler](std::stop_token st) { candleScheduler->run(st); });
+            Logger::instance().log(LogLevel::Info, "Qlib orchestration runtime state enabled");
+        } catch (const std::exception& e) {
+            Logger::instance().log(
+                LogLevel::Error,
+                std::string("Qlib orchestration init failed: ") + e.what());
+            return 1;
+        }
+    }
+
+    engine::SignalEngine::Config engineConfig{
+        .minNotional = engineJson.value("min_notional", 1.0),
+        .maxPositionNotionalXAvailableBalance =
+            engineJson.value("max_position_notional_x_available_balance", 0.5),
+        .positionCheckInterval = std::chrono::seconds(engineJson.value("position_check_interval_seconds", 60)),
+        .trailingCheckInterval = std::chrono::seconds(engineJson.value("trailing_check_interval_seconds", 300)),
+        .placeStopLoss = engineJson.value("place_stop_loss", true),
+        .monitorTrailingStops = engineJson.value("monitor_trailing_stops", true),
+        .randomLeverageEnabled = engineJson.value("random_leverage_enabled", false),
+        .randomLeverageMin = engineJson.value("random_leverage_min", 2),
+        .randomLeverageMax = engineJson.value("random_leverage_max", 20),
+        .lossManager = lossManagerConfig,
+    };
+    if (riskProfile.enabled) {
+        engineConfig.maxPositionNotionalXAvailableBalance = riskProfile.profile.maxPositionNotionalXAvailableBalance;
+    }
+
     engine::SignalEngine signalEngine(
         scannerPort,
         registry,
@@ -869,17 +977,45 @@ int main(int argc, char* argv[]) {
         *exposurePort,
         *geminiPort,
         geminiConfig,
-        engine::SignalEngine::Config{
-            .minNotional = engineJson.value("min_notional", 1.0),
-            .maxPositionNotionalXAvailableBalance =
-                engineJson.value("max_position_notional_x_available_balance", 0.5),
-            .positionCheckInterval = std::chrono::seconds(engineJson.value("position_check_interval_seconds", 60)),
-            .trailingCheckInterval = std::chrono::seconds(engineJson.value("trailing_check_interval_seconds", 300)),
-            .placeStopLoss = engineJson.value("place_stop_loss", true),
-            .monitorTrailingStops = engineJson.value("monitor_trailing_stops", true),
-            .lossManager = lossManagerConfig,
-        },
+        engineConfig,
         riskPort);
+    if (qlibStateStore) {
+        signalEngine.setExecutionStatePort(qlibStateStore.get());
+    }
+    if (shadowMetricsRecorder) {
+        signalEngine.setShadowMetricsPort(shadowMetricsRecorder.get());
+        scanner.setOnKlineClosed(
+            [&scanner, shadowMetricsRecorder, candleScheduler](
+                std::string_view symbol,
+                std::string_view interval,
+                int64_t openTimeMs,
+                int64_t closeTimeMs) {
+                (void)closeTimeMs;
+                if (candleScheduler) {
+                    candleScheduler->notifyCandleClose(openTimeMs, symbol);
+                }
+                if (!shadowMetricsRecorder) {
+                    return;
+                }
+                const auto klines = scanner.cache().snapshot(symbol, interval);
+                if (!klines || klines->empty()) {
+                    return;
+                }
+                auto it = std::find_if(klines->rbegin(), klines->rend(), [openTimeMs](const Kline& kline) {
+                    return kline.openTime == openTimeMs;
+                });
+                if (it == klines->rend()) {
+                    return;
+                }
+                try {
+                    shadowMetricsRecorder->onCandleClosed(symbol, interval, *it);
+                } catch (const std::exception& e) {
+                    Logger::instance().log(
+                        LogLevel::Warning,
+                        std::string("qlib candle close update failed: ") + e.what());
+                }
+            });
+    }
     signalEngine.setScanCycleStatusCallback(
         [&strategyCatalog](int queueItems, int openPositions) {
             catalog::CatalogReporter::logRuntimeStatus(

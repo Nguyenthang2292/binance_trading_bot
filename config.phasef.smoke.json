@@ -1,0 +1,109 @@
+{
+  "catalog": {
+    "plugins_dir": "plugins"
+  },
+  "scanner": {
+    "intervals": ["30m"],
+    "kline_buffer_size": 240,
+    "max_streams_per_connection": 512,
+    "warmup_request_delay_ms": 0,
+    "warmup_initial_limit": 200,
+    "warmup_concurrency": 6,
+    "backfill_enabled": true,
+    "backfill_concurrency": 1,
+    "backfill_request_delay_ms": 150
+  },
+  "engine": {
+    "min_notional": 1.0,
+    "max_position_notional_x_available_balance": 0.5,
+    "position_check_interval_seconds": 60,
+    "trailing_check_interval_seconds": 300,
+    "monitor_trailing_stops": false,
+    "place_stop_loss": false
+  },
+  "loss_manager": {
+    "enabled": false
+  },
+  "order_cap": {
+    "enabled": false,
+    "max_total_notional_pct": 8.0,
+    "failure_mode": "closed"
+  },
+  "exposure_control": {
+    "enabled": false,
+    "target_net_beta": 0.0,
+    "soft_limit_net_beta": 0.5,
+    "hard_limit_net_beta": 1.0,
+    "max_gross_beta": 3.0,
+    "default_beta": 1.0,
+    "min_notional_after_scale": 5.0,
+    "beta_window_days": 30,
+    "failure_mode": "closed"
+  },
+  "gemini_filter": {
+    "enabled": false,
+    "mode": "disabled"
+  },
+  "risk_analytics": {
+    "enabled": false
+  },
+  "qlib_orchestration": {
+    "enabled": true,
+    "python_exe": "python",
+    "scripts_dir": "tools/qlib_bridge",
+    "data_dir": "data/qlib_smoke",
+    "model_dir": "data/qlib_smoke/models",
+    "db_path": "data/qlib_smoke/qlib_predictions.db",
+    "model_id": "lightgbm_30m_v1",
+    "interval": "30m",
+    "horizon_bars": 1,
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "batch_schedule": { "hour": 15, "minute": 0, "weekdays": [0, 1, 2, 3, 4, 5, 6] },
+    "candle_schedule": { "finalize_delay_seconds": 5 },
+    "retry": { "max_attempts": 1, "backoff_base_seconds": 1, "timeout_seconds": 600 },
+    "log_dir": "logs/qlib_orch_smoke",
+    "promotion": { "min_candles": 1, "min_sharpe": -999.0, "min_hit_rate": 0.0, "lookback_candles": 16 },
+    "state": { "reload_seconds": 2 },
+    "canary": { "risk_multiplier": 0.25 },
+    "cost_model": {
+      "estimated_round_trip_fee_bps": 8.0,
+      "estimated_slippage_bps": 2.0,
+      "estimated_funding_bps_per_day": 0.0
+    },
+    "ready_dir": "tmp/qlib_signals_smoke"
+  },
+  "strategies": [
+    {
+      "name": "Qlib LightGBM 30m Signal (Smoke)",
+      "type": "qlib_model_signal",
+      "intervals": ["30m"],
+      "scan_interval_seconds": 60,
+      "max_hold_duration_seconds": 7200,
+      "risk_pct": 0.01,
+      "sl_multiplier": 1.5,
+      "tp_multiplier": 3.0,
+      "takeProfitPercent": 20.0,
+      "min_notional": 1.0,
+      "atr_period": 14,
+      "min_confidence": 0.0,
+      "execution": {
+        "mode_source": "sqlite",
+        "default_mode": "shadow",
+        "state_db_path": "data/qlib_smoke/qlib_predictions.db"
+      },
+      "params": {
+        "source": "sqlite",
+        "db_path": "data/qlib_smoke/qlib_predictions.db",
+        "model_id": "lightgbm_30m_v1",
+        "max_artifact_age_seconds": 14400,
+        "max_data_age_seconds": 5400,
+        "long_threshold": 0.0,
+        "short_threshold": 0.0,
+        "confidence_mode": "rank",
+        "min_confidence_percentile": 0.0,
+        "fail_mode": "open",
+        "score_to_confidence_scale": 0.01
+      }
+    }
+  ]
+}

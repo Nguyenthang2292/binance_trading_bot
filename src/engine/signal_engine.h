@@ -8,6 +8,7 @@
 #include "engine/position_tracker.h"
 #include "engine/trailing_stop_controller.h"
 #include "engine/work_queue.h"
+#include "orchestration/runtime_ports.h"
 #include "orders/orders.h"
 #include "risk/irisk_port.h"
 #include "scanner/market_scanner.h"
@@ -17,6 +18,7 @@
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/asio/thread_pool.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -74,6 +76,9 @@ public:
         std::chrono::seconds trailingCheckInterval{300};
         bool placeStopLoss{true};
         bool monitorTrailingStops{true};
+        bool randomLeverageEnabled{false};
+        int randomLeverageMin{2};
+        int randomLeverageMax{20};
         LossManagerConfig lossManager;
     };
 
@@ -135,7 +140,9 @@ public:
         double initialStopPrice = 0.0,
         bool disableFixedTakeProfit = false,
         strategy::Signal::ExitPolicy exitPolicy = strategy::Signal::ExitPolicy::Default,
-        int swingLookback = 0);
+        int swingLookback = 0,
+        double riskPctOverride = -1.0,
+        bool placeOrders = true);
     boost::asio::awaitable<void> monitorTimeExit();
     boost::asio::awaitable<void> monitorTrailingStops();
     boost::asio::awaitable<void> reconcileTrackedPositions();
@@ -151,6 +158,8 @@ public:
 
     using ScanCycleStatusCb = std::function<void(int queueItems, int openPositions)>;
     void setScanCycleStatusCallback(ScanCycleStatusCb cb);
+    void setExecutionStatePort(orchestration::IExecutionStatePort* port) { m_executionStatePort = port; }
+    void setShadowMetricsPort(orchestration::IShadowMetricsPort* port) { m_shadowMetricsPort = port; }
 
 private:
     struct GeminiCycleGate {
@@ -159,6 +168,11 @@ private:
         std::string firstSymbol;
         std::string firstTf;
         int skippedItems{0};
+    };
+
+    struct OpenDecisionState {
+        std::string blockedStage;
+        bool wouldPlaceOrder{false};
     };
 
     bool shouldSkipForClosedGeminiGate() const;
@@ -186,11 +200,15 @@ private:
     PositionTracker m_tracker;
     std::unique_ptr<LossManager> m_lossManager;
     TrailingStopController m_trailingStops;
+    orchestration::IExecutionStatePort* m_executionStatePort{nullptr};
+    orchestration::IShadowMetricsPort* m_shadowMetricsPort{nullptr};
+    OpenDecisionState m_lastOpenDecision;
     std::atomic<bool> m_running{false};
     ScanCycleStatusCb m_scanCycleStatusCb;
     boost::asio::steady_timer m_scanSleepTimer;
     boost::asio::steady_timer m_timeExitTimer;
     boost::asio::steady_timer m_trailingTimer;
+    boost::asio::thread_pool m_geminiEvaluationPool{1};
 };
 
 class ScannerPort final : public IScannerPort {

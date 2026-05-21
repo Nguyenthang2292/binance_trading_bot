@@ -24,6 +24,7 @@ struct StrategyConfig {
     double slMultiplier{1.5};
     double tpMultiplier{3.0};
     double takeProfitPercent{20.0};
+    int leverage{10};
     double minNotional{1.0};
     int atrPeriod{14};
     double minConfidence{0.0};

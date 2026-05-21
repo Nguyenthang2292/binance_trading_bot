@@ -1,0 +1,11 @@
+{
+  "dataset_fingerprint": "f979b64ed33eb08f7ad3e239e85bcb642cb41f8c4ecb008d8f6039bae9405d2d",
+  "feature_schema_hash": "14a7369433fd1e43faec400485316f97cb121f8b3c5cfb8ec1c4f54d7e176c89",
+  "horizon_bars": 1,
+  "interval": "30m",
+  "model_id": "lightgbm_30m_v1",
+  "model_path": "data/qlib_smoke/models\\model_artifacts\\lightgbm_30m_v1\\lightgbm_30m_v1_20260521T152728\\model.txt",
+  "published_at_ms": 1779352068387,
+  "report_path": "data/qlib_smoke/models\\model_artifacts\\lightgbm_30m_v1\\lightgbm_30m_v1_20260521T152728\\report.json",
+  "run_id": "lightgbm_30m_v1_20260521T152728"
+}

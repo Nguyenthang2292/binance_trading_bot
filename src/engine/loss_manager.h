@@ -80,6 +80,10 @@ private:
         const TrackedPosition& tracked,
         const Position& livePosition,
         LossManagerState& state);
+    boost::asio::awaitable<bool> refreshStopLossAfterDca(
+        const TrackedPosition& tracked,
+        const Position& livePosition,
+        const LossManagerState& state);
 
     static double calcRoi(const Position& pos);
     static OrderSide closeSideFor(const Position& pos);

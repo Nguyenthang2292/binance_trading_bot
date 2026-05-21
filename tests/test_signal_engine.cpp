@@ -250,6 +250,13 @@ public:
         result.avgPrice = "0";
         return OrdersResult<NormalOrderSnapshot>(result);
     }();
+    OrdersResult<NormalPlacementResult> closeResult = [] {
+        NormalPlacementResult result;
+        result.state = PlacementState::Accepted;
+        return OrdersResult<NormalPlacementResult>(result);
+    }();
+    OrdersResult<NormalCancelResult> cancelNormalResult = NormalCancelResult{};
+    OrdersResult<NormalCancelResult> cancelAlgoResult = NormalCancelResult{};
 
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> market(MarketOrderDraft draft) override {
         ++marketCalls;
@@ -274,9 +281,7 @@ public:
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> closeByMarket(CloseByMarketDraft draft) override {
         ++closeCalls;
         lastCloseDraft = std::move(draft);
-        NormalPlacementResult result;
-        result.state = PlacementState::Accepted;
-        co_return result;
+        co_return closeResult;
     }
     boost::asio::awaitable<OrdersResult<LeverageResult>> setLeverage(Symbol symbol, int leverage) override {
         ++setLeverageCalls;
@@ -293,18 +298,18 @@ public:
     }
     boost::asio::awaitable<OrdersResult<NormalCancelResult>> cancelNormalByOrderId(Symbol, int64_t) override {
         ++cancelNormalByOrderIdCalls;
-        co_return NormalCancelResult{};
+        co_return cancelNormalResult;
     }
     boost::asio::awaitable<OrdersResult<NormalCancelResult>> cancelNormalByClientOrderId(Symbol, ClientOrderId) override {
-        co_return NormalCancelResult{};
+        co_return cancelNormalResult;
     }
     boost::asio::awaitable<OrdersResult<NormalCancelResult>> cancelAlgoByAlgoId(Symbol, int64_t) override {
         ++cancelAlgoByAlgoIdCalls;
-        co_return NormalCancelResult{};
+        co_return cancelAlgoResult;
     }
     boost::asio::awaitable<OrdersResult<NormalCancelResult>> cancelAlgoByClientAlgoId(Symbol, ClientAlgoId) override {
         ++cancelAlgoByClientAlgoIdCalls;
-        co_return NormalCancelResult{};
+        co_return cancelAlgoResult;
     }
 };
 
@@ -492,6 +497,7 @@ TEST(SignalEngineTest, CoversNoSignalLowConfidenceAtrZeroExistingAndSuccess) {
     cfg.intervals = {"15m"};
     cfg.minConfidence = 0.5;
     cfg.atrPeriod = 14;
+    cfg.leverage = 7;
     auto strategy = std::make_unique<MockStrategy>(cfg);
     auto* strategyPtr = strategy.get();
     registry.add(std::move(strategy));
@@ -557,14 +563,14 @@ TEST(SignalEngineTest, CoversNoSignalLowConfidenceAtrZeroExistingAndSuccess) {
         "tf=15m reason=15m Donchian breakout long: close=100 > high20=99");
     ASSERT_EQ(orders.setLeverageCalls, 1);
     EXPECT_EQ(orders.lastSetLeverageSymbol, "BTCUSDT");
-    EXPECT_GE(orders.lastRequestedLeverage, 2);
-    EXPECT_LE(orders.lastRequestedLeverage, 20);
+    EXPECT_EQ(orders.lastRequestedLeverage, cfg.leverage);
     const double expectedTp = 105.0 + (105.0 * cfg.takeProfitPercent / (100.0 * orders.lastRequestedLeverage));
     EXPECT_NEAR(orders.lastLimitDraft->price.toDouble(), expectedTp, 1e-9);
     EXPECT_DOUBLE_EQ(orders.lastProtectionDraft->triggerPrice.toDouble(), 97.5);
     const auto tracked = engine.tracker().bySymbol("BTCUSDT");
     ASSERT_TRUE(tracked.has_value());
     EXPECT_EQ(tracked->strategyName, "mock");
+    EXPECT_EQ(tracked->activeLeverage, cfg.leverage);
     EXPECT_EQ(tracked->signalInterval, "15m");
     EXPECT_EQ(tracked->signalReason, "15m Donchian breakout long: close=100 > high20=99");
     EXPECT_EQ(tracked->trailingInterval, "15m");
@@ -843,8 +849,7 @@ TEST(SignalEngineTest, TakeProfitPercentUsesBinanceRoiWithLeverageForLong) {
     ASSERT_TRUE(result.has_value());
     ASSERT_EQ(orders.setLeverageCalls, 1);
     EXPECT_EQ(orders.lastSetLeverageSymbol, "BTCUSDT");
-    EXPECT_GE(orders.lastRequestedLeverage, 2);
-    EXPECT_LE(orders.lastRequestedLeverage, 20);
+    EXPECT_EQ(orders.lastRequestedLeverage, cfg.leverage);
     ASSERT_TRUE(orders.lastLimitDraft.has_value());
     EXPECT_EQ(orders.lastLimitDraft->price.value(), "101");
 }
@@ -897,8 +902,7 @@ TEST(SignalEngineTest, TakeProfitPercentUsesBinanceRoiWithLeverageForShort) {
     ASSERT_TRUE(result.has_value());
     ASSERT_EQ(orders.setLeverageCalls, 1);
     EXPECT_EQ(orders.lastSetLeverageSymbol, "BTCUSDT");
-    EXPECT_GE(orders.lastRequestedLeverage, 2);
-    EXPECT_LE(orders.lastRequestedLeverage, 20);
+    EXPECT_EQ(orders.lastRequestedLeverage, cfg.leverage);
     ASSERT_TRUE(orders.lastLimitDraft.has_value());
     EXPECT_EQ(orders.lastLimitDraft->price.value(), "99");
 }
@@ -991,10 +995,59 @@ TEST(SignalEngineTest, SetLeverageFailureSkipsMarketOrder) {
 
     ASSERT_FALSE(result.has_value());
     ASSERT_EQ(orders.setLeverageCalls, 1);
-    EXPECT_GE(orders.lastRequestedLeverage, 2);
-    EXPECT_LE(orders.lastRequestedLeverage, 20);
+    EXPECT_EQ(orders.lastRequestedLeverage, cfg.leverage);
     EXPECT_EQ(orders.marketCalls, 0);
     EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
+TEST(SignalEngineTest, RandomLeverageFlagUsesConfiguredRange) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.leverage = 7;
+    cfg.takeProfitPercent = 20.0;
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(
+        scanner,
+        registry,
+        account,
+        orders,
+        exposure,
+        engine::SignalEngine::Config{
+            .placeStopLoss = false,
+            .randomLeverageEnabled = true,
+            .randomLeverageMin = 12,
+            .randomLeverageMax = 12,
+        });
+
+    const auto result = runAwaitable(
+        ioc,
+        engine.openPosition(
+            "BTCUSDT",
+            "15m",
+            strategy::Signal::Direction::Long,
+            5.0,
+            100.0,
+            cfg,
+            "random leverage test"));
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(orders.lastRequestedLeverage, 12);
+    const auto tracked = engine.tracker().bySymbol("BTCUSDT");
+    ASSERT_TRUE(tracked.has_value());
+    EXPECT_EQ(tracked->activeLeverage, 12);
 }
 
 TEST(SignalEngineTest, MarketQuantityUsesSymbolMinNotional) {
@@ -1081,6 +1134,40 @@ TEST(SignalEngineTest, TimeExitCancelsExitsClosesPositionAndRemovesTracker) {
     ASSERT_TRUE(orders.lastCloseDraft.has_value());
     EXPECT_EQ(orders.lastCloseDraft->side, OrderSide::Sell);
     EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
+TEST(SignalEngineTest, TimeExitCloseFailureKeepsProtectionsAndTracker) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    MockAccountPort account;
+    account::AccountSnapshot liveSnapshot;
+    Position livePosition;
+    livePosition.symbol = "BTCUSDT";
+    livePosition.positionAmt = 0.01;
+    liveSnapshot.positions = std::vector<Position>{livePosition};
+    account.nextSnapshot = liveSnapshot;
+    MockOrdersPort orders;
+    orders.closeResult = std::unexpected(BinanceError::fromApiResponse(-1000, "close failed"));
+    strategy::StrategyRegistry registry;
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+
+    engine::TrackedPosition pos;
+    pos.symbol = "BTCUSDT";
+    pos.direction = strategy::Signal::Direction::Long;
+    pos.openedAt = std::chrono::system_clock::now() - std::chrono::hours(2);
+    pos.maxHoldDuration = std::chrono::hours(1);
+    pos.quantity = 0.01;
+    pos.tpOrderId = 10;
+    pos.slOrderId = 20;
+    engine.tracker().add(pos);
+
+    runAwaitable(ioc, engine.processExpiredPositions(std::chrono::system_clock::now()));
+
+    EXPECT_EQ(orders.closeCalls, 1);
+    EXPECT_EQ(orders.cancelNormalByOrderIdCalls, 0);
+    EXPECT_EQ(orders.cancelAlgoByAlgoIdCalls, 0);
+    EXPECT_TRUE(engine.tracker().has("BTCUSDT"));
 }
 
 TEST(SignalEngineTest, TimeExitRemovesTrackerWithoutCloseWhenLivePositionAlreadyFlat) {
@@ -1246,6 +1333,12 @@ TEST(SignalEngineTest, ProcessTrailingStopsMovesLongStopAndUpdatesTracker) {
     ASSERT_TRUE(tracked.has_value());
     EXPECT_EQ(tracked->slOrderId, 3);
     EXPECT_DOUBLE_EQ(tracked->currentTrailLevel, 100.0);
+    EXPECT_EQ(tracked->lastTrailingEvalCandleMs, 6002);
+
+    ioc.restart();
+    runAwaitable(ioc, engine.processTrailingStops());
+    EXPECT_EQ(orders.cancelAlgoByAlgoIdCalls, 1);
+    EXPECT_EQ(orders.protectionCalls, 1);
 }
 
 TEST(SignalEngineTest, ExposureBlockSkipsOpen) {
@@ -1452,6 +1545,60 @@ TEST(SignalEngineTest, TakeProfitRejectTriggersEmergencyCloseAndSkipsTracking) {
     EXPECT_EQ(orders.marketCalls, 1);
     EXPECT_EQ(orders.limitCalls, 1);
     EXPECT_EQ(orders.closeCalls, 1);
+    EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
+TEST(SignalEngineTest, StopLossRejectCancelsTakeProfitClosesAndSkipsTracking) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 3600 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    NormalPlacementResult rejectedSl;
+    rejectedSl.state = PlacementState::Rejected;
+    rejectedSl.binanceCode = -2021;
+    rejectedSl.binanceMessage = "Order would immediately trigger";
+    orders.protectionResult = rejectedSl;
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    EXPECT_EQ(orders.marketCalls, 1);
+    EXPECT_EQ(orders.limitCalls, 1);
+    EXPECT_EQ(orders.protectionCalls, 1);
+    EXPECT_EQ(orders.cancelNormalByOrderIdCalls, 1);
+    EXPECT_EQ(orders.closeCalls, 1);
+    ASSERT_TRUE(orders.lastCloseDraft.has_value());
+    EXPECT_EQ(orders.lastCloseDraft->side, OrderSide::Sell);
     EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
 }
 

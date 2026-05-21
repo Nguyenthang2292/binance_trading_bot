@@ -179,6 +179,19 @@ bool PositionTracker::updateStopLoss(
     return true;
 }
 
+bool PositionTracker::markTrailingEvaluated(std::string_view symbol, int64_t candleOpenTimeMs) {
+    std::lock_guard lock(m_mutex);
+    const auto it = m_positions.find(std::string(symbol));
+    if (it == m_positions.end()) {
+        return false;
+    }
+    if (it->second.openingInFlight) {
+        return false;
+    }
+    it->second.lastTrailingEvalCandleMs = std::max(it->second.lastTrailingEvalCandleMs, candleOpenTimeMs);
+    return true;
+}
+
 bool PositionTracker::updateTakeProfit(
     std::string_view symbol,
     int64_t tpOrderId,

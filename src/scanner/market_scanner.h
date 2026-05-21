@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <future>
 #include <memory>
@@ -53,7 +54,11 @@ public:
     static std::vector<std::string> tradableUsdtPerpetualSymbols(const std::vector<ExchangeSymbol>& exchangeInfo);
     static size_t streamConnectionCount(size_t symbolCount, size_t intervalCount, size_t maxStreamsPerConnection);
 
-    using KlineClosedCb = std::function<void(std::string_view symbol, std::string_view interval)>;
+    using KlineClosedCb = std::function<void(
+        std::string_view symbol,
+        std::string_view interval,
+        int64_t openTimeMs,
+        int64_t closeTimeMs)>;
     void setOnKlineClosed(KlineClosedCb cb);
 
 private:

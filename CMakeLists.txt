@@ -88,10 +88,18 @@ set(LIB_SOURCES
     src/risk/equity_curve.cpp
     src/risk/risk_metrics.cpp
     src/risk/risk_controller.cpp
+    src/orchestration/qlib_state_store.cpp
+    src/orchestration/shadow_metrics_recorder.cpp
+    src/orchestration/model_publisher.cpp
+    src/orchestration/process_manager.cpp
+    src/orchestration/batch_scheduler_thread.cpp
+    src/orchestration/candle_scheduler_thread.cpp
+    src/orchestration/promotion_checker.cpp
     src/catalog/plugin_handle.cpp
     src/catalog/plugin_loader.cpp
     src/catalog/strategy_catalog.cpp
     src/catalog/catalog_reporter.cpp
+    src/engine/risk_profile.cpp
     src/binance_api.cpp
     src/trading_engine.cpp
     src/logger.cpp
@@ -157,10 +165,21 @@ set(LIB_HEADERS
     src/risk/equity_curve.h
     src/risk/risk_metrics.h
     src/risk/risk_controller.h
+    src/orchestration/runtime_ports.h
+    src/orchestration/sqlite_helpers.h
+    src/orchestration/qlib_state_store.h
+    src/orchestration/shadow_metrics_recorder.h
+    src/orchestration/model_publisher.h
+    src/orchestration/process_manager.h
+    src/orchestration/batch_scheduler_thread.h
+    src/orchestration/candle_scheduler_thread.h
+    src/orchestration/promotion_checker.h
+    src/orchestration/orchestrator_config.h
     src/catalog/plugin_handle.h
     src/catalog/plugin_loader.h
     src/catalog/strategy_catalog.h
     src/catalog/catalog_reporter.h
+    src/engine/risk_profile.h
     src/binance_api.h
     src/trading_engine.h
     src/logger.h
@@ -203,6 +222,7 @@ add_subdirectory(plugins/src/golden_crossover)
 add_subdirectory(plugins/src/monthly_close_model)
 add_subdirectory(plugins/src/ricardo_rules)
 add_subdirectory(plugins/src/dow_theory)
+add_subdirectory(plugins/src/qlib_model_signal)
 
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
 
@@ -230,6 +250,7 @@ add_dependencies(${PROJECT_NAME}_tests
     strategy_monthly_close_model
     strategy_ricardo_rules
     strategy_dow_theory
+    strategy_qlib_model_signal
 )
 target_include_directories(${PROJECT_NAME}_tests PRIVATE src)
 target_compile_definitions(${PROJECT_NAME}_tests PRIVATE BOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

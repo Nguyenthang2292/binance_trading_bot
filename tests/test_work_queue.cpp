@@ -64,9 +64,8 @@ std::vector<PairBlock> expectedBlocks(
     auto shuffledSymbols = symbols;
     std::shuffle(shuffledSymbols.begin(), shuffledSymbols.end(), rng);
 
-    out.reserve(shuffledSymbols.size());
-    for (size_t i = 0; i < shuffledSymbols.size(); ++i) {
-        const auto* strategy = strategies[i % strategies.size()];
+    out.reserve(strategies.size() * shuffledSymbols.size());
+    for (const auto* strategy : strategies) {
         if (!strategy) {
             continue;
         }
@@ -74,11 +73,13 @@ std::vector<PairBlock> expectedBlocks(
         if (intervals.empty()) {
             continue;
         }
-        out.push_back(PairBlock{
-            .symbol = shuffledSymbols[i],
-            .strategyName = strategy->config().name,
-            .intervals = intervals,
-        });
+        for (const auto& symbol : shuffledSymbols) {
+            out.push_back(PairBlock{
+                .symbol = symbol,
+                .strategyName = strategy->config().name,
+                .intervals = intervals,
+            });
+        }
     }
     return out;
 }
@@ -197,7 +198,7 @@ TEST(WorkQueueTest, AllStrategiesHavePositiveSelectionProbability) {
     EXPECT_EQ(observed.size(), 5u);
 }
 
-TEST(WorkQueueTest, ModuloWrappingPreservedAfterStrategyShuffle) {
+TEST(WorkQueueTest, EveryStrategyCoversEverySymbolAfterShuffle) {
     strategy::StrategyRegistry registry;
 
     strategy::StrategyConfig a;
@@ -219,11 +220,11 @@ TEST(WorkQueueTest, ModuloWrappingPreservedAfterStrategyShuffle) {
     for (const auto& block : toBlocks(queue)) {
         ++assignments[block.strategyName];
     }
-    EXPECT_EQ(assignments["a"], 2u);
-    EXPECT_EQ(assignments["b"], 2u);
+    EXPECT_EQ(assignments["a"], symbols.size());
+    EXPECT_EQ(assignments["b"], symbols.size());
 }
 
-TEST(WorkQueueTest, AllSymbolsAssignedExactlyOnceAfterDualShuffle) {
+TEST(WorkQueueTest, AllSymbolsAssignedForEachStrategyAfterDualShuffle) {
     strategy::StrategyRegistry registry;
 
     strategy::StrategyConfig a;
@@ -246,7 +247,7 @@ TEST(WorkQueueTest, AllSymbolsAssignedExactlyOnceAfterDualShuffle) {
     const auto queue = engine::WorkQueue::build(symbols, registry, 20260517u);
     const auto blocks = toBlocks(queue);
 
-    ASSERT_EQ(blocks.size(), symbols.size());
+    ASSERT_EQ(blocks.size(), symbols.size() * 3u);
     std::set<std::string> assignedSymbols;
     for (const auto& block : blocks) {
         assignedSymbols.insert(block.symbol);
@@ -271,7 +272,7 @@ TEST(WorkQueueTest, DegenerateSingleStrategy) {
     expectQueueMatchesExpected(queue, symbols, registry, seed);
 }
 
-TEST(WorkQueueTest, SkipsUnpairedStrategiesWhenStrategiesExceedSymbols) {
+TEST(WorkQueueTest, IncludesAllStrategiesWhenStrategiesExceedSymbols) {
     strategy::StrategyRegistry registry;
 
     strategy::StrategyConfig a;
@@ -291,29 +292,9 @@ TEST(WorkQueueTest, SkipsUnpairedStrategiesWhenStrategiesExceedSymbols) {
 
     const uint64_t seed = 1u;
     const std::vector<std::string> symbols{"BTCUSDT"};
-    const auto logPath = std::filesystem::temp_directory_path() / "work_queue_warning_test.log";
-    std::error_code removeError;
-    std::filesystem::remove(logPath, removeError);
-    Logger::instance().setLogFile(logPath.string());
     const auto queue = engine::WorkQueue::build(symbols, registry, seed);
-    Logger::instance().setLogFile("");
-
-    std::ifstream in(logPath);
-    ASSERT_TRUE(in.is_open());
-    const std::string output(
-        (std::istreambuf_iterator<char>(in)),
-        std::istreambuf_iterator<char>());
-    in.close();
-    std::filesystem::remove(logPath, removeError);
-
-    ASSERT_EQ(queue.size(), 1u);
+    ASSERT_EQ(queue.size(), 3u);
     expectQueueMatchesExpected(queue, symbols, registry, seed);
-    EXPECT_NE(
-        output.find("work queue per-cycle strategy rotation active"),
-        std::string::npos);
-    EXPECT_NE(
-        output.find("probabilistically fair over time via shuffle"),
-        std::string::npos);
 }
 
 TEST(WorkQueueTest, StrategyWithNoIntervalsProducesNoWorkItemsForItsPair) {

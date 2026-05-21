@@ -1,34 +1,75 @@
 {
+  "active_profile": "aggressive",
+
+  "risk_profiles": {
+    "conservative": {
+      "risk_pct": 0.005,
+      "sl_multiplier": 2.0,
+      "max_position_notional_x_available_balance": 0.25,
+      "max_total_notional_pct": 4.0,
+      "soft_max_drawdown": 0.10,
+      "hard_max_drawdown": 0.20,
+      "soft_min_upi": 1.0,
+      "hard_min_upi": 0.0,
+      "soft_limit_net_beta": 0.3,
+      "hard_limit_net_beta": 0.5,
+      "max_gross_beta": 1.5
+    },
+    "moderate": {
+      "risk_pct": 0.01,
+      "sl_multiplier": 1.5,
+      "max_position_notional_x_available_balance": 0.5,
+      "max_total_notional_pct": 8.0,
+      "soft_max_drawdown": 0.20,
+      "hard_max_drawdown": 0.35,
+      "soft_min_upi": 0.5,
+      "hard_min_upi": -1.0,
+      "soft_limit_net_beta": 0.5,
+      "hard_limit_net_beta": 1.0,
+      "max_gross_beta": 3.0
+    },
+    "aggressive": {
+      "risk_pct": 0.05,
+      "sl_multiplier": 1.2,
+      "max_position_notional_x_available_balance": 0.75,
+      "max_total_notional_pct": 15.0,
+      "soft_max_drawdown": 0.30,
+      "hard_max_drawdown": 0.65,
+      "soft_min_upi": 0.2,
+      "hard_min_upi": -2.0,
+      "soft_limit_net_beta": 0.8,
+      "hard_limit_net_beta": 1.5,
+      "max_gross_beta": 5.0
+    }
+  },
+
   "catalog": {
     "plugins_dir": "plugins"
   },
   "scanner": {
-    "intervals": ["1d", "4h", "1h", "30m"],
-    "kline_buffer_size": 201,
+    "intervals": ["30m"],
+    "kline_buffer_size": 240,
     "max_streams_per_connection": 512,
     "warmup_request_delay_ms": 0,
     "warmup_initial_limit": 200,
-    "warmup_concurrency": 10,
+    "warmup_concurrency": 6,
     "backfill_enabled": true,
     "backfill_concurrency": 1,
-    "backfill_request_delay_ms": 200
+    "backfill_request_delay_ms": 150
   },
   "engine": {
     "min_notional": 1.0,
     "max_position_notional_x_available_balance": 0.5,
     "position_check_interval_seconds": 60,
     "trailing_check_interval_seconds": 300,
-    "monitor_trailing_stops": true,
+    "monitor_trailing_stops": false,
+    "random_leverage_enabled": true,
+    "random_leverage_min": 2,
+    "random_leverage_max": 20,
     "place_stop_loss": false
   },
   "loss_manager": {
-    "enabled": true,
-    "roi_be_threshold": -0.5,
-    "roi_dca_threshold": -0.8,
-    "max_dca_count": 2,
-    "fallback_taker_fee_rate": 0.0004,
-    "allow_dca_on_recovered_positions": true,
-    "dca_pending_timeout_cycles": 3
+    "enabled": false
   },
   "order_cap": {
     "enabled": true,
@@ -48,256 +89,68 @@
   },
   "gemini_filter": {
     "enabled": false,
-    "mode": "enforce",
-    "python_path": ".venv\\Scripts\\python.exe",
-    "module_name": "tools.gemini_filter.gemini_filter",
-    "working_directory": ".",
-    "runtime_dir": "tmp/gemini_filter",
-    "sentiment_model": "gemini-3.1-pro-preview",
-    "vision_model": "gemini-3.1-pro-preview",
-    "model_resolution": {
-      "enabled": true,
-      "mode": "latest_pro",
-      "fallback_on_error": true,
-      "allow_preview": true
-    },
-    "sentiment_search_then_score": false,
-    "sentiment_weight": 0.65,
-    "vision_weight": 0.35,
-    "confidence_threshold": 0.55,
-    "timeout_seconds": 150,
-    "max_evaluations_per_scan_cycle": 123,
-    "stale_runtime_ttl_hours": 24,
-    "result_cache_ttl_seconds": 1800,
-    "sentiment_cache_ttl_seconds": 3600,
-    "sentiment_cache_max_stale_seconds": 21600,
-    "model_resolution_ttl_seconds": 3600,
-    "model_resolution_max_stale_seconds": 86400,
-    "block_on_error": true,
-    "block_on_budget_exhausted": true,
-    "close_gate_on_budget_exhausted": true,
-    "close_gate_on_quota_exhausted": true,
-    "model_routing": {
-      "enabled": true,
-      "sentiment": {
-        "candidates": [
-          "gemini-2.5-flash-lite",
-          "gemini-2.5-flash",
-          "gemini-3.1-pro-preview"
-        ]
-      },
-      "vision": {
-        "candidates": [
-          "gemini-3.1-flash-lite",
-          "gemini-2.5-flash",
-          "gemini-3.1-pro-preview"
-        ],
-        "pro_escalation_enabled": true,
-        "pro_escalation_min_score": 0.45,
-        "pro_escalation_max_score": 0.65
-      }
-    },
-    "quota": {
-      "enabled": true,
-      "safety_factor": 0.7,
-      "cooldown_seconds_on_429": 300,
-      "default_rpm": 10,
-      "default_rpd": 500,
-      "models": {
-        "gemini-2.5-flash-lite": { "rpm": 20, "rpd": 1000 },
-        "gemini-2.5-flash": { "rpm": 10, "rpd": 500 },
-        "gemini-3.1-flash-lite": { "rpm": 10, "rpd": 500 },
-        "gemini-3.1-pro-preview": { "rpm": 2, "rpd": 50 }
-      }
-    },
-    "autotune": {
-      "enabled": true,
-      "mode": "apply",
-      "interval_seconds": 900,
-      "controller_timeout_seconds": 60,
-      "override_ttl_seconds": 1800,
-      "min_samples_per_model": 10,
-      "quota_pressure_demote_threshold": 0.4,
-      "success_rate_promote_threshold": 0.95,
-      "latency_promote_improvement_pct": 20,
-      "max_block_rate_increase_pct": 10,
-      "block_rate_window_seconds": 300,
-      "bucket_retention_seconds": 90000,
-      "emergency_quota_exhausted_cycles": 3,
-      "weights": {
-        "reserve_success_rate": 0.45,
-        "quota_pressure": 0.3,
-        "normalized_latency": 0.15,
-        "decision_quality_proxy": 0.1
-      }
-    },
-    "extra_tfs": ["1h", "4h"]
+    "mode": "disabled"
   },
   "risk_analytics": {
+    "enabled": true
+  },
+  "qlib_orchestration": {
     "enabled": true,
-    "db_path": "data/risk_metrics.db",
-    "equity_basis": "margin",
-    "risk_free_rate": 0.0,
-    "min_data_points": 30,
-    "sample_interval_minutes": 60,
-    "control_lookback_days": 365,
-    "metrics_compute_interval_minutes": 60,
-    "missing_data_mode": "open",
-    "failure_mode": "closed",
-    "soft_max_drawdown": 0.2,
-    "hard_max_drawdown": 0.35,
-    "soft_min_upi": 0.5,
-    "hard_min_upi": -1.0
+    "python_exe": "python",
+    "scripts_dir": "tools/qlib_bridge",
+    "data_dir": "data/qlib_smoke",
+    "model_dir": "data/qlib_smoke/models",
+    "db_path": "data/qlib_smoke/qlib_predictions.db",
+    "model_id": "lightgbm_30m_v1",
+    "interval": "30m",
+    "horizon_bars": 1,
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "batch_schedule": { "hour": 15, "minute": 0, "weekdays": [0, 1, 2, 3, 4, 5, 6] },
+    "candle_schedule": { "finalize_delay_seconds": 5 },
+    "retry": { "max_attempts": 1, "backoff_base_seconds": 1, "timeout_seconds": 600 },
+    "log_dir": "logs/qlib_orch_smoke",
+    "promotion": { "min_candles": 1, "min_sharpe": -999.0, "min_hit_rate": 0.0, "lookback_candles": 16 },
+    "state": { "reload_seconds": 2 },
+    "canary": { "risk_multiplier": 0.25 },
+    "cost_model": {
+      "estimated_round_trip_fee_bps": 8.0,
+      "estimated_slippage_bps": 2.0,
+      "estimated_funding_bps_per_day": 0.0
+    },
+    "ready_dir": "tmp/qlib_signals_smoke"
   },
   "strategies": [
     {
-      "name": "Trend Breakout Trader",
-      "type": "trend_breakout",
-      "intervals": ["30m", "1h", "4h"],
-      "scan_interval_seconds": 900,
-      "max_hold_duration_seconds": 604800,
-      "risk_pct": 0.01,
-      "sl_multiplier": 1.5,
-      "tp_multiplier": 20.0,
-      "takeProfitPercent": 20.0,
-      "min_notional": 1.0,
-      "atr_period": 14,
-      "min_confidence": 0.5,
-      "params": {
-        "breakout_period": 20,
-        "trailing_enabled": true,
-        "trailing_candles": 42,
-        "trailing_check_interval_seconds": 300
-      }
-    },
-    {
-      "name": "Gartley 3&6 Candle Crossover",
-      "type": "gartley_day_crossover",
-      "intervals": ["1d", "4h", "1h", "30m"],
-      "scan_interval_seconds": 900,
-      "max_hold_duration_seconds": 86400,
+      "name": "Qlib LightGBM 30m Signal (Smoke)",
+      "type": "qlib_model_signal",
+      "intervals": ["30m"],
+      "scan_interval_seconds": 60,
+      "max_hold_duration_seconds": 7200,
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
       "takeProfitPercent": 20.0,
-      "min_notional": 1.0,
-      "atr_period": 14,
-      "min_confidence": 0.5,
-      "params": {
-        "fast_period": 3,
-        "slow_period": 6,
-        "offset": 2,
-        "conf_threshold": 0.02
-      }
-    },
-    {
-      "name": "Donchian 5 and 20-Day Crossover (Crypto MTF State Variant)",
-      "type": "donchian_5_20_crossover",
-      "intervals": ["1d", "4h", "1h", "30m"],
-      "scan_interval_seconds": 900,
-      "max_hold_duration_seconds": 86400,
-      "risk_pct": 0.01,
-      "sl_multiplier": 1.5,
-      "tp_multiplier": 3.0,
-      "takeProfitPercent": 20.0,
-      "min_notional": 1.0,
-      "atr_period": 14,
-      "min_confidence": 0.5,
-      "params": {
-        "short_period": 5,
-        "long_period": 20
-      }
-    },
-    {
-      "name": "Golden 50/200 Moving Average Crossover (Crypto MTF State Variant)",
-      "type": "golden_crossover",
-      "intervals": ["4h", "1h", "30m"],
-      "scan_interval_seconds": 900,
-      "max_hold_duration_seconds": 259200,
-      "risk_pct": 0.01,
-      "sl_multiplier": 1.5,
-      "tp_multiplier": 3.0,
-      "takeProfitPercent": 20.0,
-      "min_notional": 1.0,
-      "atr_period": 14,
-      "min_confidence": 0.5,
-      "params": {
-        "ma_short": 50,
-        "ma_long": 200
-      }
-    },
-    {
-      "name": "Monthly Close Model (Adapted MTF)",
-      "type": "monthly_close_model",
-      "intervals": ["4h", "1h", "30m", "1d"],
-      "scan_interval_seconds": 900,
-      "max_hold_duration_seconds": 86400,
-      "max_hold_duration_by_interval_seconds": {
-        "1d": 2592000,
-        "4h": 432000,
-        "1h": 108000,
-        "30m": 54000
-      },
-      "risk_pct": 0.01,
-      "sl_multiplier": 1.5,
-      "takeProfitPercent": 20.0,
-      "tp_multiplier": 3.0,
-      "min_notional": 1.0,
-      "atr_period": 14,
-      "min_confidence": 0.001,
-      "params": {
-        "period": 30
-      }
-    },
-    {
-      "name": "Ricardo Rules",
-      "type": "ricardo_rules",
-      "intervals": ["1d", "4h", "1h", "30m"],
-      "scan_interval_seconds": 900,
-      "max_hold_duration_seconds": 86400,
-      "risk_pct": 0.01,
-      "sl_multiplier": 1.5,
-      "takeProfitPercent": 0.0,
-      "tp_multiplier": 0.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.0,
+      "execution": {
+        "mode_source": "sqlite",
+        "default_mode": "shadow",
+        "state_db_path": "data/qlib_smoke/qlib_predictions.db"
+      },
       "params": {
-        "initial_stop_policy": "setup_entry_extreme",
-        "exit_policy": "swing_trailing",
-        "fixed_take_profit": false,
-        "swing_lookback": 3
-      }
-    },
-    {
-      "name": "Dow Theory",
-      "type": "dow_theory",
-      "intervals": ["4h", "1h", "30m"],
-      "scan_interval_seconds": 900,
-      "max_hold_duration_seconds": 86400,
-      "risk_pct": 0.01,
-      "sl_multiplier": 1.5,
-      "takeProfitPercent": 20.0,
-      "tp_multiplier": 3.0,
-      "min_notional": 1.0,
-      "atr_period": 14,
-      "min_confidence": 0.5,
-      "params": {
-        "swing_atr_mult": 1.5
+        "source": "sqlite",
+        "db_path": "data/qlib_smoke/qlib_predictions.db",
+        "model_id": "lightgbm_30m_v1",
+        "max_artifact_age_seconds": 14400,
+        "max_data_age_seconds": 5400,
+        "long_threshold": 0.0,
+        "short_threshold": 0.0,
+        "confidence_mode": "rank",
+        "min_confidence_percentile": 0.0,
+        "fail_mode": "open",
+        "score_to_confidence_scale": 0.01
       }
     }
-  ],
-  "legacy_trading_engine": {
-    "symbol": "BTCUSDT",
-    "interval": "15m",
-    "tradeQuantity": 0.001,
-    "stopLossPercent": 0.0,
-    "takeProfitPercent": 20.0,
-    "rsiPeriod": 14,
-    "rsiOversold": 30.0,
-    "rsiOverbought": 70.0,
-    "smaShortPeriod": 9,
-    "smaLongPeriod": 21,
-    "pollIntervalMs": 60000
-  }
+  ]
 }
