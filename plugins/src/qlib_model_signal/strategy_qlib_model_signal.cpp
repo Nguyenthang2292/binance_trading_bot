@@ -149,6 +149,8 @@ strategy::StrategyConfig parseConfig(const nlohmann::json& j) {
     strategy::StrategyConfig cfg;
     cfg.name = j.value("name", "Qlib LightGBM Signal");
     cfg.type = j.value("type", "qlib_model_signal");
+    const auto& params = paramsObject(j);
+    cfg.adapterId = params.value("model_id", std::string{});
     cfg.intervals = j.value("intervals", kDefaultIntervals);
     if (cfg.intervals.empty()) {
         cfg.intervals = kDefaultIntervals;

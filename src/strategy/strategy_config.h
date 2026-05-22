@@ -18,6 +18,7 @@ struct TrailingStopConfig {
 struct StrategyConfig {
     std::string name;
     std::string type;
+    std::string adapterId;
     std::vector<std::string> intervals;
     std::chrono::seconds scanInterval{3600};
     std::chrono::seconds maxHoldDuration{86400};

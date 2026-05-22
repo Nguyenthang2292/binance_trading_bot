@@ -133,6 +133,9 @@ public:
     static bool isQlibStrategyType(std::string_view type) {
         return type == "qlib_model_signal" || type == "qlib_strategy_signal";
     }
+    static std::string qlibAdapterId(const strategy::StrategyConfig& cfg) {
+        return cfg.adapterId.empty() ? cfg.name : cfg.adapterId;
+    }
 
     struct ArbiterCandidate {
         std::string strategyId;

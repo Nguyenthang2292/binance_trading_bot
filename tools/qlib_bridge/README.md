@@ -71,3 +71,4 @@ Generate latest predictions to SQLite:
 - SQLite runs in WAL mode for safe atomic writes on Windows.
 - If debug JSON is enabled, file replacement uses `os.replace()` for atomic overwrite.
 - `predict_latest.py` writes readiness flags: `tmp/qlib_signals/ready_<epoch_ms>.flag`.
+- Runtime state and promotion operations are documented in `docs/runbooks/qlib-runtime-state-runbook.md`.

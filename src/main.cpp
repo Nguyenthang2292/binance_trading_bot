@@ -89,6 +89,118 @@ std::vector<nlohmann::json> toStrategyConfigs(const nlohmann::json& cfg) {
     return out;
 }
 
+orchestration::ExecutionMode parseExecutionModeText(
+    std::string_view value,
+    orchestration::ExecutionMode fallback = orchestration::ExecutionMode::Shadow) {
+    if (value == "disabled") {
+        return orchestration::ExecutionMode::Disabled;
+    }
+    if (value == "shadow" || value.empty()) {
+        return orchestration::ExecutionMode::Shadow;
+    }
+    if (value == "shadow_only") {
+        return orchestration::ExecutionMode::ShadowOnly;
+    }
+    if (value == "live_canary") {
+        return orchestration::ExecutionMode::LiveCanary;
+    }
+    if (value == "live") {
+        return orchestration::ExecutionMode::Live;
+    }
+    return fallback;
+}
+
+std::vector<std::string> jsonStringArray(const nlohmann::json& value) {
+    std::vector<std::string> out;
+    if (!value.is_array()) {
+        return out;
+    }
+    for (const auto& item : value) {
+        if (item.is_string()) {
+            out.push_back(item.get<std::string>());
+        }
+    }
+    return out;
+}
+
+orchestration::ExecutionMode qlibModelDefaultMode(
+    const std::vector<nlohmann::json>& strategyConfigs,
+    std::string_view modelId,
+    std::string_view interval) {
+    for (const auto& strategyCfg : strategyConfigs) {
+        if (strategyCfg.value("type", std::string{}) != "qlib_model_signal") {
+            continue;
+        }
+        const auto params = strategyCfg.value("params", nlohmann::json::object());
+        if (params.value("model_id", std::string{}) != modelId) {
+            continue;
+        }
+        const auto intervals = jsonStringArray(strategyCfg.value("intervals", nlohmann::json::array()));
+        if (!intervals.empty() && std::find(intervals.begin(), intervals.end(), interval) == intervals.end()) {
+            continue;
+        }
+        const auto execution = strategyCfg.value("execution", nlohmann::json::object());
+        return parseExecutionModeText(execution.value("default_mode", std::string("shadow")));
+    }
+    return orchestration::ExecutionMode::Shadow;
+}
+
+std::vector<orchestration::AdapterRuntimeStateSeed> qlibAdapterStateSeeds(
+    const nlohmann::json& root,
+    const std::vector<nlohmann::json>& strategyConfigs) {
+    std::vector<orchestration::AdapterRuntimeStateSeed> seeds;
+    const auto orch = root.value("qlib_orchestration", nlohmann::json::object());
+    const auto adapters = orch.value("adapters", nlohmann::json::array());
+    for (const auto& adapter : adapters) {
+        if (!adapter.is_object()) {
+            continue;
+        }
+        const auto id = adapter.value("id", std::string{});
+        const auto interval = adapter.value("interval", std::string{});
+        if (id.empty() || interval.empty()) {
+            continue;
+        }
+        seeds.push_back({
+            .adapterId = id,
+            .interval = interval,
+            .executionMode = parseExecutionModeText(adapter.value("execution_mode", std::string("shadow"))),
+            .promotionProfile = adapter.value("promotion_profile", std::string("default")),
+        });
+    }
+
+    for (const auto& strategyCfg : strategyConfigs) {
+        if (strategyCfg.value("type", std::string{}) != "qlib_strategy_signal") {
+            continue;
+        }
+        const auto params = strategyCfg.value("params", nlohmann::json::object());
+        const std::string adapterId = params.value(
+            "strategy_id",
+            strategyCfg.value("adapter_id", strategyCfg.value("name", std::string{})));
+        if (adapterId.empty()) {
+            continue;
+        }
+        const auto execution = strategyCfg.value("execution", nlohmann::json::object());
+        const auto mode = parseExecutionModeText(
+            execution.value("default_mode", strategyCfg.value("execution_mode", std::string("shadow"))));
+        const std::string profile = params.value(
+            "promotion_profile",
+            strategyCfg.value("promotion_profile", execution.value("promotion_profile", std::string("default"))));
+        auto intervals = jsonStringArray(strategyCfg.value("intervals", nlohmann::json::array()));
+        if (intervals.empty()) {
+            intervals.push_back(orch.value("interval", std::string("1h")));
+        }
+        for (const auto& interval : intervals) {
+            seeds.push_back({
+                .adapterId = adapterId,
+                .interval = interval,
+                .executionMode = mode,
+                .promotionProfile = profile,
+            });
+        }
+    }
+    return seeds;
+}
+
 std::string trimCopy(std::string value) {
     auto notSpace = [](unsigned char c) { return !std::isspace(c); };
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
@@ -927,7 +1039,12 @@ int main(int argc, char* argv[]) {
         try {
             qlibStateStore = orchestration::QlibStateStore::create(orchestratorConfig.stateStore);
             qlibStateStore->initializeSchema();
-            qlibStateStore->initializeRuntimeStateIfMissing();
+            qlibStateStore->initializeRuntimeStateIfMissing(qlibModelDefaultMode(
+                strategyConfigs,
+                orchestratorConfig.stateStore.modelId,
+                orchestratorConfig.stateStore.interval));
+            qlibStateStore->initializeAdapterRuntimeStatesIfMissing(
+                qlibAdapterStateSeeds(config, strategyConfigs));
             qlibStateStore->startReloadLoop(ctx.ioc());
             shadowMetricsRecorder = std::make_shared<orchestration::ShadowMetricsRecorder>(
                 orchestratorConfig.shadowMetrics);

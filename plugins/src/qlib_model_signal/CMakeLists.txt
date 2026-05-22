@@ -37,4 +37,8 @@ add_custom_command(TARGET strategy_qlib_model_signal POST_BUILD
         -Dsrc="$<TARGET_FILE:strategy_qlib_model_signal>"
         -Ddst="$<TARGET_FILE_DIR:binance_trading_bot>/plugins/$<TARGET_FILE_NAME:strategy_qlib_model_signal>"
         -P "${SAFE_COPY_SCRIPT}"
+    COMMAND "${CMAKE_COMMAND}"
+        -Dsrc="$<TARGET_FILE:strategy_qlib_model_signal>"
+        -Ddst="${CMAKE_SOURCE_DIR}/plugins/$<TARGET_FILE_NAME:strategy_qlib_model_signal>"
+        -P "${SAFE_COPY_SCRIPT}"
 )

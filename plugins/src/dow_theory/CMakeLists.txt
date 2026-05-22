@@ -31,4 +31,8 @@ add_custom_command(TARGET strategy_dow_theory POST_BUILD
         -Dsrc="$<TARGET_FILE:strategy_dow_theory>"
         -Ddst="$<TARGET_FILE_DIR:binance_trading_bot>/plugins/$<TARGET_FILE_NAME:strategy_dow_theory>"
         -P "${SAFE_COPY_SCRIPT}"
+    COMMAND "${CMAKE_COMMAND}"
+        -Dsrc="$<TARGET_FILE:strategy_dow_theory>"
+        -Ddst="${CMAKE_SOURCE_DIR}/plugins/$<TARGET_FILE_NAME:strategy_dow_theory>"
+        -P "${SAFE_COPY_SCRIPT}"
 )

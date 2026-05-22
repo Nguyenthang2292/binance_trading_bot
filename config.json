@@ -153,6 +153,33 @@
       }
     },
     {
+      "name": "Qlib TopK Dropout 30m Adapter",
+      "type": "qlib_strategy_signal",
+      "intervals": ["30m"],
+      "scan_interval_seconds": 60,
+      "max_hold_duration_seconds": 7200,
+      "risk_pct": 0.01,
+      "sl_multiplier": 1.5,
+      "tp_multiplier": 3.0,
+      "takeProfitPercent": 20.0,
+      "min_notional": 1.0,
+      "atr_period": 14,
+      "min_confidence": 0.0,
+      "execution": {
+        "mode_source": "sqlite",
+        "default_mode": "live",
+        "state_db_path": "data/qlib_smoke/qlib_predictions.db"
+      },
+      "params": {
+        "source": "sqlite",
+        "db_path": "data/qlib_smoke/qlib_predictions.db",
+        "strategy_id": "topk_dropout_30m_v1",
+        "universe_hash_strict": false,
+        "max_artifact_age_seconds": 3600,
+        "max_data_age_seconds": 2700
+      }
+    },
+    {
       "name": "Trend Breakout Trader",
       "type": "trend_breakout",
       "intervals": ["30m", "1h", "4h"],

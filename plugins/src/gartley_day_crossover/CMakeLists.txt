@@ -31,4 +31,8 @@ add_custom_command(TARGET strategy_gartley_day_crossover POST_BUILD
         -Dsrc="$<TARGET_FILE:strategy_gartley_day_crossover>"
         -Ddst="$<TARGET_FILE_DIR:binance_trading_bot>/plugins/$<TARGET_FILE_NAME:strategy_gartley_day_crossover>"
         -P "${SAFE_COPY_SCRIPT}"
+    COMMAND "${CMAKE_COMMAND}"
+        -Dsrc="$<TARGET_FILE:strategy_gartley_day_crossover>"
+        -Ddst="${CMAKE_SOURCE_DIR}/plugins/$<TARGET_FILE_NAME:strategy_gartley_day_crossover>"
+        -P "${SAFE_COPY_SCRIPT}"
 )

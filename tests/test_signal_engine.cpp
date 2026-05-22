@@ -443,6 +443,51 @@ public:
     }
 };
 
+class MockExecutionStatePort final : public orchestration::IExecutionStatePort {
+public:
+    orchestration::RuntimeStateSnapshot legacy;
+    std::unordered_map<std::string, orchestration::RuntimeStateSnapshot> adapterStates;
+    double multiplier{0.25};
+    int snapshotCalls{0};
+    int adapterSnapshotCalls{0};
+    std::string lastAdapterId;
+    std::string lastInterval;
+
+    orchestration::RuntimeStateSnapshot snapshot() const override {
+        ++const_cast<MockExecutionStatePort*>(this)->snapshotCalls;
+        return legacy;
+    }
+
+    orchestration::RuntimeStateSnapshot snapshotForAdapter(std::string_view adapterId, std::string_view interval) const override {
+        ++const_cast<MockExecutionStatePort*>(this)->adapterSnapshotCalls;
+        const_cast<MockExecutionStatePort*>(this)->lastAdapterId = std::string(adapterId);
+        const_cast<MockExecutionStatePort*>(this)->lastInterval = std::string(interval);
+        const auto it = adapterStates.find(std::string(adapterId) + "|" + std::string(interval));
+        if (it != adapterStates.end()) {
+            return it->second;
+        }
+        orchestration::RuntimeStateSnapshot missing;
+        missing.available = false;
+        missing.mode = orchestration::ExecutionMode::Disabled;
+        missing.modelId = std::string(adapterId);
+        missing.interval = std::string(interval);
+        return missing;
+    }
+
+    double canaryRiskMultiplier() const override {
+        return multiplier;
+    }
+};
+
+class MockShadowMetricsPort final : public orchestration::IShadowMetricsPort {
+public:
+    std::vector<orchestration::ShadowSignalRecord> records;
+
+    void recordShadowSignal(const orchestration::ShadowSignalRecord& record) override {
+        records.push_back(record);
+    }
+};
+
 class MockStrategy final : public strategy::IStrategy {
 public:
     explicit MockStrategy(strategy::StrategyConfig cfg) : m_cfg(std::move(cfg)) {}
@@ -466,6 +511,20 @@ engine::WorkItem singleWork(const strategy::IStrategy* strategy, std::string int
         .symbol = "BTCUSDT",
         .interval = std::move(interval),
         .strategy = strategy,
+    };
+}
+
+orchestration::RuntimeStateSnapshot qlibState(
+    orchestration::ExecutionMode mode,
+    std::string modelId = "lightgbm_30m_v1",
+    std::string interval = "30m") {
+    return orchestration::RuntimeStateSnapshot{
+        .available = true,
+        .mode = mode,
+        .modelId = std::move(modelId),
+        .interval = std::move(interval),
+        .activeRunId = "run-1",
+        .stateVersion = 1,
     };
 }
 
@@ -578,6 +637,191 @@ TEST(SignalEngineTest, CoversNoSignalLowConfidenceAtrZeroExistingAndSuccess) {
     ioc.restart();
     runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
     EXPECT_EQ(orders.marketCalls, 1);
+}
+
+TEST(SignalEngineTest, QlibStrategyAdaptersUseIndependentRuntimeModes) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+    for (int i = 0; i < 30; ++i) {
+        Kline k;
+        k.openTime = 2000 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "30m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    strategy::StrategyRegistry registry;
+    engine::SignalEngine signalEngine(
+        scanner,
+        registry,
+        account,
+        orders,
+        exposure,
+        engine::SignalEngine::Config{.placeStopLoss = false});
+
+    MockExecutionStatePort state;
+    state.adapterStates["alpha_live|30m"] = qlibState(orchestration::ExecutionMode::Live);
+    state.adapterStates["alpha_shadow|30m"] = qlibState(orchestration::ExecutionMode::Shadow);
+    MockShadowMetricsPort shadowMetrics;
+    signalEngine.setExecutionStatePort(&state);
+    signalEngine.setShadowMetricsPort(&shadowMetrics);
+
+    strategy::StrategyConfig liveCfg;
+    liveCfg.name = "alpha_live";
+    liveCfg.type = "qlib_strategy_signal";
+    liveCfg.intervals = {"30m"};
+    liveCfg.minConfidence = 0.0;
+    liveCfg.riskPct = 0.01;
+    liveCfg.atrPeriod = 14;
+
+    strategy::StrategyConfig shadowCfg = liveCfg;
+    shadowCfg.name = "alpha_shadow";
+
+    engine::SignalEngine::DecisionArbiter arbiter;
+    arbiter.add("alpha_shadow", shadowCfg, strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 0.99,
+        .atr = 5.0,
+        .reason = "shadow higher confidence",
+    });
+    arbiter.add("alpha_live", liveCfg, strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 0.50,
+        .atr = 5.0,
+        .reason = "live lower confidence",
+    });
+
+    runAwaitable(ioc, signalEngine.processQlibCandidates("BTCUSDT", "30m", arbiter));
+
+    EXPECT_EQ(orders.marketCalls, 1);
+    EXPECT_EQ(state.adapterSnapshotCalls, 2);
+    ASSERT_EQ(shadowMetrics.records.size(), 1);
+    EXPECT_EQ(shadowMetrics.records[0].adapterId, "alpha_shadow");
+    EXPECT_EQ(shadowMetrics.records[0].executionMode, orchestration::ExecutionMode::Shadow);
+    EXPECT_TRUE(shadowMetrics.records[0].wouldPlaceOrder);
+}
+
+TEST(SignalEngineTest, QlibStrategyAdapterMissingRuntimeStateFailsClosed) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+    for (int i = 0; i < 30; ++i) {
+        Kline k;
+        k.openTime = 3000 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "30m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    strategy::StrategyRegistry registry;
+    engine::SignalEngine signalEngine(scanner, registry, account, orders, exposure, {});
+
+    MockExecutionStatePort state;
+    signalEngine.setExecutionStatePort(&state);
+
+    strategy::StrategyConfig cfg;
+    cfg.name = "missing_adapter";
+    cfg.type = "qlib_strategy_signal";
+    cfg.intervals = {"30m"};
+    cfg.minConfidence = 0.0;
+
+    engine::SignalEngine::DecisionArbiter arbiter;
+    arbiter.add("missing_adapter", cfg, strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+        .reason = "would be live without state",
+    });
+
+    runAwaitable(ioc, signalEngine.processQlibCandidates("BTCUSDT", "30m", arbiter));
+
+    EXPECT_EQ(orders.marketCalls, 0);
+    EXPECT_EQ(account.calls, 0);
+    EXPECT_EQ(state.adapterSnapshotCalls, 1);
+}
+
+TEST(SignalEngineTest, QlibStrategyRunScanCycleUsesConfigAdapterId) {
+    strategy::StrategyConfig cfg;
+    cfg.name = "Display Alpha Name";
+    cfg.type = "qlib_strategy_signal";
+    cfg.adapterId = "adapter_key";
+    EXPECT_EQ(engine::SignalEngine::qlibAdapterId(cfg), "adapter_key");
+
+    cfg.adapterId.clear();
+    EXPECT_EQ(engine::SignalEngine::qlibAdapterId(cfg), "Display Alpha Name");
+}
+
+TEST(SignalEngineTest, QlibModelSignalKeepsLegacyRuntimeStateLookup) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+    for (int i = 0; i < 30; ++i) {
+        Kline k;
+        k.openTime = 4000 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "30m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    MockExposurePort exposure;
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "legacy_model";
+    cfg.type = "qlib_model_signal";
+    cfg.intervals = {"30m"};
+    cfg.minConfidence = 0.0;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+        .reason = "legacy model shadow",
+    };
+    registry.add(std::move(strategy));
+
+    engine::SignalEngine signalEngine(scanner, registry, account, orders, exposure, {});
+    MockExecutionStatePort state;
+    state.legacy = qlibState(orchestration::ExecutionMode::Shadow);
+    MockShadowMetricsPort shadowMetrics;
+    signalEngine.setExecutionStatePort(&state);
+    signalEngine.setShadowMetricsPort(&shadowMetrics);
+
+    runAwaitable(ioc, signalEngine.processItem(singleWork(strategyPtr, "30m")));
+
+    EXPECT_EQ(state.snapshotCalls, 1);
+    EXPECT_EQ(state.adapterSnapshotCalls, 0);
+    EXPECT_EQ(orders.marketCalls, 0);
+    ASSERT_EQ(shadowMetrics.records.size(), 1);
+    EXPECT_EQ(shadowMetrics.records[0].modelId, "lightgbm_30m_v1");
+    EXPECT_EQ(shadowMetrics.records[0].executionMode, orchestration::ExecutionMode::Shadow);
 }
 
 TEST(SignalEngineTest, FilledTpSlClientOrderRemovesTrackedPosition) {

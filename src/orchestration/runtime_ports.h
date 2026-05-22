@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace orchestration {
 
@@ -28,6 +29,11 @@ class IExecutionStatePort {
 public:
     virtual ~IExecutionStatePort() = default;
     virtual RuntimeStateSnapshot snapshot() const = 0;
+    virtual RuntimeStateSnapshot snapshotForAdapter(std::string_view adapterId, std::string_view interval) const {
+        (void)adapterId;
+        (void)interval;
+        return snapshot();
+    }
     virtual double canaryRiskMultiplier() const = 0;
 };
 

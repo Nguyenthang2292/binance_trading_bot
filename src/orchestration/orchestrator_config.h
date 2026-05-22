@@ -105,6 +105,8 @@ inline OrchestratorConfig parseOrchestratorConfig(const nlohmann::json& root) {
     cfg.promotion.minCandles = promotion.value("min_candles", cfg.promotion.minCandles);
     cfg.promotion.minSharpe = promotion.value("min_sharpe", cfg.promotion.minSharpe);
     cfg.promotion.minHitRate = promotion.value("min_hit_rate", cfg.promotion.minHitRate);
+    cfg.promotion.minMeanNetReturnBps =
+        promotion.value("min_mean_net_return_bps", cfg.promotion.minMeanNetReturnBps);
     cfg.promotion.lookbackCandles = promotion.value("lookback_candles", cfg.promotion.lookbackCandles);
 
     cfg.stateStore.dbPath = dbPath;

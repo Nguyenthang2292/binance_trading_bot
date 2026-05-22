@@ -10,7 +10,10 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 struct sqlite3;
 
@@ -22,6 +25,25 @@ struct QlibStateStoreConfig {
     std::string interval{"1h"};
     std::chrono::seconds reloadInterval{5};
     double canaryRiskMultiplier{0.25};
+};
+
+struct PromotionEvaluationRecord {
+    std::string profileName{"default"};
+    std::string decision;
+    std::string reason;
+    std::string executionMode;
+    int matureSignals{0};
+    int candles{0};
+    double hitRate{0.0};
+    double sharpe{0.0};
+    double meanNetReturnBps{0.0};
+};
+
+struct AdapterRuntimeStateSeed {
+    std::string adapterId;
+    std::string interval;
+    ExecutionMode executionMode{ExecutionMode::Shadow};
+    std::string promotionProfile{"default"};
 };
 
 // IMPORTANT: QlibStateStore uses enable_shared_from_this for timer safety.
@@ -41,12 +63,17 @@ public:
     QlibStateStore& operator=(const QlibStateStore&) = delete;
 
     void initializeSchema();
-    void initializeRuntimeStateIfMissing();
+    void initializeRuntimeStateIfMissing(ExecutionMode defaultMode = ExecutionMode::Shadow);
+    void initializeAdapterRuntimeStatesIfMissing(const std::vector<AdapterRuntimeStateSeed>& seeds);
     void startReloadLoop(boost::asio::io_context& ioc);
     void stopReloadLoop();
-    bool setExecutionMode(ExecutionMode mode, std::string rollbackReason = {});
+    bool setExecutionMode(ExecutionMode mode, std::string rollbackReason = {}, std::string promotedBy = {});
+    std::string promotionProfileName() const;
+    std::optional<std::string> promotionProfileJson(std::string_view profileName) const;
+    void recordPromotionEvaluation(const PromotionEvaluationRecord& record);
 
     RuntimeStateSnapshot snapshot() const override;
+    RuntimeStateSnapshot snapshotForAdapter(std::string_view adapterId, std::string_view interval) const override;
     double canaryRiskMultiplier() const override { return m_config.canaryRiskMultiplier; }
     const std::string& dbPath() const { return m_config.dbPath; }
     const std::string& modelId() const { return m_config.modelId; }
@@ -56,6 +83,9 @@ private:
     void reloadStateOnce();
     void scheduleReload();
     RuntimeStateSnapshot loadSnapshotLocked() const;
+    RuntimeStateSnapshot loadAdapterSnapshotLocked(std::string_view adapterId, std::string_view interval) const;
+    void ensureAdapterRuntimeStateLocked();
+    std::string promotionProfileNameLocked() const;
     static std::string modeToDb(ExecutionMode mode);
     static ExecutionMode modeFromDb(const std::string& modeText);
 

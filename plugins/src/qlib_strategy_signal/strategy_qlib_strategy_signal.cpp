@@ -95,6 +95,8 @@ strategy::StrategyConfig parseConfig(const nlohmann::json& j) {
     strategy::StrategyConfig cfg;
     cfg.name = j.value("name", "Qlib Strategy Adapter");
     cfg.type = j.value("type", "qlib_strategy_signal");
+    const auto& params = paramsObject(j);
+    cfg.adapterId = params.value("strategy_id", std::string{});
     cfg.intervals = j.value("intervals", kDefaultIntervals);
     if (cfg.intervals.empty()) {
         cfg.intervals = kDefaultIntervals;
@@ -413,13 +415,7 @@ class QlibStrategySignalStrategy final : public strategy::IStrategy {
 public:
     QlibStrategySignalStrategy(strategy::StrategyConfig cfg, QlibAdapterParams params)
         : m_cfg(std::move(cfg)),
-          m_params(std::move(params)) {
-        checkSchemaAndUniverse(
-            m_params.dbPath,
-            m_params.strategyId,
-            m_params.universeHash,
-            m_params.universeHashStrict);
-    }
+          m_params(std::move(params)) {}
 
     const strategy::StrategyConfig& config() const override {
         return m_cfg;
@@ -432,6 +428,17 @@ public:
         (void)klines;
         if (!intervalConfigured(m_cfg, interval)) {
             return {};
+        }
+
+        try {
+            checkSchemaAndUniverse(
+                m_params.dbPath,
+                m_params.strategyId,
+                m_params.universeHash,
+                m_params.universeHashStrict);
+        } catch (const std::exception& e) {
+            return strategy::Signal{
+                .reason = "qlib_adapter=" + m_params.strategyId + " (schema_unavailable: " + e.what() + ")"};
         }
 
         std::string runtimeError;

@@ -545,8 +545,10 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
 
             try {
                 auto signal = item.strategy->evaluate(item.symbol, item.interval, *klines);
+                const auto& cfg = item.strategy->config();
+                const std::string adapterId = qlibAdapterId(cfg);
                 std::string key = item.symbol + "|" + item.interval;
-                qlibArbiters[key].add(item.strategy->config().name, item.strategy->config(), signal);
+                qlibArbiters[key].add(adapterId, cfg, signal);
             } catch (const std::exception& e) {
                 Logger::instance().log(
                     LogLevel::Warning,
@@ -682,23 +684,61 @@ std::optional<SignalEngine::ArbiterCandidate> SignalEngine::DecisionArbiter::arb
 boost::asio::awaitable<void> SignalEngine::processQlibCandidates(const std::string& symbol, const std::string& interval, DecisionArbiter& arbiter) {
     if (arbiter.candidates.empty()) co_return;
 
-    orchestration::RuntimeStateSnapshot runtimeState;
-    if (m_executionStatePort) {
-        runtimeState = m_executionStatePort->snapshot();
-    }
-
     const auto klines = m_scanner.cache().snapshot(symbol, interval);
     if (!klines || klines->empty()) co_return;
 
     const double currentPrice = klines->back().close;
-    const bool globalShadow =
-        runtimeState.available &&
-        (runtimeState.mode == orchestration::ExecutionMode::Shadow ||
-         runtimeState.mode == orchestration::ExecutionMode::ShadowOnly);
 
-    auto recordShadow = [&](const ArbiterCandidate& cand, std::string blockedStage, bool wouldPlaceOrder, double atr, double currentPrice) {
+    std::unordered_map<std::string, orchestration::RuntimeStateSnapshot> runtimeByAdapter;
+    auto runtimeFor = [&](std::string_view adapterId) -> orchestration::RuntimeStateSnapshot {
+        const std::string key(adapterId);
+        if (const auto it = runtimeByAdapter.find(key); it != runtimeByAdapter.end()) {
+            return it->second;
+        }
+        orchestration::RuntimeStateSnapshot state;
+        if (m_executionStatePort) {
+            state = m_executionStatePort->snapshotForAdapter(adapterId, interval);
+        }
+        if (!state.available) {
+            state.mode = orchestration::ExecutionMode::Disabled;
+            state.modelId = key;
+            state.interval = interval;
+        }
+        runtimeByAdapter.emplace(key, state);
+        return state;
+    };
+
+    auto isShadow = [](orchestration::ExecutionMode mode) {
+        return mode == orchestration::ExecutionMode::Shadow ||
+            mode == orchestration::ExecutionMode::ShadowOnly;
+    };
+
+    for (auto& cand : arbiter.candidates) {
+        const auto state = runtimeFor(cand.strategyId);
+        if (!state.available) {
+            cand.signal.reason += cand.signal.reason.empty() ? "runtime_state_unavailable" : " (runtime_state_unavailable)";
+            cand.signal.direction = strategy::Signal::Direction::None;
+            cand.signal.wouldPlaceOrder = false;
+            continue;
+        }
+        if (state.mode == orchestration::ExecutionMode::Disabled) {
+            cand.signal.reason += cand.signal.reason.empty() ? "execution_mode=disabled" : " (execution_mode=disabled)";
+            cand.signal.direction = strategy::Signal::Direction::None;
+            cand.signal.wouldPlaceOrder = false;
+            continue;
+        }
+        if (isShadow(state.mode)) {
+            cand.signal.shadowOnly = true;
+            cand.signal.wouldPlaceOrder = cand.signal.direction != strategy::Signal::Direction::None;
+            if (cand.signal.reason.find("shadow_only") == std::string::npos) {
+                cand.signal.reason += cand.signal.reason.empty() ? "shadow_only" : " (shadow_only)";
+            }
+        }
+    }
+
+    auto recordShadow = [&](const ArbiterCandidate& cand, const orchestration::RuntimeStateSnapshot& runtimeState, std::string blockedStage, bool wouldPlaceOrder, double atr, double currentPrice) {
         if (!m_shadowMetricsPort) return;
-        if (!globalShadow && !cand.signal.shadowOnly) return;
+        if (!isShadow(runtimeState.mode) && !cand.signal.shadowOnly) return;
 
         orchestration::ShadowSignalRecord rec;
         rec.modelId = runtimeState.modelId.empty() ? cand.strategyId : runtimeState.modelId;
@@ -710,7 +750,7 @@ boost::asio::awaitable<void> SignalEngine::processQlibCandidates(const std::stri
         rec.capturedAtMs = nowMs();
         rec.direction = cand.signal.direction;
         rec.confidence = cand.signal.confidence;
-        rec.executionMode = cand.signal.shadowOnly ? orchestration::ExecutionMode::ShadowOnly : runtimeState.mode;
+        rec.executionMode = runtimeState.mode;
         rec.blockedStage = std::move(blockedStage);
         rec.wouldPlaceOrder = wouldPlaceOrder;
         rec.currentPrice = currentPrice;
@@ -758,7 +798,7 @@ boost::asio::awaitable<void> SignalEngine::processQlibCandidates(const std::stri
 
     for (const auto& rej : rejected) {
         const double atr = strategy::indicators::lastAtr(*klines, rej.cfg.atrPeriod);
-        recordShadow(rej, rej.signal.shadowOnly ? "shadow_only" : "arbitration", rej.signal.wouldPlaceOrder, atr, currentPrice);
+        recordShadow(rej, runtimeFor(rej.strategyId), rej.signal.shadowOnly ? "shadow_only" : "arbitration", rej.signal.wouldPlaceOrder, atr, currentPrice);
     }
 
     if (!selectedOpt) {
@@ -768,14 +808,22 @@ boost::asio::awaitable<void> SignalEngine::processQlibCandidates(const std::stri
     auto& selected = *selectedOpt;
 
     const double atr = strategy::indicators::lastAtr(*klines, selected.cfg.atrPeriod);
+    const auto selectedRuntime = runtimeFor(selected.strategyId);
 
     if (m_tracker.has(symbol)) {
-        recordShadow(selected, "duplicate_position", false, atr, currentPrice);
+        recordShadow(selected, selectedRuntime, "duplicate_position", false, atr, currentPrice);
         co_return;
     }
 
-    const bool placeOrders = !globalShadow;
+    const bool placeOrders =
+        selectedRuntime.available &&
+        (selectedRuntime.mode == orchestration::ExecutionMode::Live ||
+         selectedRuntime.mode == orchestration::ExecutionMode::LiveCanary);
     double riskPctOverride = -1.0;
+    if (selectedRuntime.mode == orchestration::ExecutionMode::LiveCanary) {
+        const double mult = m_executionStatePort ? m_executionStatePort->canaryRiskMultiplier() : 1.0;
+        riskPctOverride = selected.cfg.riskPct * std::clamp(mult, 0.0, 1.0);
+    }
 
     auto res = co_await openPosition(
         symbol,
@@ -794,9 +842,9 @@ boost::asio::awaitable<void> SignalEngine::processQlibCandidates(const std::stri
     );
     (void)res;
 
-    if (globalShadow) {
+    if (!placeOrders) {
         const std::string blocked = m_lastOpenDecision.blockedStage;
-        recordShadow(selected, blocked, m_lastOpenDecision.wouldPlaceOrder, atr, currentPrice);
+        recordShadow(selected, selectedRuntime, blocked, m_lastOpenDecision.wouldPlaceOrder, atr, currentPrice);
     }
 }
 
@@ -852,6 +900,7 @@ boost::asio::awaitable<void> SignalEngine::processItem(const WorkItem& item) {
         orchestration::ShadowSignalRecord rec;
         rec.modelId = runtimeState.modelId;
         rec.runId = runtimeState.activeRunId;
+        rec.adapterId = qlibAdapterId(cfg);
         rec.symbol = item.symbol;
         rec.interval = item.interval;
         rec.asofOpenTimeMs = klines->empty() ? 0 : klines->back().openTime;

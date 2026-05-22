@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -16,6 +17,30 @@ using sqlite_helpers::bindText;
 using sqlite_helpers::columnText;
 using sqlite_helpers::execOrThrow;
 using sqlite_helpers::nowMs;
+
+bool hasColumn(sqlite3* db, std::string_view table, std::string_view column) {
+    const std::string sql = "PRAGMA table_info(" + std::string(table) + ");";
+    sqlite3_stmt* rawStmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
+        return false;
+    }
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+        if (columnText(stmt.get(), 1) == column) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void ensureColumn(sqlite3* db, std::string_view table, std::string_view column, std::string_view definition) {
+    if (hasColumn(db, table, column)) {
+        return;
+    }
+    const std::string sql = "ALTER TABLE " + std::string(table) + " ADD COLUMN " +
+        std::string(column) + " " + std::string(definition) + ";";
+    execOrThrow(db, sql.c_str());
+}
 
 } // namespace
 
@@ -101,14 +126,69 @@ void QlibStateStore::initializeSchema() {
         "log_path TEXT,"
         "error TEXT"
         ");");
+
+    execOrThrow(
+        m_db,
+        "CREATE TABLE IF NOT EXISTS qlib_adapter_runtime_state ("
+        "adapter_id TEXT NOT NULL,"
+        "interval TEXT NOT NULL,"
+        "execution_mode TEXT NOT NULL CHECK (execution_mode IN ('disabled','shadow','shadow_only','live_canary','live')),"
+        "promotion_profile TEXT NOT NULL DEFAULT 'default',"
+        "active_run_id TEXT,"
+        "state_version INTEGER NOT NULL DEFAULT 0,"
+        "promoted_at_ms INTEGER,"
+        "promoted_by TEXT,"
+        "last_decision_at_ms INTEGER,"
+        "last_failure_at_ms INTEGER,"
+        "last_failure_reason TEXT,"
+        "updated_at_ms INTEGER NOT NULL,"
+        "rollback_reason TEXT,"
+        "PRIMARY KEY (adapter_id, interval)"
+        ");");
+    ensureColumn(m_db, "qlib_adapter_runtime_state", "promotion_profile", "TEXT NOT NULL DEFAULT 'default'");
+    ensureColumn(m_db, "qlib_adapter_runtime_state", "promoted_at_ms", "INTEGER");
+    ensureColumn(m_db, "qlib_adapter_runtime_state", "promoted_by", "TEXT");
+    ensureColumn(m_db, "qlib_adapter_runtime_state", "last_decision_at_ms", "INTEGER");
+    ensureColumn(m_db, "qlib_adapter_runtime_state", "last_failure_at_ms", "INTEGER");
+    ensureColumn(m_db, "qlib_adapter_runtime_state", "last_failure_reason", "TEXT");
+
+    execOrThrow(
+        m_db,
+        "CREATE TABLE IF NOT EXISTS qlib_promotion_profiles ("
+        "profile_name TEXT PRIMARY KEY,"
+        "qlib_class TEXT NOT NULL,"
+        "profile_json TEXT NOT NULL,"
+        "updated_at_ms INTEGER NOT NULL"
+        ");");
+
+    execOrThrow(
+        m_db,
+        "CREATE TABLE IF NOT EXISTS qlib_promotion_evaluations ("
+        "eval_id TEXT PRIMARY KEY,"
+        "model_id TEXT NOT NULL,"
+        "profile_name TEXT,"
+        "interval TEXT NOT NULL,"
+        "evaluated_at_ms INTEGER NOT NULL,"
+        "execution_mode TEXT NOT NULL,"
+        "mature_signals INTEGER NOT NULL,"
+        "candles INTEGER NOT NULL,"
+        "hit_rate REAL,"
+        "sharpe REAL,"
+        "mean_net_return_bps REAL,"
+        "drift_z REAL,"
+        "stale_ratio REAL,"
+        "decision TEXT NOT NULL,"
+        "reason TEXT"
+        ");");
+    ensureColumn(m_db, "qlib_promotion_evaluations", "profile_name", "TEXT");
 }
 
-void QlibStateStore::initializeRuntimeStateIfMissing() {
+void QlibStateStore::initializeRuntimeStateIfMissing(ExecutionMode defaultMode) {
     std::lock_guard<std::mutex> lock(m_mutex);
     const char* sql =
         "INSERT INTO qlib_runtime_state("
         "model_id, interval, execution_mode, active_run_id, active_manifest_path, state_version, promoted_at_ms, rollback_reason, updated_at_ms"
-        ") VALUES(?, ?, 'shadow', NULL, NULL, 0, NULL, NULL, ?) "
+        ") VALUES(?, ?, ?, NULL, NULL, 0, NULL, NULL, ?) "
         "ON CONFLICT(model_id, interval) DO NOTHING;";
     sqlite3_stmt* rawStmt = nullptr;
     if (sqlite3_prepare_v2(m_db, sql, -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
@@ -117,11 +197,40 @@ void QlibStateStore::initializeRuntimeStateIfMissing() {
     std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
     bindText(stmt.get(), 1, m_config.modelId);
     bindText(stmt.get(), 2, m_config.interval);
-    sqlite3_bind_int64(stmt.get(), 3, nowMs());
+    bindText(stmt.get(), 3, modeToDb(defaultMode));
+    sqlite3_bind_int64(stmt.get(), 4, nowMs());
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         throw std::runtime_error("QlibStateStore step initializeRuntimeStateIfMissing failed");
     }
+    ensureAdapterRuntimeStateLocked();
     m_snapshot = loadSnapshotLocked();
+}
+
+void QlibStateStore::initializeAdapterRuntimeStatesIfMissing(const std::vector<AdapterRuntimeStateSeed>& seeds) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const char* sql =
+        "INSERT INTO qlib_adapter_runtime_state("
+        "adapter_id, interval, execution_mode, promotion_profile, active_run_id, state_version, updated_at_ms"
+        ") VALUES(?, ?, ?, ?, NULL, 0, ?) "
+        "ON CONFLICT(adapter_id, interval) DO NOTHING;";
+    for (const auto& seed : seeds) {
+        if (seed.adapterId.empty() || seed.interval.empty()) {
+            continue;
+        }
+        sqlite3_stmt* rawStmt = nullptr;
+        if (sqlite3_prepare_v2(m_db, sql, -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
+            throw std::runtime_error("QlibStateStore prepare initializeAdapterRuntimeStatesIfMissing failed");
+        }
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
+        bindText(stmt.get(), 1, seed.adapterId);
+        bindText(stmt.get(), 2, seed.interval);
+        bindText(stmt.get(), 3, modeToDb(seed.executionMode));
+        bindText(stmt.get(), 4, seed.promotionProfile.empty() ? "default" : seed.promotionProfile);
+        sqlite3_bind_int64(stmt.get(), 5, nowMs());
+        if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+            throw std::runtime_error("QlibStateStore step initializeAdapterRuntimeStatesIfMissing failed");
+        }
+    }
 }
 
 void QlibStateStore::startReloadLoop(boost::asio::io_context& ioc) {
@@ -142,35 +251,202 @@ void QlibStateStore::stopReloadLoop() {
     m_reloadTimer->cancel(ec);
 }
 
-bool QlibStateStore::setExecutionMode(ExecutionMode mode, std::string rollbackReason) {
+bool QlibStateStore::setExecutionMode(ExecutionMode mode, std::string rollbackReason, std::string promotedBy) {
     std::lock_guard<std::mutex> lock(m_mutex);
+    execOrThrow(m_db, "BEGIN IMMEDIATE TRANSACTION;");
+
+    auto rollback = [&]() {
+        try {
+            execOrThrow(m_db, "ROLLBACK;");
+        } catch (...) {
+        }
+    };
+
+    const int64_t updatedAt = nowMs();
+    const std::string modeText = modeToDb(mode);
+    const bool promoted = mode == ExecutionMode::LiveCanary || mode == ExecutionMode::Live;
+
     const char* sql =
         "UPDATE qlib_runtime_state "
         "SET execution_mode = ?, rollback_reason = ?, state_version = state_version + 1, updated_at_ms = ? "
         "WHERE model_id = ? AND interval = ?;";
     sqlite3_stmt* rawStmt = nullptr;
     if (sqlite3_prepare_v2(m_db, sql, -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
+        rollback();
         throw std::runtime_error("QlibStateStore prepare setExecutionMode failed");
     }
     std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
-    bindText(stmt.get(), 1, modeToDb(mode));
+    bindText(stmt.get(), 1, modeText);
     bindText(stmt.get(), 2, rollbackReason);
-    sqlite3_bind_int64(stmt.get(), 3, nowMs());
+    sqlite3_bind_int64(stmt.get(), 3, updatedAt);
     bindText(stmt.get(), 4, m_config.modelId);
     bindText(stmt.get(), 5, m_config.interval);
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+        rollback();
         throw std::runtime_error("QlibStateStore step setExecutionMode failed");
     }
     if (sqlite3_changes(m_db) <= 0) {
+        rollback();
         return false;
     }
+    stmt.reset();
+
+    ensureAdapterRuntimeStateLocked();
+    const char* adapterSql =
+        "UPDATE qlib_adapter_runtime_state "
+        "SET execution_mode = ?,"
+        "    state_version = state_version + 1,"
+        "    promoted_at_ms = CASE WHEN ? THEN ? ELSE promoted_at_ms END,"
+        "    promoted_by = CASE WHEN ? THEN ? ELSE promoted_by END,"
+        "    updated_at_ms = ?,"
+        "    rollback_reason = ? "
+        "WHERE adapter_id = ? AND interval = ?;";
+    sqlite3_stmt* rawAdapterStmt = nullptr;
+    if (sqlite3_prepare_v2(m_db, adapterSql, -1, &rawAdapterStmt, nullptr) != SQLITE_OK ||
+        rawAdapterStmt == nullptr) {
+        rollback();
+        throw std::runtime_error("QlibStateStore prepare adapter setExecutionMode failed");
+    }
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> adapterStmt(rawAdapterStmt, sqlite3_finalize);
+    bindText(adapterStmt.get(), 1, modeText);
+    sqlite3_bind_int(adapterStmt.get(), 2, promoted ? 1 : 0);
+    if (promoted) {
+        sqlite3_bind_int64(adapterStmt.get(), 3, updatedAt);
+    } else {
+        sqlite3_bind_null(adapterStmt.get(), 3);
+    }
+    sqlite3_bind_int(adapterStmt.get(), 4, promoted ? 1 : 0);
+    if (promoted && !promotedBy.empty()) {
+        bindText(adapterStmt.get(), 5, promotedBy);
+    } else if (promoted) {
+        bindText(adapterStmt.get(), 5, "promotion_checker");
+    } else {
+        sqlite3_bind_null(adapterStmt.get(), 5);
+    }
+    sqlite3_bind_int64(adapterStmt.get(), 6, updatedAt);
+    bindText(adapterStmt.get(), 7, rollbackReason);
+    bindText(adapterStmt.get(), 8, m_config.modelId);
+    bindText(adapterStmt.get(), 9, m_config.interval);
+    if (sqlite3_step(adapterStmt.get()) != SQLITE_DONE) {
+        rollback();
+        throw std::runtime_error("QlibStateStore step adapter setExecutionMode failed");
+    }
+    if (sqlite3_changes(m_db) <= 0) {
+        rollback();
+        return false;
+    }
+    adapterStmt.reset();
+
+    execOrThrow(m_db, "COMMIT;");
     m_snapshot = loadSnapshotLocked();
     return true;
+}
+
+std::string QlibStateStore::promotionProfileName() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return promotionProfileNameLocked();
+}
+
+std::optional<std::string> QlibStateStore::promotionProfileJson(std::string_view profileName) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const char* sql = "SELECT profile_json FROM qlib_promotion_profiles WHERE profile_name = ?;";
+    sqlite3_stmt* rawStmt = nullptr;
+    if (sqlite3_prepare_v2(m_db, sql, -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
+        throw std::runtime_error("QlibStateStore prepare promotionProfileJson failed");
+    }
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
+    bindText(stmt.get(), 1, profileName);
+    const int rc = sqlite3_step(stmt.get());
+    if (rc == SQLITE_ROW) {
+        return columnText(stmt.get(), 0);
+    }
+    if (rc == SQLITE_DONE) {
+        return std::nullopt;
+    }
+    throw std::runtime_error("QlibStateStore step promotionProfileJson failed");
+}
+
+void QlibStateStore::recordPromotionEvaluation(const PromotionEvaluationRecord& record) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const int64_t evaluatedAt = nowMs();
+    const auto steadySuffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::ostringstream id;
+    id << m_config.modelId << '|' << m_config.interval << '|' << evaluatedAt << '|' << steadySuffix;
+
+    const char* sql =
+        "INSERT INTO qlib_promotion_evaluations("
+        "eval_id, model_id, profile_name, interval, evaluated_at_ms, execution_mode, mature_signals, candles,"
+        "hit_rate, sharpe, mean_net_return_bps, drift_z, stale_ratio, decision, reason"
+        ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?);";
+    sqlite3_stmt* rawStmt = nullptr;
+    if (sqlite3_prepare_v2(m_db, sql, -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
+        throw std::runtime_error("QlibStateStore prepare recordPromotionEvaluation failed");
+    }
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
+    bindText(stmt.get(), 1, id.str());
+    bindText(stmt.get(), 2, m_config.modelId);
+    bindText(stmt.get(), 3, record.profileName);
+    bindText(stmt.get(), 4, m_config.interval);
+    sqlite3_bind_int64(stmt.get(), 5, evaluatedAt);
+    bindText(stmt.get(), 6, record.executionMode);
+    sqlite3_bind_int(stmt.get(), 7, record.matureSignals);
+    sqlite3_bind_int(stmt.get(), 8, record.candles);
+    sqlite3_bind_double(stmt.get(), 9, record.hitRate);
+    sqlite3_bind_double(stmt.get(), 10, record.sharpe);
+    sqlite3_bind_double(stmt.get(), 11, record.meanNetReturnBps);
+    bindText(stmt.get(), 12, record.decision);
+    bindText(stmt.get(), 13, record.reason);
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+        throw std::runtime_error("QlibStateStore step recordPromotionEvaluation failed");
+    }
+
+    const bool failure = record.decision != "promoted_canary" &&
+        record.decision != "promoted_live" &&
+        record.decision != "already_live";
+    if (!failure) {
+        return;
+    }
+    ensureAdapterRuntimeStateLocked();
+    const char* updateSql =
+        "UPDATE qlib_adapter_runtime_state "
+        "SET last_failure_at_ms = ?, last_failure_reason = ?, updated_at_ms = ? "
+        "WHERE adapter_id = ? AND interval = ?;";
+    sqlite3_stmt* rawUpdate = nullptr;
+    if (sqlite3_prepare_v2(m_db, updateSql, -1, &rawUpdate, nullptr) != SQLITE_OK || rawUpdate == nullptr) {
+        throw std::runtime_error("QlibStateStore prepare promotion failure audit failed");
+    }
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> updateStmt(rawUpdate, sqlite3_finalize);
+    sqlite3_bind_int64(updateStmt.get(), 1, evaluatedAt);
+    bindText(updateStmt.get(), 2, record.reason);
+    sqlite3_bind_int64(updateStmt.get(), 3, evaluatedAt);
+    bindText(updateStmt.get(), 4, m_config.modelId);
+    bindText(updateStmt.get(), 5, m_config.interval);
+    if (sqlite3_step(updateStmt.get()) != SQLITE_DONE) {
+        throw std::runtime_error("QlibStateStore step promotion failure audit failed");
+    }
 }
 
 RuntimeStateSnapshot QlibStateStore::snapshot() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_snapshot;
+}
+
+RuntimeStateSnapshot QlibStateStore::snapshotForAdapter(std::string_view adapterId, std::string_view interval) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    try {
+        return loadAdapterSnapshotLocked(adapterId, interval);
+    } catch (const std::exception& e) {
+        RuntimeStateSnapshot fallback;
+        fallback.available = false;
+        fallback.mode = ExecutionMode::Disabled;
+        fallback.modelId = m_config.modelId;
+        fallback.interval = std::string(interval);
+        Logger::instance().log(
+            LogLevel::Warning,
+            "QlibStateStore adapter snapshot failed, adapter disabled: adapter_id=" +
+                std::string(adapterId) + " interval=" + std::string(interval) + " reason=" + e.what());
+        return fallback;
+    }
 }
 
 void QlibStateStore::reloadStateOnce() {
@@ -231,6 +507,77 @@ RuntimeStateSnapshot QlibStateStore::loadSnapshotLocked() const {
     out.available = false;
     out.mode = ExecutionMode::Disabled;
     return out;
+}
+
+RuntimeStateSnapshot QlibStateStore::loadAdapterSnapshotLocked(std::string_view adapterId, std::string_view interval) const {
+    const char* sql =
+        "SELECT execution_mode, active_run_id, state_version "
+        "FROM qlib_adapter_runtime_state WHERE adapter_id = ? AND interval = ?;";
+    sqlite3_stmt* rawStmt = nullptr;
+    if (sqlite3_prepare_v2(m_db, sql, -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
+        throw std::runtime_error("QlibStateStore prepare loadAdapterSnapshotLocked failed");
+    }
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
+    bindText(stmt.get(), 1, adapterId);
+    bindText(stmt.get(), 2, interval);
+    const int rc = sqlite3_step(stmt.get());
+    RuntimeStateSnapshot out;
+    out.modelId = m_config.modelId;
+    out.interval = std::string(interval);
+    if (rc == SQLITE_ROW) {
+        out.available = true;
+        out.mode = modeFromDb(columnText(stmt.get(), 0));
+        out.activeRunId = columnText(stmt.get(), 1);
+        out.stateVersion = sqlite3_column_int(stmt.get(), 2);
+        return out;
+    }
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error("QlibStateStore step loadAdapterSnapshotLocked failed");
+    }
+    out.available = false;
+    out.mode = ExecutionMode::Disabled;
+    return out;
+}
+
+void QlibStateStore::ensureAdapterRuntimeStateLocked() {
+    const char* sql =
+        "INSERT INTO qlib_adapter_runtime_state("
+        "adapter_id, interval, execution_mode, promotion_profile, active_run_id, state_version, updated_at_ms"
+        ") VALUES(?, ?, 'shadow', 'default', NULL, 0, ?) "
+        "ON CONFLICT(adapter_id, interval) DO NOTHING;";
+    sqlite3_stmt* rawStmt = nullptr;
+    if (sqlite3_prepare_v2(m_db, sql, -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
+        throw std::runtime_error("QlibStateStore prepare ensureAdapterRuntimeStateLocked failed");
+    }
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
+    bindText(stmt.get(), 1, m_config.modelId);
+    bindText(stmt.get(), 2, m_config.interval);
+    sqlite3_bind_int64(stmt.get(), 3, nowMs());
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+        throw std::runtime_error("QlibStateStore step ensureAdapterRuntimeStateLocked failed");
+    }
+}
+
+std::string QlibStateStore::promotionProfileNameLocked() const {
+    const char* sql =
+        "SELECT promotion_profile FROM qlib_adapter_runtime_state "
+        "WHERE adapter_id = ? AND interval = ?;";
+    sqlite3_stmt* rawStmt = nullptr;
+    if (sqlite3_prepare_v2(m_db, sql, -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
+        throw std::runtime_error("QlibStateStore prepare promotionProfileNameLocked failed");
+    }
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
+    bindText(stmt.get(), 1, m_config.modelId);
+    bindText(stmt.get(), 2, m_config.interval);
+    const int rc = sqlite3_step(stmt.get());
+    if (rc == SQLITE_ROW) {
+        const auto profile = columnText(stmt.get(), 0);
+        return profile.empty() ? "default" : profile;
+    }
+    if (rc == SQLITE_DONE) {
+        return "default";
+    }
+    throw std::runtime_error("QlibStateStore step promotionProfileNameLocked failed");
 }
 
 std::string QlibStateStore::modeToDb(ExecutionMode mode) {

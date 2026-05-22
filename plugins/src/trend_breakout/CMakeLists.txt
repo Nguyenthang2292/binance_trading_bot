@@ -31,4 +31,8 @@ add_custom_command(TARGET strategy_trend_breakout POST_BUILD
         -Dsrc="$<TARGET_FILE:strategy_trend_breakout>"
         -Ddst="$<TARGET_FILE_DIR:binance_trading_bot>/plugins/$<TARGET_FILE_NAME:strategy_trend_breakout>"
         -P "${SAFE_COPY_SCRIPT}"
+    COMMAND "${CMAKE_COMMAND}"
+        -Dsrc="$<TARGET_FILE:strategy_trend_breakout>"
+        -Ddst="${CMAKE_SOURCE_DIR}/plugins/$<TARGET_FILE_NAME:strategy_trend_breakout>"
+        -P "${SAFE_COPY_SCRIPT}"
 )
