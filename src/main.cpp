@@ -1,4 +1,8 @@
 #include "account/account_service.h"
+#include "backtest/backtest_gate_controller.h"
+#include "backtest/gemini_range_proposer.h"
+#include "backtest/historical_window_provider.h"
+#include "backtest/indicator_adapters.h"
 #include "catalog/catalog_reporter.h"
 #include "catalog/plugin_loader.h"
 #include "catalog/strategy_catalog.h"
@@ -602,6 +606,7 @@ int main(int argc, char* argv[]) {
     const auto geminiJson = config.value("gemini_filter", nlohmann::json::object());
     const auto riskJson = config.value("risk_analytics", nlohmann::json::object());
     const auto lossJson = config.value("loss_manager", nlohmann::json::object());
+    const auto backtestGateJson = config.value("backtest_gate", nlohmann::json::object());
 
     engine::ExposureConfig exposureConfig;
     exposureConfig.enabled = exposureJson.value("enabled", false);
@@ -1078,16 +1083,233 @@ int main(int argc, char* argv[]) {
         .positionCheckInterval = std::chrono::seconds(engineJson.value("position_check_interval_seconds", 60)),
         .trailingCheckInterval = std::chrono::seconds(engineJson.value("trailing_check_interval_seconds", 300)),
         .placeStopLoss = engineJson.value("place_stop_loss", true),
+        .takeProfitOverrideEnabled = false,
+        .takeProfitOverridePercent = 0.0,
         .monitorTrailingStops = engineJson.value("monitor_trailing_stops", true),
         .randomLeverageEnabled = engineJson.value("random_leverage_enabled", false),
         .randomLeverageMin = engineJson.value("random_leverage_min", 2),
         .randomLeverageMax = engineJson.value("random_leverage_max", 20),
         .lossManager = lossManagerConfig,
     };
+    if (engineJson.contains("take_profit")) {
+        const auto& takeProfitJson = engineJson.at("take_profit");
+        if (takeProfitJson.is_object()) {
+            engineConfig.takeProfitOverrideEnabled =
+                takeProfitJson.value("enabled", engineJson.value("take_profit_enabled", false));
+            engineConfig.takeProfitOverridePercent =
+                takeProfitJson.value(
+                    "takeProfitPercent",
+                    takeProfitJson.value("percent", engineJson.value("take_profit_percent", 0.0)));
+        } else if (takeProfitJson.is_number()) {
+            engineConfig.takeProfitOverridePercent = takeProfitJson.get<double>();
+            engineConfig.takeProfitOverrideEnabled = engineJson.value("take_profit_enabled", false);
+        }
+    } else {
+        engineConfig.takeProfitOverrideEnabled = engineJson.value("take_profit_enabled", false);
+        engineConfig.takeProfitOverridePercent = engineJson.value("take_profit_percent", 0.0);
+    }
+    if (engineConfig.takeProfitOverrideEnabled && engineConfig.takeProfitOverridePercent <= 0.0) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "engine take_profit is enabled but percent <= 0; global take-profit override disabled");
+        engineConfig.takeProfitOverrideEnabled = false;
+    }
     if (riskProfile.enabled) {
         engineConfig.maxPositionNotionalXAvailableBalance = riskProfile.profile.maxPositionNotionalXAvailableBalance;
     }
 
+    // ── Backtest Gate ────────────────────────────────────────────────────────
+    backtest::BacktestGateConfig backtestGateConfig;
+    backtestGateConfig.enabled             = backtestGateJson.value("enabled", false);
+    backtestGateConfig.shadowOnly          = backtestGateJson.value("shadow_only", true);
+    backtestGateConfig.workerPoolSize      = std::max(1, backtestGateJson.value("worker_pool_size", 1));
+    backtestGateConfig.deadlineSeconds     = std::max(1, backtestGateJson.value("deadline_seconds", 90));
+    backtestGateConfig.maxEvaluationsPerScanCycle =
+        std::max(0, backtestGateJson.value("max_evaluations_per_scan_cycle", 3));
+    backtestGateConfig.closeGateOnBudgetExhausted =
+        backtestGateJson.value("close_gate_on_budget_exhausted", true);
+
+    const auto bgDataJson     = backtestGateJson.value("data", nlohmann::json::object());
+    const auto bgWfJson       = backtestGateJson.value("walk_forward", nlohmann::json::object());
+    const auto bgFiltersJson  = backtestGateJson.value("filters", nlohmann::json::object());
+    const auto bgPlateauJson  = backtestGateJson.value("plateau", nlohmann::json::object());
+    const auto bgVoteJson     = backtestGateJson.value("vote", nlohmann::json::object());
+    const auto bgBudgetJson   = backtestGateJson.value("budget", nlohmann::json::object());
+    const auto bgGeminiJson   = backtestGateJson.value("gemini", nlohmann::json::object());
+    const auto bgCacheJson    = backtestGateJson.value("cache", nlohmann::json::object());
+    const auto bgFeeJson      = backtestGateJson.value("fee", nlohmann::json::object());
+
+    backtestGateConfig.data.historySource =
+        bgDataJson.value("history_source", backtestGateConfig.data.historySource);
+    backtestGateConfig.data.windowMinCandles =
+        bgDataJson.value("window_min_candles", backtestGateConfig.data.windowMinCandles);
+    backtestGateConfig.data.windowSlowestMultiplier =
+        bgDataJson.value("window_slowest_multiplier", backtestGateConfig.data.windowSlowestMultiplier);
+    backtestGateConfig.data.runtimeRestFetchEnabled =
+        bgDataJson.value("runtime_rest_fetch_enabled", backtestGateConfig.data.runtimeRestFetchEnabled);
+    backtestGateConfig.data.runtimeRestFetchTimeoutSeconds =
+        bgDataJson.value("runtime_rest_fetch_timeout_seconds",
+                         backtestGateConfig.data.runtimeRestFetchTimeoutSeconds);
+    backtestGateConfig.data.maxRestRequestsPerSignal =
+        bgDataJson.value("max_rest_requests_per_signal",
+                         backtestGateConfig.data.maxRestRequestsPerSignal);
+
+    backtestGateConfig.walkForward.folds =
+        bgWfJson.value("folds", backtestGateConfig.walkForward.folds);
+    backtestGateConfig.walkForward.isFraction =
+        bgWfJson.value("is_fraction", backtestGateConfig.walkForward.isFraction);
+    backtestGateConfig.walkForward.promptContextFraction =
+        bgWfJson.value("prompt_context_fraction", backtestGateConfig.walkForward.promptContextFraction);
+    backtestGateConfig.walkForward.signalBarHoldout =
+        bgWfJson.value("signal_bar_holdout", backtestGateConfig.walkForward.signalBarHoldout);
+
+    backtestGateConfig.filters.minTradesPerFold =
+        bgFiltersJson.value("min_trades_per_fold", backtestGateConfig.filters.minTradesPerFold);
+    backtestGateConfig.filters.oosIsRatioThreshold =
+        bgFiltersJson.value("oos_is_ratio_threshold", backtestGateConfig.filters.oosIsRatioThreshold);
+    backtestGateConfig.filters.minOosSortino =
+        bgFiltersJson.value("min_oos_sortino", backtestGateConfig.filters.minOosSortino);
+
+    backtestGateConfig.plateau.neighborhoodRadius =
+        bgPlateauJson.value("neighborhood_radius", backtestGateConfig.plateau.neighborhoodRadius);
+    backtestGateConfig.plateau.maxNeighborhoodSize =
+        bgPlateauJson.value("max_neighborhood_size", backtestGateConfig.plateau.maxNeighborhoodSize);
+    backtestGateConfig.plateau.minPassFraction =
+        bgPlateauJson.value("min_pass_fraction", backtestGateConfig.plateau.minPassFraction);
+
+    backtestGateConfig.vote.thresholdFraction =
+        bgVoteJson.value("threshold_fraction", backtestGateConfig.vote.thresholdFraction);
+
+    backtestGateConfig.budget.maxTotalCombos =
+        bgBudgetJson.value("max_total_combos", backtestGateConfig.budget.maxTotalCombos);
+
+    backtestGateConfig.gemini.pythonPath =
+        bgGeminiJson.value("python_path", backtestGateConfig.gemini.pythonPath);
+    backtestGateConfig.gemini.moduleName =
+        bgGeminiJson.value("module_name", backtestGateConfig.gemini.moduleName);
+    backtestGateConfig.gemini.workingDirectory =
+        bgGeminiJson.value("working_directory", backtestGateConfig.gemini.workingDirectory);
+    backtestGateConfig.gemini.runtimeDir =
+        bgGeminiJson.value("runtime_dir", backtestGateConfig.gemini.runtimeDir);
+    backtestGateConfig.gemini.model =
+        bgGeminiJson.value("model", backtestGateConfig.gemini.model);
+    backtestGateConfig.gemini.timeoutSeconds =
+        bgGeminiJson.value("timeout_seconds", backtestGateConfig.gemini.timeoutSeconds);
+    backtestGateConfig.gemini.retries =
+        bgGeminiJson.value("retries", backtestGateConfig.gemini.retries);
+    backtestGateConfig.gemini.staleRuntimeTtlHours =
+        bgGeminiJson.value("stale_runtime_ttl_hours", backtestGateConfig.gemini.staleRuntimeTtlHours);
+
+    backtestGateConfig.cache.ttlSeconds =
+        bgCacheJson.value("ttl_seconds", backtestGateConfig.cache.ttlSeconds);
+    backtestGateConfig.cache.maxEntries =
+        bgCacheJson.value("max_entries", backtestGateConfig.cache.maxEntries);
+
+    backtestGateConfig.fee.takerFeeRate =
+        bgFeeJson.value("taker_fee_rate", backtestGateConfig.fee.takerFeeRate);
+    backtestGateConfig.fee.slippageBps =
+        bgFeeJson.value("slippage_bps", backtestGateConfig.fee.slippageBps);
+
+    // Construct gate components (lazily — only when enabled)
+    std::unique_ptr<backtest::HistoricalWindowProvider> backtestWindowProvider;
+    std::unique_ptr<backtest::GeminiRangeProposer>      backtestRangeProposer;
+    std::unique_ptr<backtest::BacktestGateController>   backtestGateController;
+
+    if (backtestGateConfig.enabled) {
+        try {
+            backtestWindowProvider = std::make_unique<backtest::HistoricalWindowProvider>(
+                scanner.cache(), backtestGateConfig.data);
+
+            backtestRangeProposer = std::make_unique<backtest::GeminiRangeProposer>(
+                backtestGateConfig.gemini, backtestGateConfig.cache);
+
+            std::unordered_map<std::string, std::unique_ptr<backtest::IOptimizableStrategy>> adapters;
+            adapters["golden_crossover"]         = std::make_unique<backtest::GoldenCrossoverAdapter>();
+            adapters["donchian_5_20_crossover"]  = std::make_unique<backtest::Donchian520CrossoverAdapter>();
+            adapters["gartley_day_crossover"]    = std::make_unique<backtest::GartleyDayCrossoverAdapter>();
+
+            backtest::BacktestEngine::Config engineCfg;
+            engineCfg.takerFeeRate = backtestGateConfig.fee.takerFeeRate;
+            engineCfg.slippageBps  = backtestGateConfig.fee.slippageBps;
+            engineCfg.useFixedTakeProfit = engineConfig.takeProfitOverrideEnabled;
+            engineCfg.fixedTakeProfitPercent = engineConfig.takeProfitOverridePercent;
+
+            backtestGateController = std::make_unique<backtest::BacktestGateController>(
+                *backtestWindowProvider,
+                *backtestRangeProposer,
+                std::move(adapters),
+                backtestGateConfig,
+                engineCfg);
+
+            Logger::instance().log(
+                LogLevel::Info,
+                "Backtest gate enabled" +
+                    std::string(backtestGateConfig.shadowOnly ? " (shadow_only)" : " (enforce)") +
+                    " max_evaluations_per_cycle=" +
+                    std::to_string(backtestGateConfig.maxEvaluationsPerScanCycle) +
+                    " deadline_seconds=" +
+                    std::to_string(backtestGateConfig.deadlineSeconds));
+
+            bool disableBacktestGateAtStartup = false;
+
+            // Startup validation: cache_only mode requires the kline buffer to
+            // hold at least window_min_candles bars; otherwise every signal will
+            // immediately drop with InsufficientData.
+            if (backtestGateConfig.data.historySource == "cache_only") {
+                const int bufSize = static_cast<int>(scannerBufferSize);
+                if (bufSize < backtestGateConfig.data.windowMinCandles) {
+                    Logger::instance().log(
+                        LogLevel::Error,
+                        "backtest_gate: kline_buffer_size=" + std::to_string(bufSize) +
+                        " < window_min_candles=" +
+                        std::to_string(backtestGateConfig.data.windowMinCandles) +
+                        "; disabling gate. Raise kline_buffer_size or lower window_min_candles.");
+                    disableBacktestGateAtStartup = true;
+                }
+            } else if (backtestGateConfig.data.historySource == "cache_then_rest") {
+                Logger::instance().log(
+                    LogLevel::Error,
+                    "backtest_gate: history_source=cache_then_rest requires a REST-backed "
+                    "historical provider, which is not implemented in v1.1; disabling gate.");
+                disableBacktestGateAtStartup = true;
+            } else {
+                Logger::instance().log(
+                    LogLevel::Error,
+                    "backtest_gate: unsupported history_source=" +
+                        backtestGateConfig.data.historySource + "; disabling gate.");
+                disableBacktestGateAtStartup = true;
+            }
+
+            if (backtestGateConfig.workerPoolSize > 1) {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "backtest_gate: worker_pool_size=" +
+                    std::to_string(backtestGateConfig.workerPoolSize) +
+                    " > 1 is not yet supported; clamping to 1.");
+                backtestGateConfig.workerPoolSize = 1;
+            }
+
+            if (disableBacktestGateAtStartup) {
+                backtestGateConfig.enabled = false;
+                backtestWindowProvider.reset();
+                backtestRangeProposer.reset();
+                backtestGateController.reset();
+                Logger::instance().log(LogLevel::Warning, "Backtest gate disabled by startup validation");
+            }
+        } catch (const std::exception& e) {
+            Logger::instance().log(
+                LogLevel::Error,
+                std::string("Backtest gate init failed — disabling gate and continuing: ") +
+                    e.what());
+            backtestGateConfig.enabled = false;
+            backtestWindowProvider.reset();
+            backtestRangeProposer.reset();
+            backtestGateController.reset();
+        }
+    } else {
+        Logger::instance().log(LogLevel::Info, "Backtest gate disabled");
+    }
+    // ── SignalEngine ─────────────────────────────────────────────────────────
     engine::SignalEngine signalEngine(
         scannerPort,
         registry,
@@ -1099,6 +1321,9 @@ int main(int argc, char* argv[]) {
         geminiConfig,
         engineConfig,
         riskPort);
+    if (backtestGateController) {
+        signalEngine.setBacktestGate(backtestGateController.get(), backtestGateConfig);
+    }
     if (qlibStateStore) {
         signalEngine.setExecutionStatePort(qlibStateStore.get());
     }

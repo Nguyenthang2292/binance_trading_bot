@@ -59,12 +59,7 @@ std::vector<PairBlock> expectedBlocks(
         return out;
     }
 
-    std::mt19937_64 rng(seed);
-    std::shuffle(strategies.begin(), strategies.end(), rng);
-    auto shuffledSymbols = symbols;
-    std::shuffle(shuffledSymbols.begin(), shuffledSymbols.end(), rng);
-
-    out.reserve(strategies.size() * shuffledSymbols.size());
+    out.reserve(strategies.size() * symbols.size());
     for (const auto* strategy : strategies) {
         if (!strategy) {
             continue;
@@ -73,7 +68,7 @@ std::vector<PairBlock> expectedBlocks(
         if (intervals.empty()) {
             continue;
         }
-        for (const auto& symbol : shuffledSymbols) {
+        for (const auto& symbol : symbols) {
             out.push_back(PairBlock{
                 .symbol = symbol,
                 .strategyName = strategy->config().name,
@@ -81,6 +76,9 @@ std::vector<PairBlock> expectedBlocks(
             });
         }
     }
+
+    std::mt19937_64 rng(seed);
+    std::shuffle(out.begin(), out.end(), rng);
     return out;
 }
 
@@ -125,6 +123,55 @@ TEST(WorkQueueTest, SeededShuffleRandomizesStrategyOrder) {
     expectQueueMatchesExpected(queue, symbols, registry, seed);
 }
 
+TEST(WorkQueueTest, StrategyOrderVariesAcrossSeeds) {
+    strategy::StrategyRegistry registry;
+
+    for (const std::string& name : {"a", "b", "c", "d"}) {
+        strategy::StrategyConfig cfg;
+        cfg.name = name;
+        cfg.intervals = {"1h"};
+        registry.add(std::make_unique<QueueStrategy>(cfg));
+    }
+
+    const std::vector<std::string> symbols{"BTCUSDT", "ETHUSDT", "SOLUSDT"};
+    std::set<std::string> firstStrategies;
+    for (uint64_t seed = 1; seed <= 32; ++seed) {
+        const auto queue = engine::WorkQueue::build(symbols, registry, seed);
+        ASSERT_FALSE(queue.empty());
+        ASSERT_NE(queue.front().strategy, nullptr);
+        firstStrategies.insert(queue.front().strategy->config().name);
+    }
+
+    EXPECT_GT(firstStrategies.size(), 1u);
+}
+
+TEST(WorkQueueTest, StrategySymbolBlocksAreInterleavedByDesign) {
+    strategy::StrategyRegistry registry;
+
+    for (const std::string& name : {"a", "b", "c", "d"}) {
+        strategy::StrategyConfig cfg;
+        cfg.name = name;
+        cfg.intervals = {"1h"};
+        registry.add(std::make_unique<QueueStrategy>(cfg));
+    }
+
+    const std::vector<std::string> symbols{"S1", "S2", "S3", "S4"};
+    bool sawInterleavedFirstWindow = false;
+    for (uint64_t seed = 1; seed <= 32 && !sawInterleavedFirstWindow; ++seed) {
+        const auto blocks = toBlocks(engine::WorkQueue::build(symbols, registry, seed));
+        ASSERT_GE(blocks.size(), symbols.size());
+        const auto firstStrategy = blocks.front().strategyName;
+        for (size_t i = 1; i < symbols.size(); ++i) {
+            if (blocks[i].strategyName != firstStrategy) {
+                sawInterleavedFirstWindow = true;
+                break;
+            }
+        }
+    }
+
+    EXPECT_TRUE(sawInterleavedFirstWindow);
+}
+
 TEST(WorkQueueTest, SameSeedProducesSameStrategyAndSymbolOrder) {
     strategy::StrategyRegistry registry;
 
@@ -152,7 +199,7 @@ TEST(WorkQueueTest, SameSeedProducesSameStrategyAndSymbolOrder) {
     }
 }
 
-TEST(WorkQueueTest, SeededDualShuffleUsesStrategyThenSymbolOrder) {
+TEST(WorkQueueTest, SeededShuffleUsesStrategySymbolBlockOrder) {
     strategy::StrategyRegistry registry;
 
     strategy::StrategyConfig a;
@@ -224,7 +271,7 @@ TEST(WorkQueueTest, EveryStrategyCoversEverySymbolAfterShuffle) {
     EXPECT_EQ(assignments["b"], symbols.size());
 }
 
-TEST(WorkQueueTest, AllSymbolsAssignedForEachStrategyAfterDualShuffle) {
+TEST(WorkQueueTest, AllSymbolsAssignedForEachStrategyAfterBlockShuffle) {
     strategy::StrategyRegistry registry;
 
     strategy::StrategyConfig a;

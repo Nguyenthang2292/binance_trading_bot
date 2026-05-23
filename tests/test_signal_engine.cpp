@@ -928,7 +928,7 @@ TEST(SignalEngineTest, CanDisableStopLossPlacement) {
     EXPECT_EQ(tracked->slOrderId, 0);
 }
 
-TEST(SignalEngineTest, SignalPlanCanDisableFixedTakeProfitAndUseCustomInitialStop) {
+TEST(SignalEngineTest, SignalPlanCannotOverrideDisabledStopLossWithCustomInitialStop) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
     scanner.setSymbols({"BTCUSDT"});
@@ -979,9 +979,8 @@ TEST(SignalEngineTest, SignalPlanCanDisableFixedTakeProfitAndUseCustomInitialSto
 
     EXPECT_EQ(orders.marketCalls, 1);
     EXPECT_EQ(orders.limitCalls, 0);
-    ASSERT_EQ(orders.protectionCalls, 1);
-    ASSERT_TRUE(orders.lastProtectionDraft.has_value());
-    EXPECT_EQ(orders.lastProtectionDraft->triggerPrice.value(), "89.99");
+    EXPECT_EQ(orders.protectionCalls, 0);
+    EXPECT_FALSE(orders.lastProtectionDraft.has_value());
 
     const auto tracked = engine.tracker().bySymbol("BTCUSDT");
     ASSERT_TRUE(tracked.has_value());
@@ -991,6 +990,179 @@ TEST(SignalEngineTest, SignalPlanCanDisableFixedTakeProfitAndUseCustomInitialSto
     EXPECT_EQ(tracked->trailingPolicy, strategy::Signal::ExitPolicy::SwingTrailing);
     EXPECT_EQ(tracked->swingLookback, 3);
     EXPECT_DOUBLE_EQ(tracked->currentTrailLevel, 89.99);
+}
+
+TEST(SignalEngineTest, EngineTakeProfitOverrideIgnoresStrategyDisabledFixedTakeProfit) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 2560 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    cfg.takeProfitPercent = 0.0;
+    cfg.tpMultiplier = 0.0;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+        .disableFixedTakeProfit = true,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(
+        scanner,
+        registry,
+        account,
+        orders,
+        exposure,
+        engine::SignalEngine::Config{
+            .placeStopLoss = false,
+            .takeProfitOverrideEnabled = true,
+            .takeProfitOverridePercent = 5.0,
+        });
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    EXPECT_EQ(orders.marketCalls, 1);
+    ASSERT_EQ(orders.limitCalls, 1);
+    ASSERT_TRUE(orders.lastLimitDraft.has_value());
+    EXPECT_EQ(orders.lastRequestedLeverage, cfg.leverage);
+    EXPECT_EQ(orders.lastLimitDraft->price.value(), "105.52");
+
+    const auto tracked = engine.tracker().bySymbol("BTCUSDT");
+    ASSERT_TRUE(tracked.has_value());
+    EXPECT_FALSE(tracked->tpClientOrderId.empty());
+    EXPECT_EQ(tracked->tpOrderId, 2);
+}
+
+TEST(SignalEngineTest, EngineTakeProfitOverrideUsesGlobalPercentOverStrategyPercent) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 2565 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    cfg.takeProfitPercent = 20.0;
+    cfg.tpMultiplier = 3.0;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(
+        scanner,
+        registry,
+        account,
+        orders,
+        exposure,
+        engine::SignalEngine::Config{
+            .placeStopLoss = false,
+            .takeProfitOverrideEnabled = true,
+            .takeProfitOverridePercent = 5.0,
+        });
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    EXPECT_EQ(orders.marketCalls, 1);
+    ASSERT_EQ(orders.limitCalls, 1);
+    ASSERT_TRUE(orders.lastLimitDraft.has_value());
+    EXPECT_EQ(orders.lastRequestedLeverage, cfg.leverage);
+    EXPECT_EQ(orders.lastLimitDraft->price.value(), "105.52");
+}
+
+TEST(SignalEngineTest, SignalPlanUsesCustomInitialStopWhenStopLossEnabled) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 2570 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    cfg.takeProfitPercent = 0.0;
+    cfg.tpMultiplier = 0.0;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+        .initialStopPrice = 90.0,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(
+        scanner,
+        registry,
+        account,
+        orders,
+        exposure,
+        engine::SignalEngine::Config{.placeStopLoss = true});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    EXPECT_EQ(orders.marketCalls, 1);
+    ASSERT_EQ(orders.protectionCalls, 1);
+    ASSERT_TRUE(orders.lastProtectionDraft.has_value());
+    EXPECT_EQ(orders.lastProtectionDraft->triggerPrice.value(), "89.99");
 }
 
 TEST(SignalEngineTest, TakeProfitPriceIsRoundedToSymbolTickSize) {

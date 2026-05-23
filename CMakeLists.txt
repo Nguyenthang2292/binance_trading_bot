@@ -105,6 +105,14 @@ set(LIB_SOURCES
     src/binance_api.cpp
     src/trading_engine.cpp
     src/logger.cpp
+    src/backtest/parameter_space.cpp
+    src/backtest/walk_forward.cpp
+    src/backtest/historical_window_provider.cpp
+    src/backtest/backtest_engine.cpp
+    src/backtest/plateau_finder.cpp
+    src/backtest/indicator_adapters.cpp
+    src/backtest/backtest_gate_controller.cpp
+    src/backtest/gemini_range_proposer.cpp
 )
 
 set(LIB_HEADERS
@@ -185,6 +193,19 @@ set(LIB_HEADERS
     src/binance_api.h
     src/trading_engine.h
     src/logger.h
+    src/backtest/backtest_gate.h
+    src/backtest/ihistorical_window_provider.h
+    src/backtest/parameter_space.h
+    src/backtest/walk_forward.h
+    src/backtest/historical_window_provider.h
+    src/backtest/backtest_engine.h
+    src/backtest/plateau_finder.h
+    src/backtest/indicator_adapters.h
+    src/backtest/optimizable_strategy.h
+    src/backtest/range_proposer.h
+    src/backtest/fake_range_proposer.h
+    src/backtest/backtest_gate_controller.h
+    src/backtest/gemini_range_proposer.h
 )
 
 add_library(bot_lib STATIC ${LIB_SOURCES} ${LIB_HEADERS})
@@ -275,6 +296,10 @@ if(Python3_Interpreter_FOUND)
         add_test(
             NAME python_gemini_filter_pytests
             COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_SOURCE_DIR}/tests/python
+        )
+        add_test(
+            NAME python_backtest_range_proposer_pytests
+            COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_SOURCE_DIR}/tests/python/test_backtest_range_proposer.py
         )
     else()
         message(WARNING "pytest is not available; skipping python_gemini_filter_pytests")

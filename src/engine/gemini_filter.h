@@ -33,8 +33,8 @@ struct GeminiFilterConfig {
     std::string workingDirectory{"."};
     std::string runtimeDir{"tmp/gemini_filter"};
 
-    std::string sentimentModel{"gemini-3.1-pro-preview"};
-    std::string visionModel{"gemini-3.1-pro-preview"};
+    std::string sentimentModel{"gemini-3.5-flash"};
+    std::string visionModel{"gemini-3.5-flash"};
     bool modelResolutionEnabled{false};
     std::string modelResolutionMode{"pinned"};
     bool modelResolutionFallbackOnError{true};

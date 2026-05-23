@@ -16,6 +16,7 @@ __declspec(dllexport) const char* pluginVersion();
 ```
 
 Rules:
+
 - Do not throw exceptions across the ABI boundary.
 - Return `nullptr` from `createStrategy` when config is invalid.
 - Always release strategy instances using `destroyStrategy`.
@@ -62,6 +63,7 @@ not inspect raw strategy params.
 Use the template at `docs/sdk/template_plugin/`.
 
 Build steps (Windows, MSVC):
+
 1. Configure: `cmake -S docs/sdk/template_plugin -B build/template_plugin -G "Visual Studio 17 2022" -A x64`
 2. Build: `cmake --build build/template_plugin --config Release`
 3. Copy generated DLL to `plugins/`
@@ -76,4 +78,3 @@ Build steps (Windows, MSVC):
 - `config().takeProfitPercent` defaults to `20.0` and is interpreted as Binance Futures ROI/PNL%; price distance is `ROI% / symbol leverage`; set it to `0.0` to use `tp_multiplier` for TP
 - `config().maxHoldDurationByInterval` is optional; when populated, the engine uses the entry for the signal timeframe and falls back to `config().maxHoldDuration`
 - `config().trailingStop.enabled` is set only when the strategy expects the generic engine trailing stop monitor to manage SL movement
-

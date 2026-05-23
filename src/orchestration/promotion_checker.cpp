@@ -214,19 +214,19 @@ PromotionChecker::EffectiveConfig PromotionChecker::resolveConfig(QlibStateStore
     EffectiveConfig effective{.config = m_config};
     effective.config.minCandles = std::max(1, effective.config.minCandles);
     effective.config.lookbackCandles = std::max(1, effective.config.lookbackCandles);
-    effective.profileName = stateStore.promotionProfileName();
+    const auto profileSnapshot = stateStore.promotionProfileNameAndJson();
+    effective.profileName = profileSnapshot.profileName;
     if (effective.profileName.empty() || effective.profileName == "default") {
         effective.profileName = "default";
         return effective;
     }
 
-    const auto profileJson = stateStore.promotionProfileJson(effective.profileName);
-    if (!profileJson) {
+    if (!profileSnapshot.profileJson) {
         effective.profileError = "profile_not_found";
         return effective;
     }
     try {
-        const auto profile = nlohmann::json::parse(*profileJson);
+        const auto profile = nlohmann::json::parse(*profileSnapshot.profileJson);
         if (!profile.is_object()) {
             effective.profileError = "profile_json_not_object";
             return effective;

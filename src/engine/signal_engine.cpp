@@ -22,6 +22,7 @@
 #include <sstream>
 #include <type_traits>
 #include <unordered_map>
+#include <variant>
 
 namespace engine {
 
@@ -30,6 +31,11 @@ namespace {
 struct GeminiEvalOutcome {
     std::exception_ptr exception;
     GeminiFilterResult result;
+};
+
+struct BacktestEvalOutcome {
+    std::exception_ptr exception;
+    backtest::BacktestGateResult result;
 };
 
 std::optional<DecimalString> toDecimal(double value) {
@@ -92,6 +98,34 @@ std::string executionModeToString(orchestration::ExecutionMode mode) {
 
 std::string geminiDecisionToString(GeminiDecision decision) {
     return decision == GeminiDecision::Allow ? "Allow" : "Block";
+}
+
+std::string backtestDropReasonToString(backtest::DropReason reason) {
+    switch (reason) {
+        case backtest::DropReason::NotEligible:
+            return "NotEligible";
+        case backtest::DropReason::InsufficientData:
+            return "InsufficientData";
+        case backtest::DropReason::GeminiUnavailable:
+            return "GeminiUnavailable";
+        case backtest::DropReason::GeminiTimeout:
+            return "GeminiTimeout";
+        case backtest::DropReason::GeminiInvalidResponse:
+            return "GeminiInvalidResponse";
+        case backtest::DropReason::ComboBudgetExhausted:
+            return "ComboBudgetExhausted";
+        case backtest::DropReason::NoComboPassedFilter:
+            return "NoComboPassedFilter";
+        case backtest::DropReason::NoPlateauFound:
+            return "NoPlateauFound";
+        case backtest::DropReason::MajorityVoteFailed:
+            return "MajorityVoteFailed";
+        case backtest::DropReason::DeadlineExceeded:
+            return "DeadlineExceeded";
+        case backtest::DropReason::InternalError:
+            return "InternalError";
+    }
+    return "InternalError";
 }
 
 bool shouldBlockGeminiError(const GeminiFilterConfig& config, const GeminiFilterResult& result) {
@@ -196,10 +230,25 @@ int requestedOrderLeverage(const strategy::StrategyConfig& cfg, const SignalEngi
     return distribution(rng);
 }
 
-double takeProfitDistance(double entryPrice, double atr, const strategy::StrategyConfig& cfg, int leverage) {
-    if (cfg.takeProfitPercent > 0.0) {
+double effectiveTakeProfitPercent(
+    const strategy::StrategyConfig& cfg,
+    const SignalEngine::Config& engineConfig) {
+    if (engineConfig.takeProfitOverrideEnabled) {
+        return engineConfig.takeProfitOverridePercent;
+    }
+    return cfg.takeProfitPercent;
+}
+
+double takeProfitDistance(
+    double entryPrice,
+    double atr,
+    const strategy::StrategyConfig& cfg,
+    const SignalEngine::Config& engineConfig,
+    int leverage) {
+    const double takeProfitPercent = effectiveTakeProfitPercent(cfg, engineConfig);
+    if (takeProfitPercent > 0.0) {
         const double effectiveLeverage = leverage > 0 ? static_cast<double>(leverage) : 1.0;
-        return entryPrice * cfg.takeProfitPercent / (100.0 * effectiveLeverage);
+        return entryPrice * takeProfitPercent / (100.0 * effectiveLeverage);
     }
     return atr * cfg.tpMultiplier;
 }
@@ -252,6 +301,44 @@ void SignalEngine::closeGeminiGateForCycle(std::string reason, std::string_view 
             " first_symbol=" + m_geminiCycleGate.firstSymbol +
             " first_tf=" + m_geminiCycleGate.firstTf +
             " policy=fail_closed");
+}
+
+bool SignalEngine::shouldSkipForClosedBacktestGate(const strategy::StrategyConfig& cfg) const {
+    return m_backtestGateConfig.enabled &&
+        !m_backtestGateConfig.shadowOnly &&
+        m_backtestCycleGate.closed &&
+        isBacktestEligible(cfg.type);
+}
+
+void SignalEngine::closeBacktestGateForCycle(std::string reason, std::string_view symbol, std::string_view tf) {
+    if (m_backtestCycleGate.closed) {
+        return;
+    }
+    m_backtestCycleGate.closed = true;
+    m_backtestCycleGate.reason = std::move(reason);
+    m_backtestCycleGate.firstSymbol = std::string(symbol);
+    m_backtestCycleGate.firstTf = std::string(tf);
+    Logger::instance().log(
+        LogLevel::Warning,
+        "backtest gate closed for cycle reason=" + quoteString(m_backtestCycleGate.reason) +
+            " first_symbol=" + m_backtestCycleGate.firstSymbol +
+            " first_tf=" + m_backtestCycleGate.firstTf +
+            " scope=indicator_candidates_only");
+}
+
+void SignalEngine::setBacktestGate(backtest::IBacktestGatePort* gate, backtest::BacktestGateConfig config) {
+    m_backtestGate = gate;
+    m_backtestGateConfig = std::move(config);
+
+    const int workers = std::max(1, m_backtestGateConfig.workerPoolSize);
+    if (workers != m_backtestWorkerPoolSize || !m_backtestEvaluationPool) {
+        if (m_backtestEvaluationPool) {
+            m_backtestEvaluationPool->stop();
+            m_backtestEvaluationPool->join();
+        }
+        m_backtestEvaluationPool = std::make_unique<boost::asio::thread_pool>(workers);
+        m_backtestWorkerPoolSize = workers;
+    }
 }
 
 std::string SignalEngine::accountErrorToString(const account::AccountServiceError& error) {
@@ -330,6 +417,61 @@ boost::asio::awaitable<GeminiFilterResult> SignalEngine::evaluateGeminiNonBlocki
                         outcome.exception = std::current_exception();
                     }
 
+                    boost::asio::post(
+                        completionExecutor,
+                        [outcome = std::move(outcome), completionHandler = std::move(completionHandler)]()
+                            mutable {
+                            completionHandler(std::move(outcome));
+                        });
+                });
+        },
+        token);
+
+    if (outcome.exception) {
+        std::rethrow_exception(outcome.exception);
+    }
+    co_return outcome.result;
+}
+
+boost::asio::awaitable<backtest::BacktestGateResult> SignalEngine::evaluateBacktestNonBlocking(
+    backtest::BacktestGateRequest request) {
+    if (!m_backtestGate) {
+        co_return backtest::DropDetail{
+            .reason = backtest::DropReason::NotEligible,
+            .message = "backtest gate is not configured",
+        };
+    }
+    if (!m_backtestEvaluationPool) {
+        m_backtestEvaluationPool = std::make_unique<boost::asio::thread_pool>(
+            std::max(1, m_backtestGateConfig.workerPoolSize));
+    }
+
+    auto token = boost::asio::use_awaitable;
+    auto outcome = co_await boost::asio::async_initiate<
+        decltype(token),
+        void(BacktestEvalOutcome)>(
+        [this, request = std::move(request)](auto completionHandler) mutable {
+            auto completionExecutor = boost::asio::get_associated_executor(
+                completionHandler,
+                m_scanner.ioContext().get_executor());
+            boost::asio::co_spawn(
+                *m_backtestEvaluationPool,
+                [this, request = std::move(request)]() mutable
+                    -> boost::asio::awaitable<BacktestEvalOutcome> {
+                    BacktestEvalOutcome outcome;
+                    try {
+                        outcome.result = m_backtestGate->evaluate(request);
+                    } catch (...) {
+                        outcome.exception = std::current_exception();
+                    }
+                    co_return outcome;
+                },
+                [completionExecutor, completionHandler = std::move(completionHandler)](
+                    std::exception_ptr ep,
+                    BacktestEvalOutcome outcome) mutable {
+                    if (ep && !outcome.exception) {
+                        outcome.exception = ep;
+                    }
                     boost::asio::post(
                         completionExecutor,
                         [outcome = std::move(outcome), completionHandler = std::move(completionHandler)]()
@@ -513,6 +655,8 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
     const auto queue = WorkQueue::build(symbols, m_registry);
     m_geminiEvaluationsThisCycle = 0;
     m_geminiCycleGate = {};
+    m_backtestEvaluationsThisCycle = 0;
+    m_backtestCycleGate = {};
 
     if (m_riskPort) {
         account::AccountSnapshotRequest request;
@@ -536,6 +680,10 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
         }
         if (shouldSkipForClosedGeminiGate()) {
             ++m_geminiCycleGate.skippedItems;
+            continue;
+        }
+        if (item.strategy && shouldSkipForClosedBacktestGate(item.strategy->config())) {
+            ++m_backtestCycleGate.skippedItems;
             continue;
         }
 
@@ -578,6 +726,12 @@ boost::asio::awaitable<void> SignalEngine::runScanCycle() {
             LogLevel::Info,
             "gemini gate cycle summary closed=true reason=" + quoteString(m_geminiCycleGate.reason) +
                 " skipped_items=" + std::to_string(m_geminiCycleGate.skippedItems));
+    }
+    if (m_backtestCycleGate.closed) {
+        Logger::instance().log(
+            LogLevel::Info,
+            "backtest gate cycle summary closed=true reason=" + quoteString(m_backtestCycleGate.reason) +
+                " skipped_items=" + std::to_string(m_backtestCycleGate.skippedItems));
     }
 
     if (m_riskPort) {
@@ -1015,6 +1169,158 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     int swingLookback,
     double riskPctOverride,
     bool placeOrders) {
+    auto preflight = co_await preflightOpenPosition(OpenPositionRequest{
+        .symbol = std::string(symbol),
+        .signalInterval = std::string(signalInterval),
+        .direction = direction,
+        .atr = atr,
+        .currentPrice = currentPrice,
+        .cfg = cfg,
+        .signalReason = std::string(signalReason),
+        .initialStopPrice = initialStopPrice,
+        .disableFixedTakeProfit = disableFixedTakeProfit,
+        .exitPolicy = exitPolicy,
+        .swingLookback = swingLookback,
+        .riskPctOverride = riskPctOverride,
+        .placeOrders = placeOrders,
+    });
+    if (!preflight) {
+        co_return std::unexpected(preflight.error());
+    }
+    if (!*preflight) {
+        co_return Result<void>{};
+    }
+    auto& preflightValue = **preflight;
+    const auto& preflightRequest = preflightValue.request;
+    bool revalidateAfterBacktest = false;
+    const bool backtestGateEligible = m_backtestGateConfig.enabled &&
+        m_backtestGate != nullptr &&
+        isBacktestEligible(preflightRequest.cfg.type);
+    if (backtestGateEligible) {
+        const int maxEvaluations = std::max(0, m_backtestGateConfig.maxEvaluationsPerScanCycle);
+        if (m_backtestEvaluationsThisCycle >= maxEvaluations) {
+            if (m_backtestGateConfig.closeGateOnBudgetExhausted && !m_backtestGateConfig.shadowOnly) {
+                closeBacktestGateForCycle(
+                    "budget_exhausted",
+                    preflightRequest.symbol,
+                    preflightRequest.signalInterval);
+            }
+            Logger::instance().log(
+                m_backtestGateConfig.shadowOnly ? LogLevel::Info : LogLevel::Warning,
+                "backtest budget exhausted symbol=" + preflightRequest.symbol +
+                    " tf=" + preflightRequest.signalInterval +
+                    " policy=" + std::string(m_backtestGateConfig.shadowOnly ? "shadow_bypass" : "block"));
+            Logger::instance().log(
+                m_backtestGateConfig.shadowOnly ? LogLevel::Info : LogLevel::Warning,
+                R"({"event":"BACKTEST_GATE_SKIPPED","symbol":")" + preflightRequest.symbol +
+                    R"(","strategy_id":")" + preflightRequest.cfg.type +
+                    R"(","interval":")" + preflightRequest.signalInterval +
+                    R"(","reason":"budget_exhausted","shadow_only":)" +
+                    std::string(m_backtestGateConfig.shadowOnly ? "true" : "false") + "}");
+            if (!m_backtestGateConfig.shadowOnly) {
+                m_lastOpenDecision.blockedStage = "backtest_budget";
+                co_return Result<void>{};
+            }
+        } else {
+            ++m_backtestEvaluationsThisCycle;
+            backtest::BacktestGateRequest gateRequest;
+            gateRequest.symbol = preflightRequest.symbol;
+            gateRequest.strategyId = preflightRequest.cfg.type.empty()
+                ? preflightRequest.cfg.name
+                : preflightRequest.cfg.type;
+            gateRequest.baseConfig = preflightRequest.cfg;
+            gateRequest.interval = preflightRequest.signalInterval;
+            if (const auto openTimeMs = latestClosedCandleOpenTime(
+                    m_scanner.cache(),
+                    preflightRequest.symbol,
+                    preflightRequest.signalInterval)) {
+                gateRequest.signalBarOpenTime = std::chrono::system_clock::time_point{
+                    std::chrono::milliseconds(*openTimeMs)};
+            }
+            gateRequest.originalDirection = preflightRequest.direction;
+            gateRequest.originalAtr = preflightRequest.atr;
+            gateRequest.currentPrice = preflightRequest.currentPrice;
+            gateRequest.symbolMeta = preflightValue.symbolMeta;
+
+            backtest::BacktestGateResult gateResult;
+            try {
+                gateResult = co_await evaluateBacktestNonBlocking(std::move(gateRequest));
+            } catch (const std::exception& e) {
+                gateResult = backtest::DropDetail{
+                    .reason = backtest::DropReason::InternalError,
+                    .message = std::string("backtest evaluate exception: ") + e.what(),
+                };
+            } catch (...) {
+                gateResult = backtest::DropDetail{
+                    .reason = backtest::DropReason::InternalError,
+                    .message = "backtest evaluate unknown exception",
+                };
+            }
+
+            if (const auto* drop = std::get_if<backtest::DropDetail>(&gateResult)) {
+                Logger::instance().log(
+                    m_backtestGateConfig.shadowOnly ? LogLevel::Info : LogLevel::Warning,
+                    "backtest gate dropped symbol=" + preflightRequest.symbol +
+                        " tf=" + preflightRequest.signalInterval +
+                        " reason=" + backtestDropReasonToString(drop->reason) +
+                        " message=" + quoteString(drop->message) +
+                        " policy=" + std::string(m_backtestGateConfig.shadowOnly ? "shadow_bypass" : "block"));
+                if (!m_backtestGateConfig.shadowOnly) {
+                    m_lastOpenDecision.blockedStage = "backtest";
+                    co_return Result<void>{};
+                }
+                revalidateAfterBacktest = true;
+            } else if (const auto* pass = std::get_if<backtest::PassResult>(&gateResult)) {
+                Logger::instance().log(
+                    LogLevel::Info,
+                    "backtest gate passed symbol=" + preflightRequest.symbol +
+                        " tf=" + preflightRequest.signalInterval +
+                        " combos=" + std::to_string(pass->combosEvaluated) +
+                        " vote=" + std::to_string(pass->plateauVotePass) +
+                        "/" + std::to_string(pass->plateauVoteTotal) +
+                        " optimized_sl=" + fmt2(pass->slMultiplier) +
+                        " optimized_tp=" + fmt2(pass->tpMultiplier) +
+                        " optimized_atr=" + fmt2(pass->atr));
+
+                // Apply gate-optimized params, then run a fresh live preflight
+                // below because account, risk, order-cap, and exposure state
+                // can change during a slow backtest evaluation.
+                preflightValue.request.atr = pass->atr;
+                preflightValue.request.initialStopPrice = pass->initialStopPrice;
+                preflightValue.request.cfg.slMultiplier = pass->slMultiplier;
+                preflightValue.request.cfg.tpMultiplier = pass->tpMultiplier;
+                revalidateAfterBacktest = true;
+            }
+        }
+    }
+    if (revalidateAfterBacktest) {
+        auto rechecked = co_await preflightOpenPositionInternal(preflightValue.request, false);
+        if (!rechecked) {
+            co_return std::unexpected(rechecked.error());
+        }
+        if (!*rechecked) {
+            co_return Result<void>{};
+        }
+        preflight = std::move(rechecked);
+    }
+    co_return co_await openPositionFromPreflight(std::move(**preflight));
+}
+
+boost::asio::awaitable<Result<std::optional<SignalEngine::OpenPositionPreflight>>> SignalEngine::preflightOpenPosition(
+    OpenPositionRequest request) {
+    co_return co_await preflightOpenPositionInternal(std::move(request), true);
+}
+
+boost::asio::awaitable<Result<std::optional<SignalEngine::OpenPositionPreflight>>> SignalEngine::preflightOpenPositionInternal(
+    OpenPositionRequest request,
+    bool evaluateGemini) {
+    const std::string_view symbol = request.symbol;
+    const std::string_view signalInterval = request.signalInterval;
+    const auto direction = request.direction;
+    const double atr = request.atr;
+    const double currentPrice = request.currentPrice;
+    const auto& cfg = request.cfg;
+    const double riskPctOverride = request.riskPctOverride;
     const auto symbolMeta = m_scanner.symbolInfo(symbol);
     m_lastOpenDecision = {};
     m_lastOpenDecision.blockedStage = "unknown";
@@ -1023,9 +1329,9 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     const double tickSize = symbolMeta.has_value() ? symbolMeta->tickSize : 0.0;
     account::AccountSnapshot snapshot;
     double balance = 0.0;
-    account::AccountSnapshotRequest request;
-    request.includePositions = true;
-    const auto snapshotResult = co_await m_account.snapshot(request);
+    account::AccountSnapshotRequest snapshotRequest;
+    snapshotRequest.includePositions = true;
+    const auto snapshotResult = co_await m_account.snapshot(snapshotRequest);
     if (snapshotResult) {
         snapshot = *snapshotResult;
         balance = snapshot.account.availableBalance;
@@ -1074,7 +1380,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             "order cap check exception symbol=" + std::string(symbol) + " reason=" + e.what());
         if (m_orderCap.failureMode() == OrderCapFailureMode::Closed) {
             m_lastOpenDecision.blockedStage = "order_cap_exception";
-            co_return Result<void>{};
+            co_return std::optional<OpenPositionPreflight>{};
         }
         orderCapResult = {OrderCapDecision::Allow, "order cap check failed fail-open"};
     } catch (...) {
@@ -1083,7 +1389,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             "order cap check unknown exception symbol=" + std::string(symbol));
         if (m_orderCap.failureMode() == OrderCapFailureMode::Closed) {
             m_lastOpenDecision.blockedStage = "order_cap_exception";
-            co_return Result<void>{};
+            co_return std::optional<OpenPositionPreflight>{};
         }
         orderCapResult = {OrderCapDecision::Allow, "order cap check failed fail-open"};
     }
@@ -1093,7 +1399,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         Logger::instance().log(
             LogLevel::Warning,
             "order cap blocked symbol=" + std::string(symbol) + " reason=" + orderCapResult.reason);
-        co_return Result<void>{};
+        co_return std::optional<OpenPositionPreflight>{};
     }
 
     ExposureCheckResult exposureResult;
@@ -1111,7 +1417,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             "exposure check exception symbol=" + std::string(symbol) + " reason=" + e.what());
         if (m_exposure.failureMode() == ExposureFailureMode::Closed) {
             m_lastOpenDecision.blockedStage = "exposure_exception";
-            co_return Result<void>{};
+            co_return std::optional<OpenPositionPreflight>{};
         }
         exposureResult = {ExposureDecision::Allow, 1.0, "exposure check failed fail-open"};
     } catch (...) {
@@ -1120,7 +1426,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             "exposure check unknown exception symbol=" + std::string(symbol));
         if (m_exposure.failureMode() == ExposureFailureMode::Closed) {
             m_lastOpenDecision.blockedStage = "exposure_exception";
-            co_return Result<void>{};
+            co_return std::optional<OpenPositionPreflight>{};
         }
         exposureResult = {ExposureDecision::Allow, 1.0, "exposure check failed fail-open"};
     }
@@ -1130,7 +1436,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         Logger::instance().log(
             LogLevel::Warning,
             "exposure blocked symbol=" + std::string(symbol) + " reason=" + exposureResult.reason);
-        co_return Result<void>{};
+        co_return std::optional<OpenPositionPreflight>{};
     }
 
     if (exposureResult.decision == ExposureDecision::ScaleDown) {
@@ -1140,7 +1446,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             Logger::instance().log(
                 LogLevel::Warning,
                 "exposure scaled too small symbol=" + std::string(symbol) + " reason=" + exposureResult.reason);
-            co_return Result<void>{};
+            co_return std::optional<OpenPositionPreflight>{};
         }
         const double scaledRawQty = scaledNotional / currentPrice;
         const double scaledSteps = std::floor(scaledRawQty / stepSize);
@@ -1151,7 +1457,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             Logger::instance().log(
                 LogLevel::Warning,
                 "exposure scaled quantity invalid symbol=" + std::string(symbol) + " reason=" + exposureResult.reason);
-            co_return Result<void>{};
+            co_return std::optional<OpenPositionPreflight>{};
         }
     }
 
@@ -1162,10 +1468,10 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             "risk gate blocked symbol=" + std::string(symbol) +
                 " tf=" + std::string(signalInterval) +
                 " status=HARD_BREACH");
-        co_return Result<void>{};
+        co_return std::optional<OpenPositionPreflight>{};
     }
 
-    if (m_geminiConfig.enabled && m_geminiConfig.mode != GeminiFilterMode::Disabled) {
+    if (evaluateGemini && m_geminiConfig.enabled && m_geminiConfig.mode != GeminiFilterMode::Disabled) {
         if (m_geminiEvaluationsThisCycle >= m_geminiConfig.maxEvaluationsPerScanCycle) {
             if (m_geminiConfig.mode == GeminiFilterMode::Enforce || m_geminiConfig.blockOnBudgetExhausted) {
                 if (m_geminiConfig.mode == GeminiFilterMode::Enforce && m_geminiConfig.closeGateOnBudgetExhausted) {
@@ -1176,7 +1482,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
                     "gemini budget exhausted symbol=" + std::string(symbol) + " tf=" + std::string(signalInterval) +
                         " decision=Block");
                 m_lastOpenDecision.blockedStage = "gemini_budget";
-                co_return Result<void>{};
+                co_return std::optional<OpenPositionPreflight>{};
             }
             Logger::instance().log(
                 LogLevel::Info,
@@ -1234,7 +1540,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
                             " error_code=" + quoteString(geminiResult.errorCode) +
                             " reason=" + quoteString(geminiResult.reason));
                     m_lastOpenDecision.blockedStage = "gemini_error";
-                    co_return Result<void>{};
+                    co_return std::optional<OpenPositionPreflight>{};
                 }
                 Logger::instance().log(
                     LogLevel::Warning,
@@ -1250,12 +1556,46 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
                         " confidence=" + fmt2(geminiResult.confidence) +
                         " reason=" + quoteString(geminiResult.reason));
                 m_lastOpenDecision.blockedStage = "gemini";
-                co_return Result<void>{};
+                co_return std::optional<OpenPositionPreflight>{};
             }
         }
     }
 
     const auto qty = quantityToStepDecimal(size.quantity, stepSize);
+    if (!qty) {
+        m_lastOpenDecision.blockedStage = "qty_decimal";
+        co_return std::unexpected(BinanceError::fromParse("invalid quantity decimal"));
+    }
+
+    co_return std::optional<OpenPositionPreflight>{OpenPositionPreflight{
+        .request = std::move(request),
+        .symbolMeta = symbolMeta,
+        .stepSize = stepSize,
+        .tickSize = tickSize,
+        .snapshot = std::move(snapshot),
+        .balance = balance,
+        .size = size,
+        .quantity = *qty,
+    }};
+}
+
+boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(OpenPositionPreflight preflight) {
+    auto request = std::move(preflight.request);
+    const std::string_view symbol = request.symbol;
+    const std::string_view signalInterval = request.signalInterval;
+    const auto direction = request.direction;
+    const double atr = request.atr;
+    const double currentPrice = request.currentPrice;
+    const auto& cfg = request.cfg;
+    const std::string_view signalReason = request.signalReason;
+    const double initialStopPrice = request.initialStopPrice;
+    const bool disableFixedTakeProfit = request.disableFixedTakeProfit;
+    const auto exitPolicy = request.exitPolicy;
+    const int swingLookback = request.swingLookback;
+    const bool placeOrders = request.placeOrders;
+    const double tickSize = preflight.tickSize;
+    const auto size = preflight.size;
+    auto qty = std::move(preflight.quantity);
     if (!qty) {
         m_lastOpenDecision.blockedStage = "qty_decimal";
         co_return std::unexpected(BinanceError::fromParse("invalid quantity decimal"));
@@ -1346,10 +1686,11 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     std::string slClientOrderId;
     std::optional<NormalPlacementResult> tpResult;
 
-    const bool shouldPlaceFixedTakeProfit =
-        !disableFixedTakeProfit && (cfg.takeProfitPercent > 0.0 || cfg.tpMultiplier > 0.0);
+    const bool shouldPlaceFixedTakeProfit = m_config.takeProfitOverrideEnabled
+        ? m_config.takeProfitOverridePercent > 0.0
+        : (!disableFixedTakeProfit && (cfg.takeProfitPercent > 0.0 || cfg.tpMultiplier > 0.0));
     if (shouldPlaceFixedTakeProfit) {
-        const double tpDistance = takeProfitDistance(entryPrice, atr, cfg, activeLeverage);
+        const double tpDistance = takeProfitDistance(entryPrice, atr, cfg, m_config, activeLeverage);
         const double tpPriceValue = direction == strategy::Signal::Direction::Long
             ? entryPrice + tpDistance
             : entryPrice - tpDistance;
@@ -1430,7 +1771,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
             : entryPrice + (atr * cfg.slMultiplier);
     }
 
-    if (m_config.placeStopLoss || initialStopPrice > 0.0) {
+    if (m_config.placeStopLoss) {
         const bool customStop = initialStopPrice > 0.0;
         const auto slRounding = direction == strategy::Signal::Direction::Long
             ? (customStop ? PriceRounding::Down : PriceRounding::Up)

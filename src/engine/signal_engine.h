@@ -1,11 +1,13 @@
 #pragma once
 
 #include "account/account_service.h"
+#include "backtest/backtest_gate.h"
 #include "engine/exposure_controller.h"
 #include "engine/order_cap_controller.h"
 #include "engine/gemini_filter.h"
 #include "engine/loss_manager.h"
 #include "engine/position_tracker.h"
+#include "engine/sizing_policy.h"
 #include "engine/trailing_stop_controller.h"
 #include "engine/work_queue.h"
 #include "engine/iexecution_planner.h"
@@ -76,6 +78,8 @@ public:
         std::chrono::seconds positionCheckInterval{60};
         std::chrono::seconds trailingCheckInterval{300};
         bool placeStopLoss{true};
+        bool takeProfitOverrideEnabled{false};
+        double takeProfitOverridePercent{0.0};
         bool monitorTrailingStops{true};
         bool randomLeverageEnabled{false};
         int randomLeverageMin{2};
@@ -133,6 +137,15 @@ public:
     static bool isQlibStrategyType(std::string_view type) {
         return type == "qlib_model_signal" || type == "qlib_strategy_signal";
     }
+    // Returns true only for indicator strategies whitelisted in BacktestGate v1.1.
+    // Non-whitelisted strategies (trend_breakout, monthly_close_model, etc.) must
+    // bypass the gate entirely — otherwise they would be blocked in enforce mode
+    // when the controller returns DropReason::NotEligible (no adapter registered).
+    static bool isBacktestEligible(std::string_view type) {
+        return type == "golden_crossover" ||
+               type == "donchian_5_20_crossover" ||
+               type == "gartley_day_crossover";
+    }
     static std::string qlibAdapterId(const strategy::StrategyConfig& cfg) {
         return cfg.adapterId.empty() ? cfg.name : cfg.adapterId;
     }
@@ -159,6 +172,33 @@ public:
             std::vector<ArbiterCandidate>& outRejected);
     };
 
+    struct OpenPositionRequest {
+        std::string symbol;
+        std::string signalInterval;
+        strategy::Signal::Direction direction{strategy::Signal::Direction::None};
+        double atr{0.0};
+        double currentPrice{0.0};
+        strategy::StrategyConfig cfg;
+        std::string signalReason;
+        double initialStopPrice{0.0};
+        bool disableFixedTakeProfit{false};
+        strategy::Signal::ExitPolicy exitPolicy{strategy::Signal::ExitPolicy::Default};
+        int swingLookback{0};
+        double riskPctOverride{-1.0};
+        bool placeOrders{true};
+    };
+
+    struct OpenPositionPreflight {
+        OpenPositionRequest request;
+        std::optional<ExchangeSymbol> symbolMeta;
+        double stepSize{0.001};
+        double tickSize{0.0};
+        account::AccountSnapshot snapshot;
+        double balance{0.0};
+        SizingResult size;
+        std::optional<DecimalString> quantity;
+    };
+
     boost::asio::awaitable<void> runScanCycle();
     boost::asio::awaitable<void> processItem(const WorkItem& item);
     boost::asio::awaitable<void> processQlibCandidates(const std::string& symbol, const std::string& interval, DecisionArbiter& arbiter);
@@ -176,6 +216,8 @@ public:
         int swingLookback = 0,
         double riskPctOverride = -1.0,
         bool placeOrders = true);
+    boost::asio::awaitable<Result<std::optional<OpenPositionPreflight>>> preflightOpenPosition(OpenPositionRequest request);
+    boost::asio::awaitable<Result<void>> openPositionFromPreflight(OpenPositionPreflight preflight);
     boost::asio::awaitable<void> monitorTimeExit();
     boost::asio::awaitable<void> monitorTrailingStops();
     boost::asio::awaitable<void> reconcileTrackedPositions();
@@ -194,9 +236,18 @@ public:
     void setExecutionStatePort(orchestration::IExecutionStatePort* port) { m_executionStatePort = port; }
     void setShadowMetricsPort(orchestration::IShadowMetricsPort* port) { m_shadowMetricsPort = port; }
     void setExecutionPlanner(IExecutionPlanner* planner) { m_executionPlanner = planner; }
+    void setBacktestGate(backtest::IBacktestGatePort* gate, backtest::BacktestGateConfig config);
 
 private:
     struct GeminiCycleGate {
+        bool closed{false};
+        std::string reason;
+        std::string firstSymbol;
+        std::string firstTf;
+        int skippedItems{0};
+    };
+
+    struct BacktestCycleGate {
         bool closed{false};
         std::string reason;
         std::string firstSymbol;
@@ -211,10 +262,17 @@ private:
 
     bool shouldSkipForClosedGeminiGate() const;
     void closeGeminiGateForCycle(std::string reason, std::string_view symbol, std::string_view tf);
+    bool shouldSkipForClosedBacktestGate(const strategy::StrategyConfig& cfg) const;
+    void closeBacktestGateForCycle(std::string reason, std::string_view symbol, std::string_view tf);
     boost::asio::awaitable<GeminiFilterResult> evaluateGeminiNonBlocking(
         std::string symbol,
         strategy::Signal::Direction direction,
         std::string signalInterval);
+    boost::asio::awaitable<backtest::BacktestGateResult> evaluateBacktestNonBlocking(
+        backtest::BacktestGateRequest request);
+    boost::asio::awaitable<Result<std::optional<OpenPositionPreflight>>> preflightOpenPositionInternal(
+        OpenPositionRequest request,
+        bool evaluateGemini);
     boost::asio::awaitable<std::optional<double>> livePositionQuantity(std::string_view symbol);
     static bool isFlatPositionQty(double quantity);
     static std::string accountErrorToString(const account::AccountServiceError& error);
@@ -230,6 +288,11 @@ private:
     GeminiFilterConfig m_geminiConfig;
     int m_geminiEvaluationsThisCycle{0};
     GeminiCycleGate m_geminiCycleGate;
+    backtest::IBacktestGatePort* m_backtestGate{nullptr};
+    backtest::BacktestGateConfig m_backtestGateConfig;
+    int m_backtestEvaluationsThisCycle{0};
+    BacktestCycleGate m_backtestCycleGate;
+    int m_backtestWorkerPoolSize{1};
     Config m_config;
     PositionTracker m_tracker;
     std::unique_ptr<LossManager> m_lossManager;
@@ -244,6 +307,8 @@ private:
     boost::asio::steady_timer m_timeExitTimer;
     boost::asio::steady_timer m_trailingTimer;
     boost::asio::thread_pool m_geminiEvaluationPool{1};
+    std::unique_ptr<boost::asio::thread_pool> m_backtestEvaluationPool{
+        std::make_unique<boost::asio::thread_pool>(1)};
 };
 
 class ScannerPort final : public IScannerPort {

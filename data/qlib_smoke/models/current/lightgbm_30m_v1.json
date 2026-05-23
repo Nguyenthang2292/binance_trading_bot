@@ -1,11 +1,11 @@
 {
-  "dataset_fingerprint": "bf7f26f5c45dc1d41b775bc72468a2413b161006a5b8a4abdf408500bacb44ba",
+  "dataset_fingerprint": "4c1c03eae6c4c3f2ac6c5fb8cada642f50247b0d15b9d941154ff925239577db",
   "feature_schema_hash": "14a7369433fd1e43faec400485316f97cb121f8b3c5cfb8ec1c4f54d7e176c89",
   "horizon_bars": 1,
   "interval": "30m",
   "model_id": "lightgbm_30m_v1",
-  "model_path": "data/qlib_smoke/models\\model_artifacts\\lightgbm_30m_v1\\lightgbm_30m_v1_20260522T152613\\model.txt",
-  "published_at_ms": 1779438401341,
-  "report_path": "data/qlib_smoke/models\\model_artifacts\\lightgbm_30m_v1\\lightgbm_30m_v1_20260522T152613\\report.json",
-  "run_id": "lightgbm_30m_v1_20260522T152613"
+  "model_path": "data/qlib_smoke/models\\model_artifacts\\lightgbm_30m_v1\\lightgbm_30m_v1_20260523T183923\\model.txt",
+  "published_at_ms": 1779536383412,
+  "report_path": "data/qlib_smoke/models\\model_artifacts\\lightgbm_30m_v1\\lightgbm_30m_v1_20260523T183923\\report.json",
+  "run_id": "lightgbm_30m_v1_20260523T183923"
 }

@@ -251,7 +251,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::st
         co_return result;
     }
 
-    auto placed = co_await m_rest.newOrder(std::move(prepared->request));
+    auto placed = co_await m_rest.newAlgoOrder(std::move(prepared->request));
     if (!placed) {
         result.state = isAmbiguousPlacementError(placed.error())
             ? PlacementState::UnknownPendingReconcile
@@ -292,7 +292,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::pr
         co_return result;
     }
 
-    auto placed = co_await m_rest.newOrder(std::move(prepared->request));
+    auto placed = co_await m_rest.newAlgoOrder(std::move(prepared->request));
     if (!placed) {
         result.state = isAmbiguousPlacementError(placed.error())
             ? PlacementState::UnknownPendingReconcile
@@ -314,7 +314,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::pr
 }
 
 boost::asio::awaitable<OrdersResult<NormalCancelResult>> AlgoOrderService::cancelAlgoByAlgoId(Symbol symbol, int64_t algoId) {
-    auto canceled = co_await m_rest.cancelOrder(std::move(symbol), algoId);
+    auto canceled = co_await m_rest.cancelAlgoOrder(std::move(symbol), algoId);
     if (!canceled) {
         co_return std::unexpected(canceled.error());
     }
@@ -324,7 +324,7 @@ boost::asio::awaitable<OrdersResult<NormalCancelResult>> AlgoOrderService::cance
 boost::asio::awaitable<OrdersResult<NormalCancelResult>> AlgoOrderService::cancelAlgoByClientAlgoId(
     Symbol symbol,
     ClientAlgoId clientAlgoId) {
-    auto canceled = co_await m_rest.cancelOrderByClientOrderId(std::move(symbol), std::move(clientAlgoId));
+    auto canceled = co_await m_rest.cancelAlgoOrderByClientAlgoId(std::move(symbol), std::move(clientAlgoId));
     if (!canceled) {
         co_return std::unexpected(canceled.error());
     }
@@ -332,7 +332,7 @@ boost::asio::awaitable<OrdersResult<NormalCancelResult>> AlgoOrderService::cance
 }
 
 boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> AlgoOrderService::queryAlgoByAlgoId(Symbol symbol, int64_t algoId) {
-    auto queried = co_await m_rest.queryOrder(std::move(symbol), algoId);
+    auto queried = co_await m_rest.queryAlgoOrder(std::move(symbol), algoId);
     if (!queried) {
         co_return std::unexpected(queried.error());
     }
@@ -342,7 +342,7 @@ boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> AlgoOrderService::quer
 boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> AlgoOrderService::queryAlgoByClientAlgoId(
     Symbol symbol,
     ClientAlgoId clientAlgoId) {
-    auto queried = co_await m_rest.queryOrderByClientOrderId(std::move(symbol), std::move(clientAlgoId));
+    auto queried = co_await m_rest.queryAlgoOrderByClientAlgoId(std::move(symbol), std::move(clientAlgoId));
     if (!queried) {
         co_return std::unexpected(queried.error());
     }

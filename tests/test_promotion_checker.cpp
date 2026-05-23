@@ -219,6 +219,12 @@ TEST(PromotionCheckerTest, BelowThreshold) {
     orchestration::PromotionChecker checker({.minCandles = 100, .minSharpe = 0.5, .minHitRate = 0.52, .lookbackCandles = 336});
     const auto result = checker.evaluate(*ctx.stateStore);
     EXPECT_EQ(result, orchestration::PromotionChecker::Result::BelowThreshold);
+    EXPECT_GT(
+        scalarInt64(ctx.dbPath, "SELECT COALESCE(last_decision_at_ms, 0) FROM qlib_adapter_runtime_state WHERE adapter_id='lightgbm_1h_v1';"),
+        0);
+    EXPECT_GT(
+        scalarInt64(ctx.dbPath, "SELECT COALESCE(last_failure_at_ms, 0) FROM qlib_adapter_runtime_state WHERE adapter_id='lightgbm_1h_v1';"),
+        0);
 }
 
 TEST(PromotionCheckerTest, PromotesToCanary) {
@@ -240,6 +246,9 @@ TEST(PromotionCheckerTest, PromotesToCanary) {
     EXPECT_EQ(
         scalarText(ctx.dbPath, "SELECT decision FROM qlib_promotion_evaluations ORDER BY evaluated_at_ms DESC LIMIT 1;"),
         "promoted_canary");
+    EXPECT_GT(
+        scalarInt64(ctx.dbPath, "SELECT COALESCE(last_decision_at_ms, 0) FROM qlib_adapter_runtime_state WHERE adapter_id='lightgbm_1h_v1';"),
+        0);
 }
 
 TEST(PromotionCheckerTest, PromotesToLive) {
@@ -412,6 +421,9 @@ TEST(QlibStateStoreTest, SeedsLegacyAndAdapterRuntimeModesFromConfigDefaults) {
     });
 
     EXPECT_EQ(stateStore->snapshot().mode, orchestration::ExecutionMode::Live);
+    EXPECT_EQ(
+        stateStore->snapshotForAdapter("lightgbm_1h_v1", "1h").mode,
+        orchestration::ExecutionMode::Live);
     EXPECT_EQ(
         stateStore->snapshotForAdapter("adapter_live", "1h").mode,
         orchestration::ExecutionMode::Live);

@@ -8,14 +8,21 @@ public:
     explicit RestClientAdapter(RestClient& client) : m_client(client) {}
 
     boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest req) override;
+    boost::asio::awaitable<RestResult<Order>> newAlgoOrder(OrderRequest req) override;
     boost::asio::awaitable<RestResult<Order>> modifyOrder(OrderRequest req) override;
     boost::asio::awaitable<RestResult<Order>> cancelOrder(std::string symbol, int64_t orderId) override;
+    boost::asio::awaitable<RestResult<Order>> cancelAlgoOrder(std::string symbol, int64_t algoId) override;
     boost::asio::awaitable<RestResult<Order>> cancelOrderByClientOrderId(
         std::string symbol, std::string clientOrderId) override;
+    boost::asio::awaitable<RestResult<Order>> cancelAlgoOrderByClientAlgoId(
+        std::string symbol, std::string clientAlgoId) override;
     boost::asio::awaitable<RestResult<void>> cancelAllOrders(std::string symbol) override;
     boost::asio::awaitable<RestResult<Order>> queryOrder(std::string symbol, int64_t orderId) override;
+    boost::asio::awaitable<RestResult<Order>> queryAlgoOrder(std::string symbol, int64_t algoId) override;
     boost::asio::awaitable<RestResult<Order>> queryOrderByClientOrderId(
         std::string symbol, std::string clientOrderId) override;
+    boost::asio::awaitable<RestResult<Order>> queryAlgoOrderByClientAlgoId(
+        std::string symbol, std::string clientAlgoId) override;
     boost::asio::awaitable<RestResult<std::vector<Order>>> openOrders(
         std::optional<std::string> symbol) override;
     boost::asio::awaitable<RestResult<std::vector<Order>>> allOrders(

@@ -48,7 +48,7 @@
   },
   "scanner": {
     "intervals": ["30m", "1h", "4h", "1d"],
-    "kline_buffer_size": 240,
+    "kline_buffer_size": 1500,
     "max_streams_per_connection": 512,
     "warmup_request_delay_ms": 0,
     "warmup_initial_limit": 200,
@@ -66,7 +66,11 @@
     "random_leverage_enabled": true,
     "random_leverage_min": 2,
     "random_leverage_max": 20,
-    "place_stop_loss": false
+    "place_stop_loss": false,
+    "take_profit": {
+      "enabled": true,
+      "takeProfitPercent": 5.0
+    }
   },
   "loss_manager": {
     "enabled": false
@@ -93,6 +97,62 @@
   },
   "risk_analytics": {
     "enabled": true
+  },
+  "backtest_gate": {
+    "enabled": true,
+    "shadow_only": false,
+    "worker_pool_size": 1,
+    "deadline_seconds": 90,
+    "max_evaluations_per_scan_cycle": 30,
+    "close_gate_on_budget_exhausted": true,
+    "data": {
+      "history_source": "cache_only",
+      "window_min_candles": 1500,
+      "window_slowest_multiplier": 10,
+      "runtime_rest_fetch_enabled": false,
+      "runtime_rest_fetch_timeout_seconds": 10,
+      "max_rest_requests_per_signal": 3
+    },
+    "walk_forward": {
+      "folds": 4,
+      "is_fraction": 0.75,
+      "prompt_context_fraction": 0.50,
+      "signal_bar_holdout": true
+    },
+    "filters": {
+      "min_trades_per_fold": 10,
+      "oos_is_ratio_threshold": 0.5,
+      "min_oos_sortino": 0.3
+    },
+    "plateau": {
+      "neighborhood_radius": 1,
+      "max_neighborhood_size": 81,
+      "min_pass_fraction": 0.5
+    },
+    "vote": {
+      "threshold_fraction": 0.6
+    },
+    "budget": {
+      "max_total_combos": 6000
+    },
+    "gemini": {
+      "python_path": "python",
+      "module_name": "tools.backtest_range_proposer.main",
+      "working_directory": ".",
+      "runtime_dir": "tmp/backtest_range_proposer",
+      "model": "gemini-2.5-flash-preview-05-20",
+      "timeout_seconds": 8,
+      "retries": 1,
+      "stale_runtime_ttl_hours": 24
+    },
+    "cache": {
+      "ttl_seconds": 7200,
+      "max_entries": 256
+    },
+    "fee": {
+      "taker_fee_rate": 0.0004,
+      "slippage_bps": 0.0
+    }
   },
   "qlib_orchestration": {
     "enabled": true,
@@ -129,7 +189,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
-      "takeProfitPercent": 20.0,
+      "takeProfitPercent": 5.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.0,
@@ -161,7 +221,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
-      "takeProfitPercent": 20.0,
+      "takeProfitPercent": 5.0,
       "min_notional": 1.0,
       "atr_period": 14,
       "min_confidence": 0.0,
@@ -188,7 +248,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 20.0,
-      "takeProfitPercent": 20.0,
+      "takeProfitPercent": 5.0,
       "leverage": 10,
       "min_notional": 1.0,
       "atr_period": 14,
@@ -210,7 +270,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
-      "takeProfitPercent": 20.0,
+      "takeProfitPercent": 5.0,
       "leverage": 10,
       "min_notional": 1.0,
       "atr_period": 14,
@@ -231,7 +291,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
-      "takeProfitPercent": 20.0,
+      "takeProfitPercent": 5.0,
       "leverage": 10,
       "min_notional": 1.0,
       "atr_period": 14,
@@ -250,7 +310,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
-      "takeProfitPercent": 20.0,
+      "takeProfitPercent": 5.0,
       "leverage": 10,
       "min_notional": 1.0,
       "atr_period": 14,
@@ -269,7 +329,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
-      "takeProfitPercent": 20.0,
+      "takeProfitPercent": 5.0,
       "leverage": 10,
       "min_notional": 1.0,
       "atr_period": 14,
@@ -287,7 +347,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 0.0,
-      "takeProfitPercent": 0.0,
+      "takeProfitPercent": 5.0,
       "leverage": 10,
       "min_notional": 1.0,
       "atr_period": 14,
@@ -307,7 +367,7 @@
       "risk_pct": 0.01,
       "sl_multiplier": 1.5,
       "tp_multiplier": 3.0,
-      "takeProfitPercent": 20.0,
+      "takeProfitPercent": 5.0,
       "leverage": 10,
       "min_notional": 1.0,
       "atr_period": 14,

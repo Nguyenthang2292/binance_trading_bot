@@ -109,7 +109,13 @@
       "Bash(python -m pytest tests/execution/test_position_take_profit_service.py -v)",
       "Bash(python -m pytest tests/execution/test_position_take_profit_service.py tests/btc_auto/ -q)",
       "Bash(python -m pytest tests/gui/test_btc_auto_tp_mixin.py -v)",
-      "Bash(rtk grep *)"
+      "Bash(rtk grep *)",
+      "Bash(cmake --build build --target binance_trading_bot_tests)",
+      "Bash(cmake --build build --target bot_lib)",
+      "Bash(grep -E \"error|warning C[0-9]|FAILED|Compiling|Generating Code|\\\\.cpp$\")",
+      "Bash(grep -E \"error|FAILED|Compiling|Linking|Generating Code|\\\\.cpp$\")",
+      "Bash(./build/bin/Debug/binance_trading_bot_tests.exe --gtest_filter=\"ParameterSpaceTest*:WalkForwardSplitterTest*:PartitionBuilderTest*:PlateauFinderTest*:BacktestEngineTest*:HistoricalWindowProviderTest*:IndicatorAdaptersTest*:BacktestGateControllerTest*\")",
+      "Bash(./build/bin/Debug/binance_trading_bot_tests.exe)"
     ]
   }
 }

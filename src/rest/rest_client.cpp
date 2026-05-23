@@ -371,6 +371,29 @@ Order parseOrder(simdjson::ondemand::object& doc) {
     return order;
 }
 
+Order parseAlgoOrder(simdjson::ondemand::object& doc) {
+    Order order;
+    order.symbol = stringField(doc, "symbol");
+    order.clientOrderId = stringField(doc, "clientAlgoId");
+    order.orderId = intField(doc, "algoId");
+    order.side = parseSide(stringField(doc, "side"));
+    order.type = parseOrderType(stringField(doc, "orderType"));
+    order.positionSide = parsePositionSide(stringField(doc, "positionSide"));
+    order.timeInForce = parseTimeInForce(stringField(doc, "timeInForce"));
+    order.status = stringField(doc, "algoStatus");
+    order.price = decimalField(doc, "price");
+    order.origQty = decimalField(doc, "quantity");
+    order.reduceOnly = boolField(doc, "reduceOnly");
+    order.closePosition = boolField(doc, "closePosition");
+    order.stopPrice = decimalField(doc, "triggerPrice");
+    order.activationPrice = decimalField(doc, "activatePrice");
+    order.priceRate = decimalField(doc, "callbackRate");
+    order.workingType = parseWorkingType(stringField(doc, "workingType"));
+    order.time = intField(doc, "createTime");
+    order.updateTime = intField(doc, "updateTime");
+    return order;
+}
+
 Balance parseBalance(simdjson::ondemand::object& doc) {
     Balance b;
     b.asset = stringField(doc, "asset");
@@ -919,6 +942,36 @@ asio::awaitable<Result<Order>> RestClient::newOrder(OrderRequest req) {
     });
 }
 
+asio::awaitable<Result<Order>> RestClient::newAlgoOrder(OrderRequest req) {
+    std::string params;
+    appendParam(params, "algoType", "CONDITIONAL");
+    appendParam(params, "symbol", upper(req.symbol));
+    appendParam(params, "side", sideToString(req.side));
+    appendParam(params, "type", typeToString(req.type));
+    appendParam(params, "positionSide", positionSideToString(req.positionSide));
+    appendParam(params, "quantity", req.quantity);
+    appendParam(params, "price", req.price.value_or(""));
+    appendParam(params, "triggerPrice", req.stopPrice.value_or(""));
+    appendParam(params, "activatePrice", req.activationPrice.value_or(""));
+    appendParam(params, "callbackRate", req.callbackRate.value_or(""));
+    appendParam(params, "timeInForce", req.timeInForce ? tifToString(*req.timeInForce) : "");
+    appendParam(params, "reduceOnly", req.reduceOnly ? boolParam(*req.reduceOnly) : "");
+    appendParam(params, "closePosition", req.closePosition ? boolParam(*req.closePosition) : "");
+    appendParam(params, "workingType", req.workingType ? workingTypeToString(*req.workingType) : "");
+    appendParam(params, "clientAlgoId", req.newClientOrderId.value_or(""));
+    appendParam(params, "newOrderRespType", req.newOrderRespType.value_or(""));
+    appendParam(params, "recvWindow", req.recvWindow ? std::to_string(*req.recvWindow) : "");
+    for (const auto& [k, v] : req.extraParams) {
+        appendParam(params, k, v);
+    }
+    auto body = co_await signedPost("/fapi/v1/algoOrder", params);
+    if (!body) co_return std::unexpected(body.error());
+    co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
+        auto object = doc.get_object().value();
+        return parseAlgoOrder(object);
+    });
+}
+
 asio::awaitable<Result<Order>> RestClient::modifyOrder(OrderRequest req) {
     std::string params;
     appendParam(params, "symbol", upper(req.symbol));
@@ -952,6 +1005,17 @@ asio::awaitable<Result<Order>> RestClient::cancelOrder(std::string symbol, int64
     });
 }
 
+asio::awaitable<Result<Order>> RestClient::cancelAlgoOrder(std::string symbol, int64_t algoId) {
+    auto body = co_await signedDelete(
+        "/fapi/v1/algoOrder",
+        query({{"symbol", upper(symbol)}, {"algoId", std::to_string(algoId)}}));
+    if (!body) co_return std::unexpected(body.error());
+    co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
+        auto object = doc.get_object().value();
+        return parseAlgoOrder(object);
+    });
+}
+
 asio::awaitable<Result<Order>> RestClient::cancelOrderByClientOrderId(std::string symbol, std::string clientOrderId) {
     auto body = co_await signedDelete(
         "/fapi/v1/order",
@@ -960,6 +1024,19 @@ asio::awaitable<Result<Order>> RestClient::cancelOrderByClientOrderId(std::strin
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseOrder(object);
+    });
+}
+
+asio::awaitable<Result<Order>> RestClient::cancelAlgoOrderByClientAlgoId(
+    std::string symbol,
+    std::string clientAlgoId) {
+    auto body = co_await signedDelete(
+        "/fapi/v1/algoOrder",
+        query({{"symbol", upper(symbol)}, {"clientAlgoId", clientAlgoId}}));
+    if (!body) co_return std::unexpected(body.error());
+    co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
+        auto object = doc.get_object().value();
+        return parseAlgoOrder(object);
     });
 }
 
@@ -978,6 +1055,17 @@ asio::awaitable<Result<Order>> RestClient::queryOrder(std::string symbol, int64_
     });
 }
 
+asio::awaitable<Result<Order>> RestClient::queryAlgoOrder(std::string symbol, int64_t algoId) {
+    auto body = co_await signedGet(
+        "/fapi/v1/algoOrder",
+        query({{"symbol", upper(symbol)}, {"algoId", std::to_string(algoId)}}));
+    if (!body) co_return std::unexpected(body.error());
+    co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
+        auto object = doc.get_object().value();
+        return parseAlgoOrder(object);
+    });
+}
+
 asio::awaitable<Result<Order>> RestClient::queryOrderByClientOrderId(std::string symbol, std::string clientOrderId) {
     auto body = co_await signedGet(
         "/fapi/v1/order",
@@ -986,6 +1074,19 @@ asio::awaitable<Result<Order>> RestClient::queryOrderByClientOrderId(std::string
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseOrder(object);
+    });
+}
+
+asio::awaitable<Result<Order>> RestClient::queryAlgoOrderByClientAlgoId(
+    std::string symbol,
+    std::string clientAlgoId) {
+    auto body = co_await signedGet(
+        "/fapi/v1/algoOrder",
+        query({{"symbol", upper(symbol)}, {"clientAlgoId", clientAlgoId}}));
+    if (!body) co_return std::unexpected(body.error());
+    co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
+        auto object = doc.get_object().value();
+        return parseAlgoOrder(object);
     });
 }
 

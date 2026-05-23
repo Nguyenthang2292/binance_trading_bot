@@ -143,6 +143,12 @@ void writeSleepingAutotuneModule(const fs::path& workingDir, int sleepSeconds) {
 
 } // namespace
 
+TEST(GeminiFilterConfigTest, DefaultsUseCurrentStableGeminiFlashModel) {
+    engine::GeminiFilterConfig cfg;
+    EXPECT_EQ(cfg.sentimentModel, "gemini-3.5-flash");
+    EXPECT_EQ(cfg.visionModel, "gemini-3.5-flash");
+}
+
 TEST(GeminiFilterControllerIntegrationTest, AutotuneLockContentionSkipsControllerWork) {
     TempDirGuard temp{makeTempDir()};
     const fs::path workingDir = temp.path / "work";

@@ -62,12 +62,21 @@ public:
     boost::asio::awaitable<Result<void>> setMarginType(std::string symbol, std::string marginType);
 
     boost::asio::awaitable<Result<Order>> newOrder(OrderRequest req);
+    boost::asio::awaitable<Result<Order>> newAlgoOrder(OrderRequest req);
     boost::asio::awaitable<Result<Order>> modifyOrder(OrderRequest req);
     boost::asio::awaitable<Result<Order>> cancelOrder(std::string symbol, int64_t orderId);
+    boost::asio::awaitable<Result<Order>> cancelAlgoOrder(std::string symbol, int64_t algoId);
     boost::asio::awaitable<Result<Order>> cancelOrderByClientOrderId(std::string symbol, std::string clientOrderId);
+    boost::asio::awaitable<Result<Order>> cancelAlgoOrderByClientAlgoId(
+        std::string symbol,
+        std::string clientAlgoId);
     boost::asio::awaitable<Result<void>> cancelAllOrders(std::string symbol);
     boost::asio::awaitable<Result<Order>> queryOrder(std::string symbol, int64_t orderId);
+    boost::asio::awaitable<Result<Order>> queryAlgoOrder(std::string symbol, int64_t algoId);
     boost::asio::awaitable<Result<Order>> queryOrderByClientOrderId(std::string symbol, std::string clientOrderId);
+    boost::asio::awaitable<Result<Order>> queryAlgoOrderByClientAlgoId(
+        std::string symbol,
+        std::string clientAlgoId);
     boost::asio::awaitable<Result<std::vector<Order>>> openOrders(std::optional<std::string> symbol = {});
     boost::asio::awaitable<Result<std::vector<Order>>> allOrders(std::string symbol,
                                                                  std::optional<int64_t> startTime = {},

@@ -19,6 +19,7 @@ namespace {
 class StubRestClient final : public IRestClient {
 public:
     RestResult<Order> newOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> newAlgoOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
     RestResult<Order> cancelOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
     RestResult<Order> queryOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
     RestResult<void> cancelAllOrdersResult = RestResult<void>{};
@@ -27,6 +28,7 @@ public:
     RestResult<LeverageResult> setLeverageResult = LeverageResult{};
     std::function<void()> onNewOrder;
     int newOrderCalls{0};
+    int newAlgoOrderCalls{0};
     int setLeverageCalls{0};
     int cancelAllOrdersCalls{0};
     int queryOrderByClientOrderIdCalls{0};
@@ -40,6 +42,7 @@ public:
     int allOrdersLimit{0};
     std::string setLeverageSymbol;
     int setLeverageValue{0};
+    std::optional<OrderRequest> lastNewAlgoOrderRequest;
 
     boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest) override {
         ++newOrderCalls;
@@ -47,6 +50,12 @@ public:
             onNewOrder();
         }
         co_return newOrderResult;
+    }
+
+    boost::asio::awaitable<RestResult<Order>> newAlgoOrder(OrderRequest req) override {
+        ++newAlgoOrderCalls;
+        lastNewAlgoOrderRequest = std::move(req);
+        co_return newAlgoOrderResult;
     }
 
     boost::asio::awaitable<RestResult<Order>> modifyOrder(OrderRequest) override {
@@ -154,6 +163,14 @@ Quantity qty(std::string_view v) {
     return *parsed;
 }
 
+TriggerPrice trigger(std::string_view v) {
+    auto parsed = TriggerPrice::parse(v);
+    if (!parsed) {
+        throw std::runtime_error("invalid test trigger price");
+    }
+    return *parsed;
+}
+
 } // namespace
 
 TEST(OrdersTest, MarketTreatsHttp500AsUnknownPendingReconcile) {
@@ -204,6 +221,43 @@ TEST(OrdersTest, SetLeverageDelegatesToRestClient) {
     EXPECT_EQ(rest.setLeverageSymbol, "BTCUSDT");
     EXPECT_EQ(rest.setLeverageValue, 13);
     EXPECT_EQ(result->leverage, 13);
+}
+
+TEST(OrdersTest, ProtectionUsesAlgoRestEndpoint) {
+    StubRestClient rest;
+    Order placed;
+    placed.symbol = "CATIUSDT";
+    placed.orderId = 4321;
+    placed.status = "NEW";
+    placed.clientOrderId = "cid-sl-1";
+    rest.newAlgoOrderResult = placed;
+
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
+    Orders orders(rest, cfg);
+
+    ProtectionOrderDraft draft{
+        .symbol = "CATIUSDT",
+        .positionSide = PositionSide::Both,
+        .closeSide = OrderSide::Sell,
+        .kind = ProtectionKind::StopLoss,
+        .triggerPrice = trigger("0.1234"),
+        .closeQuantity = qty("12"),
+        .clientAlgoId = std::string("cid-sl-1"),
+    };
+
+    auto result = runAwaitable(orders.protection(draft));
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->state, PlacementState::Accepted);
+    EXPECT_EQ(rest.newAlgoOrderCalls, 1);
+    EXPECT_EQ(rest.newOrderCalls, 0);
+    ASSERT_TRUE(rest.lastNewAlgoOrderRequest.has_value());
+    EXPECT_EQ(rest.lastNewAlgoOrderRequest->symbol, "CATIUSDT");
+    EXPECT_EQ(rest.lastNewAlgoOrderRequest->type, OrderType::StopMarket);
+    EXPECT_EQ(rest.lastNewAlgoOrderRequest->stopPrice.value_or(""), "0.1234");
+    EXPECT_EQ(rest.lastNewAlgoOrderRequest->newClientOrderId.value_or(""), "cid-sl-1");
 }
 
 TEST(OrdersTest, QuerySnapshotPreservesDecimalStrings) {

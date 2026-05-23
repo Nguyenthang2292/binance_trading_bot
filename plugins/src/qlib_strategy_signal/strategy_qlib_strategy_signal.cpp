@@ -13,11 +13,13 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -430,15 +432,9 @@ public:
             return {};
         }
 
-        try {
-            checkSchemaAndUniverse(
-                m_params.dbPath,
-                m_params.strategyId,
-                m_params.universeHash,
-                m_params.universeHashStrict);
-        } catch (const std::exception& e) {
+        if (const auto schemaError = checkSchemaOnce()) {
             return strategy::Signal{
-                .reason = "qlib_adapter=" + m_params.strategyId + " (schema_unavailable: " + e.what() + ")"};
+                .reason = "qlib_adapter=" + m_params.strategyId + " (schema_unavailable: " + *schemaError + ")"};
         }
 
         std::string runtimeError;
@@ -511,8 +507,33 @@ public:
     }
 
 private:
+    std::optional<std::string> checkSchemaOnce() const {
+        if (m_schemaChecked.load(std::memory_order_acquire)) {
+            return std::nullopt;
+        }
+
+        std::lock_guard<std::mutex> lock(m_schemaMutex);
+        if (m_schemaChecked.load(std::memory_order_acquire)) {
+            return std::nullopt;
+        }
+
+        try {
+            checkSchemaAndUniverse(
+                m_params.dbPath,
+                m_params.strategyId,
+                m_params.universeHash,
+                m_params.universeHashStrict);
+            m_schemaChecked.store(true, std::memory_order_release);
+            return std::nullopt;
+        } catch (const std::exception& e) {
+            return std::string(e.what());
+        }
+    }
+
     strategy::StrategyConfig m_cfg;
     QlibAdapterParams m_params;
+    mutable std::atomic<bool> m_schemaChecked{false};
+    mutable std::mutex m_schemaMutex;
 };
 
 } // namespace

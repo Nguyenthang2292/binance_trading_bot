@@ -4,6 +4,10 @@ boost::asio::awaitable<RestResult<Order>> RestClientAdapter::newOrder(OrderReque
     co_return co_await m_client.newOrder(std::move(req));
 }
 
+boost::asio::awaitable<RestResult<Order>> RestClientAdapter::newAlgoOrder(OrderRequest req) {
+    co_return co_await m_client.newAlgoOrder(std::move(req));
+}
+
 boost::asio::awaitable<RestResult<Order>> RestClientAdapter::modifyOrder(OrderRequest req) {
     co_return co_await m_client.modifyOrder(std::move(req));
 }
@@ -12,10 +16,20 @@ boost::asio::awaitable<RestResult<Order>> RestClientAdapter::cancelOrder(std::st
     co_return co_await m_client.cancelOrder(std::move(symbol), orderId);
 }
 
+boost::asio::awaitable<RestResult<Order>> RestClientAdapter::cancelAlgoOrder(std::string symbol, int64_t algoId) {
+    co_return co_await m_client.cancelAlgoOrder(std::move(symbol), algoId);
+}
+
 boost::asio::awaitable<RestResult<Order>> RestClientAdapter::cancelOrderByClientOrderId(
     std::string symbol,
     std::string clientOrderId) {
     co_return co_await m_client.cancelOrderByClientOrderId(std::move(symbol), std::move(clientOrderId));
+}
+
+boost::asio::awaitable<RestResult<Order>> RestClientAdapter::cancelAlgoOrderByClientAlgoId(
+    std::string symbol,
+    std::string clientAlgoId) {
+    co_return co_await m_client.cancelAlgoOrderByClientAlgoId(std::move(symbol), std::move(clientAlgoId));
 }
 
 boost::asio::awaitable<RestResult<void>> RestClientAdapter::cancelAllOrders(std::string symbol) {
@@ -26,10 +40,20 @@ boost::asio::awaitable<RestResult<Order>> RestClientAdapter::queryOrder(std::str
     co_return co_await m_client.queryOrder(std::move(symbol), orderId);
 }
 
+boost::asio::awaitable<RestResult<Order>> RestClientAdapter::queryAlgoOrder(std::string symbol, int64_t algoId) {
+    co_return co_await m_client.queryAlgoOrder(std::move(symbol), algoId);
+}
+
 boost::asio::awaitable<RestResult<Order>> RestClientAdapter::queryOrderByClientOrderId(
     std::string symbol,
     std::string clientOrderId) {
     co_return co_await m_client.queryOrderByClientOrderId(std::move(symbol), std::move(clientOrderId));
+}
+
+boost::asio::awaitable<RestResult<Order>> RestClientAdapter::queryAlgoOrderByClientAlgoId(
+    std::string symbol,
+    std::string clientAlgoId) {
+    co_return co_await m_client.queryAlgoOrderByClientAlgoId(std::move(symbol), std::move(clientAlgoId));
 }
 
 boost::asio::awaitable<RestResult<std::vector<Order>>> RestClientAdapter::openOrders(std::optional<std::string> symbol) {

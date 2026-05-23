@@ -202,7 +202,7 @@ void QlibStateStore::initializeRuntimeStateIfMissing(ExecutionMode defaultMode) 
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         throw std::runtime_error("QlibStateStore step initializeRuntimeStateIfMissing failed");
     }
-    ensureAdapterRuntimeStateLocked();
+    ensureAdapterRuntimeStateLocked(defaultMode);
     m_snapshot = loadSnapshotLocked();
 }
 
@@ -291,7 +291,7 @@ bool QlibStateStore::setExecutionMode(ExecutionMode mode, std::string rollbackRe
     }
     stmt.reset();
 
-    ensureAdapterRuntimeStateLocked();
+    ensureAdapterRuntimeStateLocked(mode);
     const char* adapterSql =
         "UPDATE qlib_adapter_runtime_state "
         "SET execution_mode = ?,"
@@ -337,7 +337,12 @@ bool QlibStateStore::setExecutionMode(ExecutionMode mode, std::string rollbackRe
     }
     adapterStmt.reset();
 
-    execOrThrow(m_db, "COMMIT;");
+    try {
+        execOrThrow(m_db, "COMMIT;");
+    } catch (...) {
+        rollback();
+        throw;
+    }
     m_snapshot = loadSnapshotLocked();
     return true;
 }
@@ -364,6 +369,39 @@ std::optional<std::string> QlibStateStore::promotionProfileJson(std::string_view
         return std::nullopt;
     }
     throw std::runtime_error("QlibStateStore step promotionProfileJson failed");
+}
+
+PromotionProfileSnapshot QlibStateStore::promotionProfileNameAndJson() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const char* sql =
+        "SELECT s.promotion_profile, p.profile_json "
+        "FROM qlib_adapter_runtime_state s "
+        "LEFT JOIN qlib_promotion_profiles p ON p.profile_name = s.promotion_profile "
+        "WHERE s.adapter_id = ? AND s.interval = ?;";
+    sqlite3_stmt* rawStmt = nullptr;
+    if (sqlite3_prepare_v2(m_db, sql, -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
+        throw std::runtime_error("QlibStateStore prepare promotionProfileNameAndJson failed");
+    }
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
+    bindText(stmt.get(), 1, m_config.modelId);
+    bindText(stmt.get(), 2, m_config.interval);
+    const int rc = sqlite3_step(stmt.get());
+    if (rc == SQLITE_DONE) {
+        return {};
+    }
+    if (rc != SQLITE_ROW) {
+        throw std::runtime_error("QlibStateStore step promotionProfileNameAndJson failed");
+    }
+
+    PromotionProfileSnapshot out;
+    out.profileName = columnText(stmt.get(), 0);
+    if (out.profileName.empty()) {
+        out.profileName = "default";
+    }
+    if (sqlite3_column_type(stmt.get(), 1) != SQLITE_NULL) {
+        out.profileJson = columnText(stmt.get(), 1);
+    }
+    return out;
 }
 
 void QlibStateStore::recordPromotionEvaluation(const PromotionEvaluationRecord& record) {
@@ -403,26 +441,29 @@ void QlibStateStore::recordPromotionEvaluation(const PromotionEvaluationRecord& 
     const bool failure = record.decision != "promoted_canary" &&
         record.decision != "promoted_live" &&
         record.decision != "already_live";
-    if (!failure) {
-        return;
-    }
     ensureAdapterRuntimeStateLocked();
     const char* updateSql =
         "UPDATE qlib_adapter_runtime_state "
-        "SET last_failure_at_ms = ?, last_failure_reason = ?, updated_at_ms = ? "
+        "SET last_decision_at_ms = ?,"
+        "    last_failure_at_ms = CASE WHEN ? THEN ? ELSE last_failure_at_ms END,"
+        "    last_failure_reason = CASE WHEN ? THEN ? ELSE last_failure_reason END,"
+        "    updated_at_ms = ? "
         "WHERE adapter_id = ? AND interval = ?;";
     sqlite3_stmt* rawUpdate = nullptr;
     if (sqlite3_prepare_v2(m_db, updateSql, -1, &rawUpdate, nullptr) != SQLITE_OK || rawUpdate == nullptr) {
-        throw std::runtime_error("QlibStateStore prepare promotion failure audit failed");
+        throw std::runtime_error("QlibStateStore prepare promotion decision audit failed");
     }
     std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> updateStmt(rawUpdate, sqlite3_finalize);
     sqlite3_bind_int64(updateStmt.get(), 1, evaluatedAt);
-    bindText(updateStmt.get(), 2, record.reason);
+    sqlite3_bind_int(updateStmt.get(), 2, failure ? 1 : 0);
     sqlite3_bind_int64(updateStmt.get(), 3, evaluatedAt);
-    bindText(updateStmt.get(), 4, m_config.modelId);
-    bindText(updateStmt.get(), 5, m_config.interval);
+    sqlite3_bind_int(updateStmt.get(), 4, failure ? 1 : 0);
+    bindText(updateStmt.get(), 5, record.reason);
+    sqlite3_bind_int64(updateStmt.get(), 6, evaluatedAt);
+    bindText(updateStmt.get(), 7, m_config.modelId);
+    bindText(updateStmt.get(), 8, m_config.interval);
     if (sqlite3_step(updateStmt.get()) != SQLITE_DONE) {
-        throw std::runtime_error("QlibStateStore step promotion failure audit failed");
+        throw std::runtime_error("QlibStateStore step promotion decision audit failed");
     }
 }
 
@@ -539,11 +580,11 @@ RuntimeStateSnapshot QlibStateStore::loadAdapterSnapshotLocked(std::string_view 
     return out;
 }
 
-void QlibStateStore::ensureAdapterRuntimeStateLocked() {
+void QlibStateStore::ensureAdapterRuntimeStateLocked(ExecutionMode defaultMode) {
     const char* sql =
         "INSERT INTO qlib_adapter_runtime_state("
         "adapter_id, interval, execution_mode, promotion_profile, active_run_id, state_version, updated_at_ms"
-        ") VALUES(?, ?, 'shadow', 'default', NULL, 0, ?) "
+        ") VALUES(?, ?, ?, 'default', NULL, 0, ?) "
         "ON CONFLICT(adapter_id, interval) DO NOTHING;";
     sqlite3_stmt* rawStmt = nullptr;
     if (sqlite3_prepare_v2(m_db, sql, -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
@@ -552,7 +593,8 @@ void QlibStateStore::ensureAdapterRuntimeStateLocked() {
     std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
     bindText(stmt.get(), 1, m_config.modelId);
     bindText(stmt.get(), 2, m_config.interval);
-    sqlite3_bind_int64(stmt.get(), 3, nowMs());
+    bindText(stmt.get(), 3, modeToDb(defaultMode));
+    sqlite3_bind_int64(stmt.get(), 4, nowMs());
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         throw std::runtime_error("QlibStateStore step ensureAdapterRuntimeStateLocked failed");
     }

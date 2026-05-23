@@ -46,6 +46,11 @@ struct AdapterRuntimeStateSeed {
     std::string promotionProfile{"default"};
 };
 
+struct PromotionProfileSnapshot {
+    std::string profileName{"default"};
+    std::optional<std::string> profileJson;
+};
+
 // IMPORTANT: QlibStateStore uses enable_shared_from_this for timer safety.
 // It MUST be allocated via std::make_shared (or the create() factory below).
 // Stack allocation or unique_ptr ownership will cause std::bad_weak_ptr at runtime
@@ -70,6 +75,7 @@ public:
     bool setExecutionMode(ExecutionMode mode, std::string rollbackReason = {}, std::string promotedBy = {});
     std::string promotionProfileName() const;
     std::optional<std::string> promotionProfileJson(std::string_view profileName) const;
+    PromotionProfileSnapshot promotionProfileNameAndJson() const;
     void recordPromotionEvaluation(const PromotionEvaluationRecord& record);
 
     RuntimeStateSnapshot snapshot() const override;
@@ -84,7 +90,7 @@ private:
     void scheduleReload();
     RuntimeStateSnapshot loadSnapshotLocked() const;
     RuntimeStateSnapshot loadAdapterSnapshotLocked(std::string_view adapterId, std::string_view interval) const;
-    void ensureAdapterRuntimeStateLocked();
+    void ensureAdapterRuntimeStateLocked(ExecutionMode defaultMode = ExecutionMode::Shadow);
     std::string promotionProfileNameLocked() const;
     static std::string modeToDb(ExecutionMode mode);
     static ExecutionMode modeFromDb(const std::string& modeText);

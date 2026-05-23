@@ -110,3 +110,25 @@ def test_preview_wins_when_newer_version_than_stable() -> None:
     result = _latest_core_model(models, tier="pro", allow_preview=True)
     assert result == "models/gemini-3.0-pro-preview"
 
+
+def test_latest_flash_prefers_current_stable_flash_over_older_and_lite_models() -> None:
+    models = [
+        _Model(name="models/gemini-3.1-flash-lite", supported_actions=["generateContent"]),
+        _Model(name="models/gemini-3.0-flash-preview", supported_actions=["generateContent"]),
+        _Model(name="models/gemini-2.5-flash", supported_actions=["generateContent"]),
+        _Model(name="models/gemini-3.5-flash", supported_actions=["generateContent"]),
+    ]
+    result = _latest_core_model(models, tier="flash", allow_preview=True)
+    assert result == "models/gemini-3.5-flash"
+
+
+def test_latest_pro_ignores_non_core_tool_media_and_tts_variants() -> None:
+    models = [
+        _Model(name="models/gemini-3.1-pro-preview-customtools", supported_actions=["generateContent"]),
+        _Model(name="models/gemini-3-pro-image-preview", supported_actions=["generateContent"]),
+        _Model(name="models/gemini-2.5-pro-preview-tts", supported_actions=["generateContent"]),
+        _Model(name="models/gemini-3.1-pro-preview", supported_actions=["generateContent"]),
+    ]
+    result = _latest_core_model(models, tier="pro", allow_preview=True)
+    assert result == "models/gemini-3.1-pro-preview"
+
