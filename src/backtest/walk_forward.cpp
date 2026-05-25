@@ -1,4 +1,5 @@
 #include "backtest/walk_forward.h"
+#include "logger.h"
 
 #include <algorithm>
 #include <cmath>
@@ -53,6 +54,12 @@ std::vector<WalkForwardFold> WalkForwardSplitter::split(
 
     std::vector<WalkForwardFold> folds;
     if (calibrationWindow.empty() || numFolds <= 0 || isFraction <= 0.0 || isFraction >= 1.0) {
+        if (!calibrationWindow.empty() && numFolds > 0 && (isFraction <= 0.0 || isFraction >= 1.0)) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "backtest walk-forward invalid is_fraction=" + std::to_string(isFraction) +
+                " (expected 0 < is_fraction < 1)");
+        }
         return folds;
     }
 

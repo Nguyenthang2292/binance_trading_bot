@@ -98,7 +98,6 @@ void seedCache(scanner::KlineCache& cache) {
 engine::GeminiFilterConfig makeBaseConfig(const fs::path& workingDir, const fs::path& runtimeBase) {
     engine::GeminiFilterConfig cfg;
     cfg.enabled = true;
-    cfg.mode = engine::GeminiFilterMode::Enforce;
     cfg.pythonPath = "python";
     cfg.moduleName = "fake_eval";
     cfg.workingDirectory = workingDir.string();

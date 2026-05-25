@@ -24,7 +24,8 @@ struct BacktestStats {
 // In-memory backtest mirroring the live execution semantics that matter for
 // fair per-combo comparison: next-bar entry, ATR-based SL/TP, fees, conservative
 // same-candle SL+TP ordering, fixed-TP-percent path, tick-size SL/TP
-// quantization, max-hold time-exit.
+// quantization (Long: SL up / TP down; Short: SL down / TP up), max-hold
+// time-exit.
 //
 // No RNG. Identical inputs MUST produce identical outputs.
 class BacktestEngine {

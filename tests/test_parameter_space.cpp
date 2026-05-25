@@ -42,6 +42,23 @@ TEST(ParameterSpaceTest, IntegerSnapping) {
     }
 }
 
+TEST(ParameterSpaceTest, IntegerRangeWithFractionalStepDoesNotDuplicateValues) {
+    std::vector<ParamRange> ranges = {
+        {"x", 1.0, 3.0, 0.7, true}
+    };
+    auto grid = ParameterSpace::grid(ranges, {});
+    ASSERT_EQ(grid.size(), 3u);
+    std::vector<double> values;
+    values.reserve(grid.size());
+    for (const auto& p : grid) {
+        values.push_back(p.at("x"));
+    }
+    std::sort(values.begin(), values.end());
+    EXPECT_DOUBLE_EQ(values[0], 1.0);
+    EXPECT_DOUBLE_EQ(values[1], 2.0);
+    EXPECT_DOUBLE_EQ(values[2], 3.0);
+}
+
 TEST(ParameterSpaceTest, ClampToBudgetReducesGrid) {
     std::vector<ParamRange> ranges = {
         {"a", 0.0, 100.0, 1.0, true},   // 101 values

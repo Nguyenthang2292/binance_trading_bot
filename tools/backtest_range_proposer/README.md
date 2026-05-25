@@ -6,13 +6,23 @@ This module is invoked by the `BacktestGateController` as a subprocess to propos
 
 Reuses the same Python environment as `tools/gemini_filter`. No additional venv is needed.
 
-### Required Environment Variable
+### Environment Variables
 
-```
-GEMINI_API_KEY=<your_google_ai_studio_key>
-```
+This tool uses the same Gemini key management as `tools/gemini_filter`.
+Set one or more of the following in `.env` at the project root (or export in your shell):
 
-Set it in a `.env` file at the project root (same as for `gemini_filter`), or export it in your shell.
+| Variable | Description |
+|----------|-------------|
+| `GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, ... | Numbered API keys |
+| `GEMINI_API_KEY` | Single API key |
+| `GEMINI_API_KEYS` | Comma- or semicolon-separated list of keys |
+| `GEMINI_TEXT_API_KEY` | Text-key alias |
+| `GEMINI_KEY_MANAGER_STATE_DIR` | Optional shared round-robin state directory; defaults to `tmp/gemini_key_manager` |
+
+At least one key variable above must be set. The key manager combines all configured sources,
+deduplicates repeated key values, and uses a shared round-robin cursor for every Gemini call
+made by `tools/gemini_filter` and `tools/backtest_range_proposer`. Retryable key/API errors
+continue with the next key in the same round-robin order.
 
 ## Usage
 

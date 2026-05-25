@@ -20,6 +20,8 @@ struct RangeProposalRequest {
     std::vector<ParamRange> defaultRanges;
     std::vector<ParamConstraint> constraints;
     std::unordered_map<std::string, double> currentValues;
+    int baseAtrPeriod{14};
+    double baseMinConfidence{0.0};
     strategy::Signal::Direction signalDirection{strategy::Signal::Direction::None};
     long long signalBarOpenTimeMs{0};
     int maxTotalCombos{6000};

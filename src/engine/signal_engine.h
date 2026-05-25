@@ -28,8 +28,10 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -84,6 +86,7 @@ public:
         bool randomLeverageEnabled{false};
         int randomLeverageMin{2};
         int randomLeverageMax{20};
+        std::chrono::seconds externalCloseCooldown{900};
         LossManagerConfig lossManager;
         std::optional<int> qlibAggregateMaxConcurrentPositions;
         std::optional<double> qlibAggregateMaxTotalRiskPct;
@@ -274,6 +277,8 @@ private:
         OpenPositionRequest request,
         bool evaluateGemini);
     boost::asio::awaitable<std::optional<double>> livePositionQuantity(std::string_view symbol);
+    bool isExternalCloseCooldownActive(std::string_view symbol, std::chrono::system_clock::time_point now);
+    void markExternalCloseCooldown(std::string_view symbol, std::chrono::system_clock::time_point now);
     static bool isFlatPositionQty(double quantity);
     static std::string accountErrorToString(const account::AccountServiceError& error);
 
@@ -303,6 +308,8 @@ private:
     OpenDecisionState m_lastOpenDecision;
     std::atomic<bool> m_running{false};
     ScanCycleStatusCb m_scanCycleStatusCb;
+    std::mutex m_externalCloseCooldownMutex;
+    std::unordered_map<std::string, std::chrono::system_clock::time_point> m_externalCloseCooldownUntil;
     boost::asio::steady_timer m_scanSleepTimer;
     boost::asio::steady_timer m_timeExitTimer;
     boost::asio::steady_timer m_trailingTimer;

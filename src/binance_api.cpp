@@ -105,6 +105,21 @@ std::optional<AccountInfo> BinanceAPI::getAccountInfo() {
     return info;
 }
 
+std::optional<std::vector<Position>> BinanceAPI::getPositions(const std::string& symbol) {
+    auto future = boost::asio::co_spawn(
+        m_context->ioc(),
+        [this, symbol]() -> boost::asio::awaitable<Result<std::vector<Position>>> {
+            co_return co_await m_rest->positions(symbol);
+        },
+        boost::asio::use_future);
+    auto result = future.get();
+    if (!result) {
+        Logger::instance().log(LogLevel::Error, "Failed to get futures positions: " + result.error().toString());
+        return std::nullopt;
+    }
+    return *result;
+}
+
 bool BinanceAPI::testConnectivity() {
     auto future = boost::asio::co_spawn(
         m_context->ioc(),

@@ -16,7 +16,7 @@ from google.genai import types
 from .cache_store import load_entry, save_entry
 from .chart_generator import generate_chart
 from .gemini_client import generate_json_score, generate_plain_text, parse_score_text
-from .key_manager import GeminiKey
+from tools.shared.gemini_key_manager import GeminiKey
 from .metrics_store import MetricsStore
 from .model_resolver import resolve_models
 from .model_router import RoutedModels, build_model_route
@@ -217,7 +217,7 @@ def _analyze_sentiment(
             metrics_store.incr_cache("sentiment", "hit")
             LOGGER.info("sentiment cache hit eval_id=%s symbol=%s age_s=%d", eval_id, symbol, age)
             return {
-                "score": float(cached["score"]),
+                "score": _safe_float(cached.get("score", 0.0)),
                 "analysis": str(cached.get("analysis", "")),
             }
         if age <= max_stale_seconds:
@@ -268,7 +268,7 @@ def _analyze_sentiment(
                 metrics_store.incr_cache("sentiment", "stale_hit")
                 LOGGER.warning("sentiment stale fallback eval_id=%s symbol=%s", eval_id, symbol)
                 return {
-                    "score": float(stale_cached["score"]),
+                    "score": _safe_float(stale_cached.get("score", 0.0)),
                     "analysis": str(stale_cached.get("analysis", "")),
                 }
             raise RuntimeError(f"quota_exhausted:sentiment:{exc}") from exc
@@ -279,13 +279,18 @@ def _analyze_sentiment(
         "sentiment",
         cache_key,
         {
-            "score": float(result["score"]),
+            "score": _safe_float(result.get("score", 0.0)),
             "analysis": str(result.get("analysis", "")),
             "cached_at": now,
             "model": used_model,
         },
     )
-    LOGGER.info("sentiment analysis completed eval_id=%s score=%.4f model=%s", eval_id, float(result["score"]), used_model)
+    LOGGER.info(
+        "sentiment analysis completed eval_id=%s score=%.4f model=%s",
+        eval_id,
+        _safe_float(result.get("score", 0.0)),
+        used_model,
+    )
     return result
 
 
@@ -389,7 +394,7 @@ def _build_quota_manager(data: dict[str, Any], metrics_store: MetricsStore) -> Q
 
     config = QuotaConfig(
         enabled=bool(quota_cfg.get("enabled", False)),
-        safety_factor=max(0.05, min(1.0, float(quota_cfg.get("safety_factor", 0.7)))),
+        safety_factor=max(0.05, min(1.0, _safe_float(quota_cfg.get("safety_factor", 0.7)))),
         cooldown_seconds_on_429=max(1, int(quota_cfg.get("cooldown_seconds_on_429", 300))),
         default_rpm=max(1, int(quota_cfg.get("default_rpm", 8))),
         default_rpd=max(1, int(quota_cfg.get("default_rpd", 250))),
@@ -416,6 +421,22 @@ def _parse_utc_iso(text: str) -> int | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return int(dt.timestamp())
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        if isinstance(value, float):
+            return value
+        if isinstance(value, int):
+            return float(value)
+        s = str(value).strip()
+        if not s:
+            return default
+        return float(s)
+    except Exception:
+        return default
 
 
 def _apply_autotune_override(data: dict[str, Any]) -> dict[str, Any]:
@@ -480,12 +501,14 @@ def _apply_autotune_override(data: dict[str, Any]) -> dict[str, Any]:
     if "pro_escalation_enabled" in vision_override:
         merged_vision["pro_escalation_enabled"] = bool(vision_override.get("pro_escalation_enabled"))
     if "pro_escalation_min_score" in vision_override:
-        merged_vision["pro_escalation_min_score"] = float(vision_override.get("pro_escalation_min_score"))
+        merged_vision["pro_escalation_min_score"] = _safe_float(vision_override.get("pro_escalation_min_score"), 0.45)
     if "pro_escalation_max_score" in vision_override:
-        merged_vision["pro_escalation_max_score"] = float(vision_override.get("pro_escalation_max_score"))
-    if float(merged_vision.get("pro_escalation_min_score", 0.45)) > float(merged_vision.get("pro_escalation_max_score", 0.65)):
-        low = float(merged_vision.get("pro_escalation_max_score", 0.65))
-        high = float(merged_vision.get("pro_escalation_min_score", 0.45))
+        merged_vision["pro_escalation_max_score"] = _safe_float(vision_override.get("pro_escalation_max_score"), 0.65)
+    if _safe_float(merged_vision.get("pro_escalation_min_score", 0.45)) > _safe_float(
+        merged_vision.get("pro_escalation_max_score", 0.65)
+    ):
+        low = _safe_float(merged_vision.get("pro_escalation_max_score", 0.65))
+        high = _safe_float(merged_vision.get("pro_escalation_min_score", 0.45))
         merged_vision["pro_escalation_min_score"] = low
         merged_vision["pro_escalation_max_score"] = high
 
@@ -664,17 +687,17 @@ def analyze(data: dict[str, Any], key_manager: Any) -> dict[str, Any]:
             "latency_ms": latency_ms,
         }
 
-    sentiment_score = float(sentiment_result["score"])
-    vision_score = float(vision_result["score"])
-    sentiment_weight = float(data["sentiment_weight"])
-    vision_weight = float(data["vision_weight"])
+    sentiment_score = _safe_float(sentiment_result.get("score", 0.0))
+    vision_score = _safe_float(vision_result.get("score", 0.0))
+    sentiment_weight = _safe_float(data.get("sentiment_weight", 0.0))
+    vision_weight = _safe_float(data.get("vision_weight", 0.0))
     total_weight = sentiment_weight + vision_weight
     confidence = (
         (sentiment_weight * sentiment_score + vision_weight * vision_score) / total_weight
         if total_weight > 0
         else 0.0
     )
-    threshold = float(data["confidence_threshold"])
+    threshold = _safe_float(data.get("confidence_threshold", 0.5))
     decision = "Allow" if confidence >= threshold else "Block"
     LOGGER.info(
         "analysis completed eval_id=%s decision=%s confidence=%.4f sentiment=%.4f vision=%.4f latency_ms=%d",

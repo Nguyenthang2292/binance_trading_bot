@@ -34,7 +34,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -42,6 +41,8 @@ from typing import Any
 from dotenv import load_dotenv
 
 LOGGER = logging.getLogger("backtest_range_proposer")
+GEMINI_MIN_ATTEMPT_DEADLINE_MS = 1_000
+GEMINI_TIMEOUT_HEADROOM_SECONDS = 2
 
 # ── Output helpers ─────────────────────────────────────────────────────────
 
@@ -191,33 +192,47 @@ Respond with valid JSON only, no markdown fences.
 
 # ── Gemini call ──────────────────────────────────────────────────────────────
 
-def _call_gemini(prompt: str, model: str) -> str:
+def _call_gemini(prompt: str, model: str, http_timeout_ms: int = 30_000) -> str:
     """Call Gemini API and return the raw text response."""
     try:
-        from google import genai  # type: ignore[import]
+        from tools.shared.gemini_key_manager import GeminiKeyManager
         from google.genai import types  # type: ignore[import]
     except ImportError as exc:
-        raise RuntimeError("google-genai package not installed") from exc
+        raise RuntimeError("google-genai or tools.shared package not available") from exc
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY environment variable not set. "
-            "See tools/backtest_range_proposer/README.md for setup instructions."
-        )
-
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-        ),
+    total_budget_ms = max(GEMINI_MIN_ATTEMPT_DEADLINE_MS, int(http_timeout_ms))
+    probe_manager = GeminiKeyManager(http_timeout_ms=total_budget_ms)
+    per_attempt_timeout_ms = max(
+        GEMINI_MIN_ATTEMPT_DEADLINE_MS,
+        total_budget_ms // max(1, probe_manager.key_count),
     )
-    text = getattr(response, "text", None)
-    if not isinstance(text, str) or not text.strip():
-        raise RuntimeError("Gemini response contained no text")
-    return text
+    key_manager = (
+        probe_manager
+        if per_attempt_timeout_ms == total_budget_ms
+        else GeminiKeyManager(http_timeout_ms=per_attempt_timeout_ms)
+    )
+    LOGGER.info(
+        "gemini key manager initialized key_count=%d key_sources=%s total_budget_ms=%d per_attempt_timeout_ms=%d",
+        key_manager.key_count,
+        ",".join(key_manager.key_names),
+        total_budget_ms,
+        per_attempt_timeout_ms,
+    )
+
+    def _do_call(client: Any, _key: Any) -> str:
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
+        )
+        text = getattr(response, "text", None)
+        if not isinstance(text, str) or not text.strip():
+            raise RuntimeError("Gemini response contained no text")
+        return text
+
+    return key_manager.run_with_rotation(_do_call)
 
 
 # ── Parse & validate Gemini response ────────────────────────────────────────
@@ -287,6 +302,24 @@ def main() -> int:
         return 1
 
     model = payload.get("model", "gemini-2.0-flash")
+    budget = payload.get("budget")
+    outer_timeout_raw: Any = 30
+    if isinstance(budget, dict):
+        outer_timeout_raw = budget.get("timeout_seconds", 30)
+    try:
+        outer_timeout_seconds = int(outer_timeout_raw)
+    except (TypeError, ValueError):
+        outer_timeout_seconds = 30
+    sdk_timeout_ms = max(
+        GEMINI_MIN_ATTEMPT_DEADLINE_MS,
+        (outer_timeout_seconds - GEMINI_TIMEOUT_HEADROOM_SECONDS) * 1_000,
+    )
+    if outer_timeout_seconds < GEMINI_TIMEOUT_HEADROOM_SECONDS + 10:
+        LOGGER.warning(
+            "budget timeout_seconds=%s is low; clamping sdk timeout budget to %d ms minimum",
+            outer_timeout_seconds,
+            GEMINI_MIN_ATTEMPT_DEADLINE_MS,
+        )
     tunable_params: list[str] = payload["tunable_params"]
 
     # ── Build prompt ───────────────────────────────────────────────────────
@@ -295,7 +328,7 @@ def main() -> int:
 
     # ── Call Gemini ────────────────────────────────────────────────────────
     try:
-        raw_response = _call_gemini(prompt, model)
+        raw_response = _call_gemini(prompt, model, http_timeout_ms=sdk_timeout_ms)
         LOGGER.info("gemini responded eval_id=%s response_len=%d", eval_id, len(raw_response))
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("gemini call failed eval_id=%s", eval_id)

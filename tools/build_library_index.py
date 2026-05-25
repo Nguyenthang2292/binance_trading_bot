@@ -315,10 +315,10 @@ def validate_cross_refs(entries: List[Dict[str, Any]]) -> Tuple[List[str], List[
             if not target.exists():
                 warnings.append(f"file not found: {file_value}")
                 continue
-            refs = strategy_refs.get(file_value)
-            if refs is None:
-                refs = source_refs(target)
-            if book_id not in refs:
+            refs_for_file = strategy_refs.get(file_value)
+            if refs_for_file is None:
+                refs_for_file = source_refs(target)
+            if book_id not in refs_for_file:
                 errors.append(f"{file_value}: implemented file missing source ref: {book_id}")
 
     return errors, warnings

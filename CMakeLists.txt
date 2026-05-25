@@ -108,6 +108,8 @@ set(LIB_SOURCES
     src/backtest/parameter_space.cpp
     src/backtest/walk_forward.cpp
     src/backtest/historical_window_provider.cpp
+    src/backtest/rest_backfilling_historical_window_provider.cpp
+    src/backtest/rest_client_kline_adapter.cpp
     src/backtest/backtest_engine.cpp
     src/backtest/plateau_finder.cpp
     src/backtest/indicator_adapters.cpp
@@ -195,9 +197,12 @@ set(LIB_HEADERS
     src/logger.h
     src/backtest/backtest_gate.h
     src/backtest/ihistorical_window_provider.h
+    src/backtest/ikline_rest_client.h
     src/backtest/parameter_space.h
     src/backtest/walk_forward.h
     src/backtest/historical_window_provider.h
+    src/backtest/rest_backfilling_historical_window_provider.h
+    src/backtest/rest_client_kline_adapter.h
     src/backtest/backtest_engine.h
     src/backtest/plateau_finder.h
     src/backtest/indicator_adapters.h

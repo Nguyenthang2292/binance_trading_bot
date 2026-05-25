@@ -1,5 +1,4 @@
 #include "backtest/historical_window_provider.h"
-#include "logger.h"
 #include "scanner/kline_cache.h"
 
 #include <algorithm>
@@ -21,6 +20,7 @@ IHistoricalWindowProvider::WindowResult HistoricalWindowProvider::closedWindow(
     result.requiredBars = requiredClosedBars;
     result.sufficient = false;
     result.availableBars = 0;
+    result.source = "cache";
 
     if (requiredClosedBars <= 0) {
         return result;
@@ -59,14 +59,6 @@ IHistoricalWindowProvider::WindowResult HistoricalWindowProvider::closedWindow(
     result.sufficient = true;
     auto startIt = filtered.end() - requiredClosedBars;
     result.closedKlines.assign(startIt, filtered.end());
-
-    if (m_config.historySource == "cache_then_rest") {
-        // v1.2 will add REST back-fill here; for now fall through with cache data.
-        Logger::instance().log(LogLevel::Warning,
-            "backtest_gate: history_source=cache_then_rest is not yet implemented; "
-            "using cache_only behaviour for symbol=" + std::string(symbol) +
-            " interval=" + std::string(interval));
-    }
 
     return result;
 }

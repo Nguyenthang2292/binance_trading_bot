@@ -3,6 +3,7 @@
 #include "types/market.h"
 
 #include <chrono>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -17,6 +18,10 @@ public:
         int requiredBars{0};
         int availableBars{0};
         std::vector<Kline> closedKlines;
+        std::string source{};
+        int restPagesUsed{0};
+        std::chrono::milliseconds restWallTimeMs{0};
+        std::string errorReason{};
     };
 
     virtual WindowResult closedWindow(

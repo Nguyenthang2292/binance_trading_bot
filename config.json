@@ -62,10 +62,11 @@
     "max_position_notional_x_available_balance": 0.5,
     "position_check_interval_seconds": 60,
     "trailing_check_interval_seconds": 300,
-    "monitor_trailing_stops": false,
+    "monitor_trailing_stops": true,
     "random_leverage_enabled": true,
     "random_leverage_min": 2,
     "random_leverage_max": 20,
+    "external_close_cooldown_seconds": 900,
     "place_stop_loss": false,
     "take_profit": {
       "enabled": true,
@@ -92,11 +93,111 @@
     "failure_mode": "closed"
   },
   "gemini_filter": {
-    "enabled": false,
-    "mode": "disabled"
+    "enabled": true,
+    "python_path": ".venv\\Scripts\\python.exe",
+    "module_name": "tools.gemini_filter.gemini_filter",
+    "working_directory": ".",
+    "runtime_dir": "tmp/gemini_filter",
+    "sentiment_model": "gemini-pro-latest",
+    "vision_model": "gemini-pro-latest",
+    "model_resolution": {
+      "enabled": true,
+      "mode": "pinned",
+      "fallback_on_error": true,
+      "allow_preview": true
+    },
+    "sentiment_search_then_score": true,
+    "sentiment_weight": 0.65,
+    "vision_weight": 0.35,
+    "confidence_threshold": 0.55,
+    "timeout_seconds": 150,
+    "max_evaluations_per_scan_cycle": 123,
+    "stale_runtime_ttl_hours": 24,
+    "result_cache_ttl_seconds": 1800,
+    "sentiment_cache_ttl_seconds": 3600,
+    "sentiment_cache_max_stale_seconds": 21600,
+    "model_resolution_ttl_seconds": 3600,
+    "model_resolution_max_stale_seconds": 86400,
+    "block_on_error": true,
+    "block_on_budget_exhausted": true,
+    "close_gate_on_budget_exhausted": true,
+    "close_gate_on_quota_exhausted": true,
+    "model_routing": {
+      "enabled": true,
+      "sentiment": {
+        "candidates": [
+          "gemini-pro-latest",
+          "gemini-flash-latest",
+          "gemini-flash-lite-latest",
+          "gemini-3.1-pro-preview"
+        ]
+      },
+      "vision": {
+        "candidates": [
+          "gemini-pro-latest",
+          "gemini-flash-latest",
+          "gemini-flash-lite-latest",
+          "gemini-3.1-pro-preview"
+        ],
+        "pro_escalation_enabled": true,
+        "pro_escalation_min_score": 0.45,
+        "pro_escalation_max_score": 0.65
+      }
+    },
+    "quota": {
+      "enabled": true,
+      "safety_factor": 0.7,
+      "cooldown_seconds_on_429": 300,
+      "default_rpm": 10,
+      "default_rpd": 500,
+      "models": {
+        "gemini-pro-latest": { "rpm": 2, "rpd": 50 },
+        "gemini-flash-latest": { "rpm": 10, "rpd": 500 },
+        "gemini-flash-lite-latest": { "rpm": 20, "rpd": 1000 },
+        "gemini-2.5-flash-lite": { "rpm": 20, "rpd": 1000 },
+        "gemini-2.5-flash": { "rpm": 10, "rpd": 500 },
+        "gemini-3.1-flash-lite": { "rpm": 10, "rpd": 500 },
+        "gemini-3.1-pro-preview": { "rpm": 2, "rpd": 50 }
+      }
+    },
+    "autotune": {
+      "enabled": true,
+      "mode": "apply",
+      "interval_seconds": 900,
+      "controller_timeout_seconds": 60,
+      "override_ttl_seconds": 1800,
+      "min_samples_per_model": 10,
+      "quota_pressure_demote_threshold": 0.4,
+      "success_rate_promote_threshold": 0.95,
+      "latency_promote_improvement_pct": 20,
+      "max_block_rate_increase_pct": 10,
+      "block_rate_window_seconds": 300,
+      "bucket_retention_seconds": 90000,
+      "emergency_quota_exhausted_cycles": 3,
+      "weights": {
+        "reserve_success_rate": 0.45,
+        "quota_pressure": 0.3,
+        "normalized_latency": 0.15,
+        "decision_quality_proxy": 0.1
+      }
+    },
+    "extra_tfs": ["1h", "4h"]
   },
   "risk_analytics": {
-    "enabled": true
+    "enabled": true,
+    "db_path": "data/risk_metrics.db",
+    "equity_basis": "margin",
+    "risk_free_rate": 0.0,
+    "min_data_points": 30,
+    "sample_interval_minutes": 60,
+    "control_lookback_days": 365,
+    "metrics_compute_interval_minutes": 60,
+    "missing_data_mode": "open",
+    "failure_mode": "closed",
+    "soft_max_drawdown": 0.2,
+    "hard_max_drawdown": 0.35,
+    "soft_min_upi": 0.5,
+    "hard_min_upi": -1.0
   },
   "backtest_gate": {
     "enabled": true,
@@ -106,10 +207,11 @@
     "max_evaluations_per_scan_cycle": 30,
     "close_gate_on_budget_exhausted": true,
     "data": {
-      "history_source": "cache_only",
-      "window_min_candles": 1500,
+      "history_source": "cache_then_rest",
+      "window_min_candles": 500,
+      "window_max_candles": 1500,
       "window_slowest_multiplier": 10,
-      "runtime_rest_fetch_enabled": false,
+      "runtime_rest_fetch_enabled": true,
       "runtime_rest_fetch_timeout_seconds": 10,
       "max_rest_requests_per_signal": 3
     },
@@ -140,8 +242,8 @@
       "module_name": "tools.backtest_range_proposer.main",
       "working_directory": ".",
       "runtime_dir": "tmp/backtest_range_proposer",
-      "model": "gemini-2.5-flash-preview-05-20",
-      "timeout_seconds": 8,
+      "model": "gemini-3.5-flash",
+      "timeout_seconds": 20,
       "retries": 1,
       "stale_runtime_ttl_hours": 24
     },

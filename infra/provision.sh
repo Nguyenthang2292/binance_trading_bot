@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 STATE_FILE="$SCRIPT_DIR/.ec2-state"
 AWS_ENV_FILE="$SCRIPT_DIR/aws.env.local"
+RUN_BOT_ON_EC2="${RUN_BOT_ON_EC2:-0}"
 
 REGION_DEFAULT="ap-southeast-1"
 INSTANCE_TYPE="${INSTANCE_TYPE:-t3.micro}"
@@ -242,6 +243,7 @@ elif ! swapon --show=NAME | grep -q '^/swapfile$'; then
 fi
 BOOTSTRAP
 
+if [[ "$RUN_BOT_ON_EC2" == "1" ]]; then
 log "Writing systemd unit..."
 ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "ubuntu@${ELASTIC_IP}" bash << "SERVICE"
 set -euo pipefail
@@ -277,6 +279,19 @@ EOF_SERVICE
 sudo systemctl daemon-reload
 sudo systemctl enable binance-bot
 SERVICE
+else
+log "Skipping EC2 bot systemd unit because RUN_BOT_ON_EC2=$RUN_BOT_ON_EC2"
+ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "ubuntu@${ELASTIC_IP}" bash << "SERVICE"
+set -euo pipefail
+sudo systemctl stop binance-bot.service 2>/dev/null || true
+sudo systemctl disable binance-bot.service 2>/dev/null || true
+if [[ -f /etc/systemd/system/binance-bot.service ]]; then
+    sudo mv /etc/systemd/system/binance-bot.service /etc/systemd/system/binance-bot.service.disabled-local-only
+fi
+sudo systemctl daemon-reload
+sudo systemctl mask binance-bot.service 2>/dev/null || true
+SERVICE
+fi
 
 state_set PROVISION_STATUS "ready"
 

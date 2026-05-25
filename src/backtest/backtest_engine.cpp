@@ -1,6 +1,7 @@
 #include "backtest/backtest_engine.h"
 
 #include <cmath>
+#include <limits>
 #include <optional>
 
 namespace backtest {
@@ -61,7 +62,8 @@ BacktestStats BacktestEngine::runFold(
         : baseConfig.takeProfitPercent;
     const bool useFixedTakeProfit = takeProfitPct > 0.0;
     const double tickSize = symbolMeta.has_value() ? symbolMeta->tickSize : 0.0;
-    const int64_t maxHoldMs = static_cast<int64_t>(baseConfig.maxHoldDuration.count()) * 1000;
+    const int64_t maxHoldMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        baseConfig.maxHoldDuration).count();
 
     std::vector<double> pnlPcts;
     std::optional<OpenPosition> pos;
@@ -175,7 +177,7 @@ BacktestStats BacktestEngine::runFold(
     stats.sharpe       = calculateSharpe(pnlPcts);
     stats.maxDrawdown  = maxDrawdown;
     stats.profitFactor = grossLoss > 0.0 ? grossProfit / grossLoss
-                                         : (grossProfit > 0.0 ? 999.0 : 0.0);
+                                         : (grossProfit > 0.0 ? std::numeric_limits<double>::infinity() : 0.0);
     stats.winRate      = stats.numTrades > 0 ? static_cast<double>(wins) / stats.numTrades : 0.0;
     return stats;
 }
@@ -191,9 +193,9 @@ double BacktestEngine::calculateSortino(const std::vector<double>& pnlPcts) {
     for (double p : pnlPcts) {
         if (p < 0.0) { downsideSumSq += p * p; downsideN++; }
     }
-    if (downsideN == 0) return mean > 0.0 ? 999.0 : 0.0;
+    if (downsideN == 0) return mean > 0.0 ? std::numeric_limits<double>::infinity() : 0.0;
     const double downsideStd = std::sqrt(downsideSumSq / static_cast<double>(downsideN));
-    if (downsideStd == 0.0) return mean > 0.0 ? 999.0 : 0.0;
+    if (downsideStd == 0.0) return mean > 0.0 ? std::numeric_limits<double>::infinity() : 0.0;
     return mean / downsideStd;
 }
 
@@ -205,7 +207,7 @@ double BacktestEngine::calculateSharpe(const std::vector<double>& pnlPcts) {
     double sumSq = 0.0;
     for (double p : pnlPcts) sumSq += (p - mean) * (p - mean);
     const double std = std::sqrt(sumSq / static_cast<double>(pnlPcts.size()));
-    if (std == 0.0) return mean > 0.0 ? 999.0 : 0.0;
+    if (std == 0.0) return mean > 0.0 ? std::numeric_limits<double>::infinity() : 0.0;
     return mean / std;
 }
 

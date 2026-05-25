@@ -118,6 +118,24 @@ TEST(BacktestEngineTest, LongTakeProfit) {
     EXPECT_EQ(stats.winRate, 1.0);
 }
 
+TEST(BacktestEngineTest, UsesInfinityForSingleSidedReturnDistributions) {
+    BacktestEngine engine(BacktestEngine::Config{0.0, 0.0, false});
+    AlwaysLongStub stub(/*atr=*/10.0);
+    auto cfg = makeBaseCfg();
+
+    std::vector<Kline> klines{
+        makeBar(0,        100, 100, 100, 100),
+        makeBar(60'000,   100, 101, 99,  100),
+        makeBar(120'000,  100, 125, 99.5, 120),
+    };
+    const auto stats = engine.runFold(stub, "X", "1m", klines, {}, cfg,
+                                      strategy::Signal::Direction::Long);
+    ASSERT_EQ(stats.numTrades, 1);
+    EXPECT_TRUE(std::isinf(stats.profitFactor));
+    EXPECT_TRUE(std::isinf(stats.sortino));
+    EXPECT_TRUE(std::isinf(stats.sharpe));
+}
+
 TEST(BacktestEngineTest, UsesFixedTakeProfitPercentWhenConfiguredOnStrategy) {
     BacktestEngine engine(BacktestEngine::Config{0.0, 0.0, false});
     AlwaysLongStub stub(/*atr=*/10.0);

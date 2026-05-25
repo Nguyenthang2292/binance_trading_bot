@@ -177,8 +177,30 @@ def test_parse_step_negative_raises() -> None:
 
 # ── main() integration (mocked Gemini) ───────────────────────────────────────
 
-def _mock_call_gemini(_prompt: str, _model: str) -> str:
+def _mock_call_gemini(_prompt: str, _model: str, http_timeout_ms: int = 30_000) -> str:
     return json.dumps({"ranges": VALID_GEMINI_RESPONSE_RANGES, "notes": "mocked"})
+
+
+def test_main_derives_sdk_timeout_from_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = dict(VALID_INPUT)
+    payload["budget"] = {"max_total_combos": 6000, "timeout_seconds": 8}
+    input_file = _make_input_file(tmp_path, payload)
+    output_file = tmp_path / "output.json"
+    monkeypatch.setattr(sys, "argv", ["main.py", str(input_file), str(output_file)])
+
+    captured: dict[str, int] = {}
+
+    def fake_call(_prompt: str, _model: str, http_timeout_ms: int = 30_000) -> str:
+        captured["timeout_ms"] = http_timeout_ms
+        return json.dumps({"ranges": VALID_GEMINI_RESPONSE_RANGES, "notes": "mocked"})
+
+    monkeypatch.setattr(brp, "_call_gemini", fake_call)
+    rc = brp.main()
+
+    assert rc == 0
+    assert captured["timeout_ms"] == 10_000
 
 
 def test_main_success_with_output_file(
@@ -239,7 +261,7 @@ def test_main_gemini_error_returns_error(
     input_file = _make_input_file(tmp_path)
     output_file = tmp_path / "out.json"
     monkeypatch.setattr(sys, "argv", ["main.py", str(input_file), str(output_file)])
-    monkeypatch.setattr(brp, "_call_gemini", lambda *_: (_ for _ in ()).throw(RuntimeError("api down")))
+    monkeypatch.setattr(brp, "_call_gemini", lambda *_, **__: (_ for _ in ()).throw(RuntimeError("api down")))
 
     rc = brp.main()
     assert rc == 1
@@ -256,7 +278,7 @@ def test_main_invalid_gemini_response_returns_error(
     monkeypatch.setattr(sys, "argv", ["main.py", str(input_file), str(output_file)])
     # Return JSON but with unknown param
     bad_ranges = [{"name": "nonexistent_param", "min": 1.0, "max": 2.0, "step": 1.0, "is_integer": False}]
-    monkeypatch.setattr(brp, "_call_gemini", lambda *_: json.dumps({"ranges": bad_ranges, "notes": ""}))
+    monkeypatch.setattr(brp, "_call_gemini", lambda *_, **__: json.dumps({"ranges": bad_ranges, "notes": ""}))
 
     rc = brp.main()
     assert rc == 1

@@ -41,8 +41,7 @@
     "failure_mode": "closed"
   },
   "gemini_filter": {
-    "enabled": false,
-    "mode": "disabled"
+    "enabled": false
   },
   "risk_analytics": {
     "enabled": false

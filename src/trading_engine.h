@@ -6,7 +6,9 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
+#include <mutex>
 #include "binance_api.h"
 
 struct TradingConfig {
@@ -54,11 +56,14 @@ private:
     TradingConfig m_config;
     std::atomic<bool> m_running{false};
     std::thread m_workerThread;
+    std::condition_variable m_stopCv;
+    std::mutex m_stopMutex;
 
     std::function<void(const Signal&)> m_onSignal;
     std::function<void(const NormalPlacementResult&)> m_onTrade;
 
     void tradingLoop();
     void executeSignal(const Signal& signal);
-    bool hasOpenPosition(const std::string& symbol);
+    std::optional<double> currentPositionQty(const std::string& symbol);
+    bool waitForNextPoll();
 };

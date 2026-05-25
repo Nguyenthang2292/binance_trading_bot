@@ -46,6 +46,7 @@ public:
     boost::asio::awaitable<Result<void>> start();
     void stop();
 
+    KlineCache& cache() { return m_cache; }
     const KlineCache& cache() const { return m_cache; }
     std::vector<std::string> symbols() const;
     std::optional<ExchangeSymbol> symbolInfo(std::string_view symbol) const;

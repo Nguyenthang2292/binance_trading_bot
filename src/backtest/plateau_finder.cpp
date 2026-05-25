@@ -3,6 +3,7 @@
 #include <cmath>
 #include <map>
 #include <set>
+#include <unordered_map>
 
 namespace backtest {
 
@@ -31,55 +32,105 @@ std::map<std::string, std::vector<double>> extractDimensions(const std::vector<S
     return result;
 }
 
-double getSensitivity(const std::vector<ScoredPoint>& grid, const ParamPoint& best, const std::string& dim, const std::vector<double>& dimVals) {
+int nearestValueIndex(const std::vector<double>& values, double target) {
+    if (values.empty()) return -1;
+    auto it = std::lower_bound(values.begin(), values.end(), target);
+    if (it == values.begin()) return 0;
+    if (it == values.end()) return static_cast<int>(values.size() - 1);
+
+    const int hi = static_cast<int>(std::distance(values.begin(), it));
+    const int lo = hi - 1;
+    return std::abs(values[hi] - target) < std::abs(target - values[lo]) ? hi : lo;
+}
+
+using IndexedPoint = std::map<std::string, int>;
+
+IndexedPoint indexPoint(
+    const ParamPoint& point,
+    const std::map<std::string, std::vector<double>>& dims) {
+    IndexedPoint indexed;
+    for (const auto& [dim, values] : dims) {
+        auto it = point.find(dim);
+        if (it == point.end()) continue;
+        const int idx = nearestValueIndex(values, it->second);
+        if (idx >= 0) indexed.emplace(dim, idx);
+    }
+    return indexed;
+}
+
+bool sameAllDimsExcept(
+    const IndexedPoint& lhs,
+    const IndexedPoint& rhs,
+    const std::string& excludedDim) {
+    for (const auto& [dim, lhsIdx] : lhs) {
+        if (dim == excludedDim) continue;
+        const auto rhsIt = rhs.find(dim);
+        if (rhsIt == rhs.end() || rhsIt->second != lhsIdx) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool sameDims(
+    const IndexedPoint& lhs,
+    const IndexedPoint& rhs,
+    const std::vector<std::string>& dims) {
+    for (const auto& dim : dims) {
+        const auto lhsIt = lhs.find(dim);
+        const auto rhsIt = rhs.find(dim);
+        if (lhsIt == lhs.end() || rhsIt == rhs.end() || lhsIt->second != rhsIt->second) {
+            return false;
+        }
+    }
+    return true;
+}
+
+double getSensitivity(
+    const std::vector<ScoredPoint>& grid,
+    const std::unordered_map<const ScoredPoint*, IndexedPoint>& pointIndices,
+    const ScoredPoint& best,
+    const std::string& dim,
+    const std::vector<double>& dimVals) {
     // Find gradient around best.
-    double bestVal = best.at(dim);
-    auto it = std::find(dimVals.begin(), dimVals.end(), bestVal);
-    if (it == dimVals.end()) return 0.0;
-    
-    size_t idx = std::distance(dimVals.begin(), it);
+    const auto bestIt = pointIndices.find(&best);
+    if (bestIt == pointIndices.end()) return 0.0;
+
+    const auto bestDimIt = bestIt->second.find(dim);
+    if (bestDimIt == bestIt->second.end()) return 0.0;
+    const int idx = bestDimIt->second;
     
     // Find point with 'dim' one step down
     double oosDown = 0.0, oosUp = 0.0;
     bool foundDown = false, foundUp = false;
     
-    if (idx > 0) {
-        double valDown = dimVals[idx - 1];
+    if (idx > 0 && idx <= static_cast<int>(dimVals.size() - 1)) {
+        const int idxDown = idx - 1;
         for (const auto& sp : grid) {
-            bool match = true;
-            for (const auto& [k, v] : best) {
-                if (k == dim) {
-                    if (sp.point.at(k) != valDown) { match = false; break; }
-                } else {
-                    if (sp.point.at(k) != v) { match = false; break; }
-                }
-            }
+            const auto spIdxIt = pointIndices.find(&sp);
+            if (spIdxIt == pointIndices.end()) continue;
+            const auto dimIt = spIdxIt->second.find(dim);
+            if (dimIt == spIdxIt->second.end()) continue;
+            const bool match = dimIt->second == idxDown &&
+                sameAllDimsExcept(spIdxIt->second, bestIt->second, dim);
             if (match) { oosDown = sp.oosSortino; foundDown = true; break; }
         }
     }
     
-    if (idx + 1 < dimVals.size()) {
-        double valUp = dimVals[idx + 1];
+    if (idx >= 0 && idx + 1 < static_cast<int>(dimVals.size())) {
+        const int idxUp = idx + 1;
         for (const auto& sp : grid) {
-            bool match = true;
-            for (const auto& [k, v] : best) {
-                if (k == dim) {
-                    if (sp.point.at(k) != valUp) { match = false; break; }
-                } else {
-                    if (sp.point.at(k) != v) { match = false; break; }
-                }
-            }
+            const auto spIdxIt = pointIndices.find(&sp);
+            if (spIdxIt == pointIndices.end()) continue;
+            const auto dimIt = spIdxIt->second.find(dim);
+            if (dimIt == spIdxIt->second.end()) continue;
+            const bool match = dimIt->second == idxUp &&
+                sameAllDimsExcept(spIdxIt->second, bestIt->second, dim);
             if (match) { oosUp = sp.oosSortino; foundUp = true; break; }
         }
     }
     
-    double bestOos = 0.0;
-    for (const auto& sp : grid) {
-        if (sp.point == best) {
-            bestOos = sp.oosSortino;
-            break;
-        }
-    }
+    const double bestOos = best.oosSortino;
     
     double gradDown = foundDown ? std::abs(bestOos - oosDown) : 0.0;
     double gradUp = foundUp ? std::abs(bestOos - oosUp) : 0.0;
@@ -112,6 +163,12 @@ std::optional<PlateauResult> PlateauFinder::find(
 
     // 2. Build neighborhood
     auto dims = extractDimensions(scoredGrid);
+    std::unordered_map<const ScoredPoint*, IndexedPoint> pointIndices;
+    pointIndices.reserve(scoredGrid.size());
+    for (const auto& sp : scoredGrid) {
+        pointIndices.emplace(&sp, indexPoint(sp.point, dims));
+    }
+
     std::vector<std::string> activeDims;
     for (const auto& [k, v] : dims) {
         activeDims.push_back(k);
@@ -127,7 +184,7 @@ std::optional<PlateauResult> PlateauFinder::find(
         // Restrict to top-N most sensitive
         std::vector<std::pair<double, std::string>> sensitivities;
         for (const auto& dim : activeDims) {
-            sensitivities.push_back({getSensitivity(scoredGrid, best->point, dim, dims[dim]), dim});
+            sensitivities.push_back({getSensitivity(scoredGrid, pointIndices, *best, dim, dims[dim]), dim});
         }
         
         // Sort descending by sensitivity
@@ -146,37 +203,40 @@ std::optional<PlateauResult> PlateauFinder::find(
     }
     
     // Collect neighborhood points
+    const auto bestIndexedIt = pointIndices.find(best);
+    if (bestIndexedIt == pointIndices.end()) return std::nullopt;
+
+    std::vector<std::string> inactiveDims;
+    inactiveDims.reserve(dims.size());
+    for (const auto& [dim, _] : dims) {
+        if (std::find(activeDims.begin(), activeDims.end(), dim) == activeDims.end()) {
+            inactiveDims.push_back(dim);
+        }
+    }
+
     std::vector<const ScoredPoint*> neighborhood;
     for (const auto& sp : scoredGrid) {
+        const auto spIndexedIt = pointIndices.find(&sp);
+        if (spIndexedIt == pointIndices.end()) continue;
+
         bool inNeighborhood = true;
         for (const auto& dim : activeDims) {
-            double val = sp.point.at(dim);
-            double bestVal = best->point.at(dim);
-            
-            auto itVal = std::find(dims[dim].begin(), dims[dim].end(), val);
-            auto itBest = std::find(dims[dim].begin(), dims[dim].end(), bestVal);
-            
-            if (itVal != dims[dim].end() && itBest != dims[dim].end()) {
-                int dist = std::abs(static_cast<int>(std::distance(dims[dim].begin(), itVal)) - 
-                                    static_cast<int>(std::distance(dims[dim].begin(), itBest)));
-                if (dist > neighborhoodRadius) {
-                    inNeighborhood = false;
-                    break;
-                }
+            const auto spDimIt = spIndexedIt->second.find(dim);
+            const auto bestDimIt = bestIndexedIt->second.find(dim);
+            if (spDimIt == spIndexedIt->second.end() || bestDimIt == bestIndexedIt->second.end()) {
+                inNeighborhood = false;
+                break;
+            }
+            const int dist = std::abs(spDimIt->second - bestDimIt->second);
+            if (dist > neighborhoodRadius) {
+                inNeighborhood = false;
+                break;
             }
         }
         
         // For inactive dims, it must match the best point exactly
-        for (const auto& [k, v] : dims) {
-            if (std::find(activeDims.begin(), activeDims.end(), k) == activeDims.end()) {
-                const auto spIt   = sp.point.find(k);
-                const auto bestIt = best->point.find(k);
-                if (spIt == sp.point.end() || bestIt == best->point.end() ||
-                    spIt->second != bestIt->second) {
-                    inNeighborhood = false;
-                    break;
-                }
-            }
+        if (inNeighborhood && !sameDims(spIndexedIt->second, bestIndexedIt->second, inactiveDims)) {
+            inNeighborhood = false;
         }
         
         if (inNeighborhood) {
@@ -234,9 +294,17 @@ std::optional<PlateauResult> PlateauFinder::find(
     res.center = center;
     res.survivors = std::move(survivors);
     
+    std::vector<std::string> allDims;
+    allDims.reserve(dims.size());
+    for (const auto& [dim, _] : dims) {
+        allDims.push_back(dim);
+    }
+    const auto centerIndexed = indexPoint(center, dims);
+
     // Find sortino for center if it was evaluated
     for (const auto& sp : scoredGrid) {
-        if (sp.point == center) {
+        const auto spIndexedIt = pointIndices.find(&sp);
+        if (spIndexedIt != pointIndices.end() && sameDims(spIndexedIt->second, centerIndexed, allDims)) {
             res.centerSortinoIS = sp.isSortino;
             res.centerSortinoOOS = sp.oosSortino;
             break;

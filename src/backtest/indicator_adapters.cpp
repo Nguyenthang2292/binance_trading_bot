@@ -14,18 +14,78 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <utility>
 
 namespace backtest {
 
 namespace {
 
-double computeSma(const std::vector<Kline>& klines, int period) {
-    const int n = static_cast<int>(klines.size());
-    double sum = 0.0;
-    for (int i = n - period; i < n; ++i) {
-        sum += klines[i].close;
+// Prefix-sum cache for SMAs over a stable Kline buffer (e.g., the
+// BacktestEngine's growing window, which is pre-reserved and never reallocates
+// within a runFold). Cumulatives are extended monotonically across calls,
+// turning per-call SMA cost from O(period) into amortized O(1). Reset triggers:
+// different data pointer, different first-bar openTime fingerprint (defends
+// against allocator pointer reuse across runFolds), or cache larger than
+// buffer (defensive sync). thread_local so concurrent workers don't share
+// state.
+struct PrefixSumCache {
+    const Kline* dataPtr{nullptr};
+    long long firstOpenTime{0};
+    std::vector<double> close;  // close[i] = sum of klines[0..i-1].close, close[0]=0
+    std::vector<double> high;
+    std::vector<double> low;
+};
+
+thread_local PrefixSumCache g_prefixCache;
+
+void ensurePrefixCache(const std::vector<Kline>& klines) {
+    if (klines.empty()) {
+        g_prefixCache = PrefixSumCache{};
+        return;
     }
-    return sum / static_cast<double>(period);
+    const Kline* dataPtr = klines.data();
+    const long long firstOpenTime = klines.front().openTime;
+    const bool needReset = g_prefixCache.dataPtr != dataPtr
+        || g_prefixCache.firstOpenTime != firstOpenTime
+        || g_prefixCache.close.empty()
+        || g_prefixCache.close.size() > klines.size() + 1;
+    if (needReset) {
+        g_prefixCache.dataPtr = dataPtr;
+        g_prefixCache.firstOpenTime = firstOpenTime;
+        g_prefixCache.close.assign(1, 0.0);
+        g_prefixCache.high.assign(1, 0.0);
+        g_prefixCache.low.assign(1, 0.0);
+        g_prefixCache.close.reserve(klines.size() + 1);
+        g_prefixCache.high.reserve(klines.size() + 1);
+        g_prefixCache.low.reserve(klines.size() + 1);
+    }
+    while (g_prefixCache.close.size() <= klines.size()) {
+        const std::size_t i = g_prefixCache.close.size() - 1;
+        g_prefixCache.close.push_back(g_prefixCache.close.back() + klines[i].close);
+        g_prefixCache.high.push_back(g_prefixCache.high.back() + klines[i].high);
+        g_prefixCache.low.push_back(g_prefixCache.low.back() + klines[i].low);
+    }
+}
+
+double smaCloseTail(std::size_t n, int period) {
+    if (period <= 0 || static_cast<std::size_t>(period) > n) return 0.0;
+    const std::size_t start = n - static_cast<std::size_t>(period);
+    return (g_prefixCache.close[n] - g_prefixCache.close[start])
+         / static_cast<double>(period);
+}
+
+double smaHighRange(int startIdx, int endIdx) {
+    if (startIdx < 0 || endIdx < startIdx) return 0.0;
+    const int period = endIdx - startIdx + 1;
+    return (g_prefixCache.high[endIdx + 1] - g_prefixCache.high[startIdx])
+         / static_cast<double>(period);
+}
+
+double smaLowRange(int startIdx, int endIdx) {
+    if (startIdx < 0 || endIdx < startIdx) return 0.0;
+    const int period = endIdx - startIdx + 1;
+    return (g_prefixCache.low[endIdx + 1] - g_prefixCache.low[startIdx])
+         / static_cast<double>(period);
 }
 
 std::string fmtPrice(double v) {
@@ -73,6 +133,18 @@ std::vector<Kline> extractClosedKlines(const std::vector<Kline>& klines) {
         }
     }
     return closed;
+}
+
+const std::vector<Kline>& closedKlinesView(
+    const std::vector<Kline>& klines,
+    std::vector<Kline>& scratch) {
+    const bool allClosed = std::all_of(
+        klines.begin(), klines.end(), [](const Kline& k) { return k.isClosed; });
+    if (allClosed) {
+        return klines;
+    }
+    scratch = extractClosedKlines(klines);
+    return scratch;
 }
 
 }  // namespace
@@ -123,15 +195,17 @@ strategy::Signal GoldenCrossoverAdapter::evaluateWith(
 
     if (maShort <= 0 || maLong <= maShort || atrPeriod <= 0) return {};
 
-    const auto closed = extractClosedKlines(klines);
+    std::vector<Kline> closedScratch;
+    const auto& closed = closedKlinesView(klines, closedScratch);
     const auto minCandles = static_cast<std::size_t>(std::max(maLong, atrPeriod + 1));
     if (closed.size() < minCandles) return {};
 
     const double atr = strategy::indicators::lastAtr(closed, atrPeriod);
     if (atr <= 0.0) return {};
 
-    const double smaShort = computeSma(closed, maShort);
-    const double smaLong  = computeSma(closed, maLong);
+    ensurePrefixCache(closed);
+    const double smaShort = smaCloseTail(closed.size(), maShort);
+    const double smaLong  = smaCloseTail(closed.size(), maLong);
 
     const double spread     = std::abs(smaShort - smaLong) / smaLong;
     const double confidence = std::clamp(spread / 0.01, baseConfig.minConfidence, 1.0);
@@ -209,15 +283,17 @@ strategy::Signal Donchian520CrossoverAdapter::evaluateWith(
 
     if (shortPeriod <= 0 || longPeriod <= shortPeriod || atrPeriod <= 0) return {};
 
-    const auto closed = extractClosedKlines(klines);
+    std::vector<Kline> closedScratch;
+    const auto& closed = closedKlinesView(klines, closedScratch);
     const auto minCandles = static_cast<std::size_t>(std::max(longPeriod, atrPeriod + 1));
     if (closed.size() < minCandles) return {};
 
     const double atr = strategy::indicators::lastAtr(closed, atrPeriod);
     if (atr <= 0.0) return {};
 
-    const double smaShort = computeSma(closed, shortPeriod);
-    const double smaLong  = computeSma(closed, longPeriod);
+    ensurePrefixCache(closed);
+    const double smaShort = smaCloseTail(closed.size(), shortPeriod);
+    const double smaLong  = smaCloseTail(closed.size(), longPeriod);
 
     if (smaShort > smaLong) {
         return strategy::Signal{
@@ -312,24 +388,21 @@ strategy::Signal GartleyDayCrossoverAdapter::evaluateWith(
     const double atr = strategy::indicators::lastAtr(closedForAtr, atrPeriod);
     if (atr <= 0.0) return {};
 
-    double fastSum = 0.0;
-    for (int i = evalIdx - fastPeriod + 1; i <= evalIdx; ++i) {
-        fastSum += (klines[i].high + klines[i].low) / 2.0;
-    }
-    const double fastMA = fastSum / fastPeriod;
+    ensurePrefixCache(klines);
+
+    // fastMA = mean of (high+low)/2 over [evalIdx-fastPeriod+1, evalIdx]
+    //        = (sumHigh + sumLow) / (2 * period)
+    //        = (smaHighRange + smaLowRange) / 2
+    const int fastStartIdx = evalIdx - fastPeriod + 1;
+    const double fastMA = (smaHighRange(fastStartIdx, evalIdx)
+                         + smaLowRange(fastStartIdx, evalIdx)) / 2.0;
 
     const int slowEndIdx   = evalIdx - offset;
     const int slowStartIdx = slowEndIdx - slowPeriod + 1;
     if (slowStartIdx < 0) return {};
 
-    double slowHighSum = 0.0;
-    double slowLowSum  = 0.0;
-    for (int i = slowStartIdx; i <= slowEndIdx; ++i) {
-        slowHighSum += klines[i].high;
-        slowLowSum  += klines[i].low;
-    }
-    const double slowHighMA = slowHighSum / slowPeriod;
-    const double slowLowMA  = slowLowSum  / slowPeriod;
+    const double slowHighMA = smaHighRange(slowStartIdx, slowEndIdx);
+    const double slowLowMA  = smaLowRange(slowStartIdx, slowEndIdx);
 
     const double bandWidth = slowHighMA - slowLowMA;
     const double mid       = (slowHighMA + slowLowMA) / 2.0;

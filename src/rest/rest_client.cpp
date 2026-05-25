@@ -341,7 +341,9 @@ Kline parseKlineArray(simdjson::ondemand::array row) {
         }
         ++index;
     }
-    k.isClosed = true;
+    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    k.isClosed = k.closeTime < nowMs;
     return k;
 }
 

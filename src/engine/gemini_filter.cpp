@@ -779,7 +779,7 @@ GeminiFilterResult GeminiFilterController::evaluate(
     strategy::Signal::Direction direction,
     std::string_view signalInterval,
     const scanner::KlineCache& cache) const {
-    if (!m_config.enabled || m_config.mode == GeminiFilterMode::Disabled) {
+    if (!m_config.enabled) {
         return {GeminiDecision::Allow, 1.0, 1.0, 1.0, "gemini filter disabled", {}, false};
     }
 

@@ -10,7 +10,7 @@ from typing import Any, cast
 from google import genai
 
 from .cache_store import load_entry, save_entry
-from .key_manager import GeminiKey
+from tools.shared.gemini_key_manager import GeminiKey
 
 LOGGER = logging.getLogger("gemini_filter.model_resolver")
 
@@ -107,7 +107,7 @@ def resolve_models(data: dict[str, Any], key_manager: Any) -> ResolvedModels:
         age = max(0, now - cached_at)
         model_name = str(cached.get("model", ""))
         if model_name:
-            resolved = ResolvedModels(model_name, model_name, "cache")
+            resolved = ResolvedModels(str(model_name), str(model_name), "cache")
             if age <= ttl_seconds:
                 LOGGER.info(
                     "model resolution cache hit mode=%s model=%s age_s=%d",
@@ -129,20 +129,20 @@ def resolve_models(data: dict[str, Any], key_manager: Any) -> ResolvedModels:
         if not fallback_on_error:
             raise RuntimeError(message)
         LOGGER.warning("%s; fallback to pinned models", message)
-        return ResolvedModels(pinned_sentiment, pinned_vision, "fallback_unsupported_mode")
+        return ResolvedModels(str(pinned_sentiment), str(pinned_vision), "fallback_unsupported_mode")
 
     try:
         models = key_manager.run_with_rotation(_list_models_with_rotation)
         latest = _latest_core_model(models, tier=tier, allow_preview=allow_preview)
         if not latest:
             raise RuntimeError(f"no Gemini {tier} generateContent model found")
-        resolved = latest.removeprefix("models/")
+        resolved_name = str(latest.removeprefix("models/"))
         save_entry(
             runtime_base / "cache",
             "model_resolution",
             cache_key,
             {
-                "model": resolved,
+                "model": resolved_name,
                 "cached_at": now,
                 "mode": mode,
                 "allow_preview": allow_preview,
@@ -152,15 +152,19 @@ def resolve_models(data: dict[str, Any], key_manager: Any) -> ResolvedModels:
             "model resolution completed mode=%s allow_preview=%s sentiment=%s vision=%s",
             mode,
             allow_preview,
-            resolved,
-            resolved,
+            resolved_name,
+            resolved_name,
         )
-        return ResolvedModels(resolved, resolved, mode)
+        return ResolvedModels(str(resolved_name), str(resolved_name), str(mode))
     except Exception:
         if not fallback_on_error:
             raise
         if stale_cached is not None:
             LOGGER.warning("model resolution failed; fallback to stale cache")
-            return ResolvedModels(stale_cached.sentiment_model, stale_cached.vision_model, "cache_stale")
+            return ResolvedModels(
+                str(stale_cached.sentiment_model),
+                str(stale_cached.vision_model),
+                "cache_stale",
+            )
         LOGGER.exception("model resolution failed; fallback to pinned models")
-        return ResolvedModels(pinned_sentiment, pinned_vision, "fallback_error")
+        return ResolvedModels(str(pinned_sentiment), str(pinned_vision), "fallback_error")

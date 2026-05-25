@@ -8,11 +8,44 @@ import time
 from pathlib import Path
 from typing import Sequence
 
-import lightgbm as lgb
+import lightgbm as lgb  # type: ignore[import-not-found]
 import numpy as np
 import pandas as pd
 
 from features import FEATURE_COLS, add_features
+
+
+def _safe_int(value: object | None, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    try:
+        s = str(value).strip()
+        return int(s) if s else default
+    except Exception:
+        return default
+
+
+def _safe_float(value: object | None, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    if isinstance(value, float):
+        return value
+    try:
+        s = str(value).strip()
+        return float(s) if s else default
+    except Exception:
+        return default
+
+
+def _safe_str(value: object | None, default: str = "") -> str:
+    if value is None:
+        return default
+    try:
+        return str(value)
+    except Exception:
+        return default
 
 
 def parse_args() -> argparse.Namespace:
@@ -126,14 +159,14 @@ def upsert_predictions(
                 (
                     model_id,
                     run_id if run_id else None,
-                    str(row.symbol),
+                    _safe_str(getattr(row, "symbol", None)),
                     interval,
-                    int(row.asof_open_time_ms),
+                    _safe_int(getattr(row, "asof_open_time_ms", None)),
                     generated_at_ms,
-                    int(horizon_bars),
-                    float(row.score),
-                    int(row.rank),
-                    float(row.score_percentile),
+                    _safe_int(horizon_bars),
+                    _safe_float(getattr(row, "score", None)),
+                    _safe_int(getattr(row, "rank", None)),
+                    _safe_float(getattr(row, "score_percentile", None)),
                 )
             )
 
@@ -175,11 +208,11 @@ def write_debug_json(
         "interval": interval,
         "scores": [
             {
-                "symbol": str(r.symbol),
-                "score": float(r.score),
-                "rank": int(r.rank),
-                "score_percentile": float(r.score_percentile),
-                "asof_open_time_ms": int(r.asof_open_time_ms),
+                "symbol": _safe_str(getattr(r, "symbol", None)),
+                "score": _safe_float(getattr(r, "score", None)),
+                "rank": _safe_int(getattr(r, "rank", None)),
+                "score_percentile": _safe_float(getattr(r, "score_percentile", None)),
+                "asof_open_time_ms": _safe_int(getattr(r, "asof_open_time_ms", None)),
             }
             for r in rows.itertuples(index=False)
         ],

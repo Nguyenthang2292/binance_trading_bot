@@ -20,8 +20,10 @@ namespace {
 class StubProvider : public IHistoricalWindowProvider {
 public:
     WindowResult result;
+    mutable int lastRequiredBars{0};
     WindowResult closedWindow(std::string_view, std::string_view, int requiredBars,
                               std::chrono::system_clock::time_point) const override {
+        lastRequiredBars = requiredBars;
         WindowResult r = result;
         r.requiredBars = requiredBars;
         return r;
@@ -170,6 +172,26 @@ TEST(BacktestGateControllerTest, InsufficientDataDrop) {
     auto res = ctrl.evaluate(makeReq());
     ASSERT_TRUE(std::holds_alternative<DropDetail>(res));
     EXPECT_EQ(std::get<DropDetail>(res).reason, DropReason::InsufficientData);
+}
+
+TEST(BacktestGateControllerTest, CapsRequiredBarsAtConfiguredWindowMax) {
+    StubProvider provider;
+    provider.result.sufficient = false;
+    provider.result.availableBars = 1499;
+
+    FakeRangeProposer proposer;
+    auto cfg = makeCfg();
+    cfg.data.windowMinCandles = 1500;
+    cfg.data.windowMaxCandles = 1500;
+    cfg.data.windowSlowestMultiplier = 10;
+
+    BacktestGateController ctrl(provider, proposer, makeAdapters(),
+                                cfg, BacktestEngine::Config{});
+
+    auto res = ctrl.evaluate(makeReq());
+    ASSERT_TRUE(std::holds_alternative<DropDetail>(res));
+    EXPECT_EQ(provider.lastRequiredBars, 1500);
+    EXPECT_NE(std::get<DropDetail>(res).message.find("need 1500"), std::string::npos);
 }
 
 TEST(BacktestGateControllerTest, GeminiUnavailableWhenProposerReportsUnavailable) {

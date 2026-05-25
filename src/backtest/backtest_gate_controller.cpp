@@ -2,15 +2,21 @@
 #include "backtest/plateau_finder.h"
 #include "backtest/walk_forward.h"
 #include "logger.h"
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <sstream>
+#include <map>
+#include <string>
+#include <unordered_map>
+#include <utility>
 
 namespace backtest {
 
 namespace {
+
+using json = nlohmann::json;
 
 int computeSlowestParamMax(const StrategyParamSpec& spec) {
     int slowest = 1;
@@ -71,29 +77,208 @@ std::string dropReasonStr(DropReason r) {
 
 void logStructured(std::string_view event, const std::string& symbol,
                    const std::string& strategyId, const std::string& interval,
-                   const std::string& extra = "") {
-    std::ostringstream o;
-    o << R"({"event":")" << event << R"(","symbol":")" << symbol
-      << R"(","strategy_id":")" << strategyId
-      << R"(","interval":")" << interval << '"';
-    if (!extra.empty()) o << ',' << extra;
-    o << '}';
-    Logger::instance().log(LogLevel::Info, o.str());
+                   const json& extra = json::object()) {
+    json payload = {
+        {"event", event},
+        {"symbol", symbol},
+        {"strategy_id", strategyId},
+        {"interval", interval},
+    };
+    if (extra.is_object()) {
+        for (auto it = extra.begin(); it != extra.end(); ++it) {
+            payload[it.key()] = it.value();
+        }
+    }
+    Logger::instance().log(LogLevel::Info, payload.dump());
 }
 
-std::string paramPointJson(const ParamPoint& point) {
-    std::ostringstream o;
-    o << '{';
-    bool first = true;
-    for (const auto& [name, value] : point) {
-        if (!first) {
-            o << ',';
-        }
-        first = false;
-        o << '"' << name << "\":" << value;
+json paramPointToJson(const ParamPoint& point) {
+    std::map<std::string, double> ordered(point.begin(), point.end());
+    json j = json::object();
+    for (const auto& [name, value] : ordered) {
+        j[name] = value;
     }
-    o << '}';
-    return o.str();
+    return j;
+}
+
+std::string paramPointKey(const ParamPoint& point) {
+    return paramPointToJson(point).dump();
+}
+
+// ── Phase 7: score the grid ───────────────────────────────────────────────
+//
+// For each combo, runs the engine over every walk-forward fold (IS + OOS),
+// applies the min-trades and OOS/IS Sortino filters, and accumulates per-combo
+// scores. Aborts early on deadline; the caller maps that to DeadlineExceeded.
+struct GridScoreOutcome {
+    std::vector<ScoredPoint> scoredGrid;
+    int combosEvaluated{0};
+    int minTradesRejects{0};
+    int oosIsRejects{0};
+    bool deadlineHit{false};
+    std::string deadlineLocation;
+};
+
+GridScoreOutcome scoreGrid(
+    const IOptimizableStrategy& adapter,
+    const BacktestEngine& engine,
+    const std::vector<ParamPoint>& grid,
+    const std::vector<WalkForwardFold>& folds,
+    const BacktestGateFiltersConfig& filters,
+    const BacktestGateRequest& req,
+    std::chrono::steady_clock::time_point deadline) {
+
+    GridScoreOutcome out;
+    out.scoredGrid.reserve(grid.size());
+
+    for (const auto& point : grid) {
+        if (deadlineExceeded(deadline)) {
+            out.deadlineHit = true;
+            out.deadlineLocation = "mid-grid evaluation";
+            return out;
+        }
+
+        double sumIS = 0.0;
+        double sumOOS = 0.0;
+        bool everyFoldPassed = true;
+
+        for (const auto& fold : folds) {
+            if (deadlineExceeded(deadline)) {
+                out.deadlineHit = true;
+                out.deadlineLocation = "mid-fold evaluation";
+                return out;
+            }
+            const auto isStats = engine.runFold(
+                adapter, req.symbol, req.interval, fold.inSample, point,
+                req.baseConfig, req.originalDirection, req.symbolMeta);
+            const auto oosStats = engine.runFold(
+                adapter, req.symbol, req.interval, fold.outOfSample, point,
+                req.baseConfig, req.originalDirection, req.symbolMeta);
+
+            if (isStats.numTrades < filters.minTradesPerFold ||
+                oosStats.numTrades < filters.minTradesPerFold) {
+                out.minTradesRejects++;
+                everyFoldPassed = false;
+                break;
+            }
+            sumIS += isStats.sortino;
+            sumOOS += oosStats.sortino;
+        }
+
+        ScoredPoint sp;
+        sp.point = point;
+        sp.passedFilters = false;
+        sp.isSortino = 0.0;
+        sp.oosSortino = 0.0;
+
+        if (everyFoldPassed) {
+            const double meanIS = sumIS / static_cast<double>(folds.size());
+            const double meanOOS = sumOOS / static_cast<double>(folds.size());
+            sp.isSortino = meanIS;
+            sp.oosSortino = meanOOS;
+
+            const bool finiteOk = std::isfinite(meanIS) && std::isfinite(meanOOS);
+            const bool bothPositive = meanIS > 0.0 && meanOOS > 0.0;
+            const double floor = std::max(
+                filters.oosIsRatioThreshold * meanIS,
+                filters.minOosSortino);
+            if (finiteOk && bothPositive && meanOOS >= floor) {
+                sp.passedFilters = true;
+            } else {
+                out.oosIsRejects++;
+            }
+        }
+        out.scoredGrid.push_back(sp);
+        out.combosEvaluated++;
+    }
+
+    return out;
+}
+
+// Memoized adapter call — keyed by serialized param point. Same evalKlines and
+// baseConfig are used throughout the vote + pass phases, so a hash table avoids
+// re-evaluating identical points.
+const strategy::Signal& evaluateCached(
+    const IOptimizableStrategy& adapter,
+    const ParamPoint& point,
+    const BacktestGateRequest& req,
+    const std::vector<Kline>& evalKlines,
+    std::unordered_map<std::string, strategy::Signal>& cache) {
+    const std::string key = paramPointKey(point);
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+        auto [insertedIt, _] = cache.emplace(
+            key,
+            adapter.evaluateWith(req.symbol, req.interval, evalKlines, point, req.baseConfig));
+        it = insertedIt;
+    }
+    return it->second;
+}
+
+// ── Phase 9: majority vote on signal bar T ─────────────────────────────────
+struct VoteOutcome {
+    int matching{0};
+    int total{0};
+};
+
+VoteOutcome runVote(
+    const IOptimizableStrategy& adapter,
+    const std::vector<ParamPoint>& votePoints,
+    const std::vector<Kline>& evalKlines,
+    const BacktestGateRequest& req,
+    std::unordered_map<std::string, strategy::Signal>& cache) {
+    VoteOutcome out;
+    for (const auto& point : votePoints) {
+        const auto& voteSig = evaluateCached(adapter, point, req, evalKlines, cache);
+        if (voteSig.direction == req.originalDirection &&
+            voteSig.confidence >= req.baseConfig.minConfidence &&
+            voteSig.atr > 0.0) {
+            out.matching++;
+        }
+        out.total++;
+    }
+    return out;
+}
+
+// ── Phase 10: assemble the final PassResult ────────────────────────────────
+PassResult buildPassResult(
+    const IOptimizableStrategy& adapter,
+    const PlateauResult& plateau,
+    const VoteOutcome& vote,
+    const std::vector<Kline>& evalKlines,
+    const BacktestGateRequest& req,
+    int combosEvaluated,
+    std::chrono::steady_clock::time_point start,
+    std::unordered_map<std::string, strategy::Signal>& cache) {
+
+    PassResult pass;
+    pass.direction = req.originalDirection;
+    pass.optimizedParams = plateau.center;
+    pass.centerSortinoIS = plateau.centerSortinoIS;
+    pass.centerSortinoOOS = plateau.centerSortinoOOS;
+    pass.plateauVotePass = vote.matching;
+    pass.plateauVoteTotal = vote.total;
+    pass.combosEvaluated = combosEvaluated;
+    pass.wallTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start);
+
+    // Recompute ATR on full window through bar T using optimized params (cached).
+    const auto& centerSig = evaluateCached(adapter, plateau.center, req, evalKlines, cache);
+    pass.atr = centerSig.atr > 0.0 ? centerSig.atr : req.originalAtr;
+
+    const auto slIt = plateau.center.find("sl_multiplier");
+    const auto tpIt = plateau.center.find("tp_multiplier");
+    pass.slMultiplier = slIt != plateau.center.end() ? slIt->second : req.baseConfig.slMultiplier;
+    pass.tpMultiplier = tpIt != plateau.center.end() ? tpIt->second : req.baseConfig.tpMultiplier;
+    pass.riskPct = req.baseConfig.riskPct;  // not tuned in v1.1
+
+    if (pass.direction == strategy::Signal::Direction::Long) {
+        pass.initialStopPrice = req.currentPrice - pass.slMultiplier * pass.atr;
+    } else {
+        pass.initialStopPrice = req.currentPrice + pass.slMultiplier * pass.atr;
+    }
+
+    return pass;
 }
 
 }  // namespace
@@ -120,12 +305,12 @@ BacktestGateResult BacktestGateController::evaluate(const BacktestGateRequest& r
     // Helper: emit a DROP structured event and return the drop.
     auto emitDrop = [&](DropReason r, std::string msg, int combos) -> BacktestGateResult {
         auto d = makeDrop(r, msg, combos, start);
-        std::ostringstream extra;
-        extra << R"("reason":")" << dropReasonStr(r) << '"'
-              << R"(,"message":")" << msg << '"'
-              << R"(,"combos":)" << combos
-              << R"(,"wall_ms":)" << d.wallTime.count();
-        logStructured("BACKTEST_GATE_DROP", req.symbol, req.strategyId, req.interval, extra.str());
+        logStructured("BACKTEST_GATE_DROP", req.symbol, req.strategyId, req.interval, {
+            {"reason", dropReasonStr(r)},
+            {"message", msg},
+            {"combos", combos},
+            {"wall_ms", d.wallTime.count()},
+        });
         return d;
     };
 
@@ -140,26 +325,67 @@ BacktestGateResult BacktestGateController::evaluate(const BacktestGateRequest& r
     // 2. Data window sizing
     const auto spec = adapter.spec(req.baseConfig);
     const int slowestMax = computeSlowestParamMax(spec);
-    const int requiredBars = std::max(
+    const int uncappedRequiredBars = std::max(
         m_cfg.data.windowMinCandles,
         m_cfg.data.windowSlowestMultiplier * slowestMax);
+    const int requiredBars = m_cfg.data.windowMaxCandles > 0
+        ? std::min(uncappedRequiredBars, m_cfg.data.windowMaxCandles)
+        : uncappedRequiredBars;
 
     auto window = m_dataProvider.closedWindow(
         req.symbol, req.interval, requiredBars, req.signalBarOpenTime);
+
+    auto restFailureEvent = [](const std::string& reason) -> std::string_view {
+        if (reason == "timeout") {
+            return "BACKTEST_GATE_REST_TIMEOUT";
+        }
+        if (reason.rfind("budget_exceeded", 0) == 0) {
+            return "BACKTEST_GATE_REST_BUDGET_EXCEEDED";
+        }
+        if (reason == "signal_bar_missing") {
+            return "BACKTEST_GATE_REST_SIGNAL_BAR_MISSING";
+        }
+        if (reason == "insufficient_history") {
+            return "BACKTEST_GATE_REST_INSUFFICIENT_HISTORY";
+        }
+        return "BACKTEST_GATE_REST_ERROR";
+    };
+
     if (!window.sufficient) {
+        if (window.source == "rest") {
+            logStructured(restFailureEvent(window.errorReason), req.symbol, req.strategyId, req.interval, {
+                {"error_reason", window.errorReason},
+                {"pages_used", window.restPagesUsed},
+                {"wall_time_ms", window.restWallTimeMs.count()},
+                {"available_bars", window.availableBars},
+                {"required_bars", window.requiredBars},
+            });
+        }
         return emitDrop(DropReason::InsufficientData,
                         "have " + std::to_string(window.availableBars) +
                         " bars, need " + std::to_string(window.requiredBars), 0);
     }
+    if (window.source == "rest") {
+        logStructured("BACKTEST_GATE_REST_BACKFILL_OK", req.symbol, req.strategyId, req.interval, {
+            {"pages_used", window.restPagesUsed},
+            {"wall_time_ms", window.restWallTimeMs.count()},
+            {"available_bars", window.availableBars},
+            {"required_bars", window.requiredBars},
+            {"cache_writeback_failed", window.errorReason == "cache_writeback_failed"},
+        });
+    }
     if (!window.closedKlines.empty()) {
-        std::ostringstream extra;
-        extra << R"("history_source":")" << m_cfg.data.historySource << '"'
-              << R"(,"window_size":)" << window.closedKlines.size()
-              << R"(,"required_bars":)" << requiredBars
-              << R"(,"available_bars":)" << window.availableBars
-              << R"(,"first_bar":)" << window.closedKlines.front().openTime
-              << R"(,"last_bar":)" << window.closedKlines.back().openTime;
-        logStructured("BACKTEST_GATE_DATA_READY", req.symbol, req.strategyId, req.interval, extra.str());
+        logStructured("BACKTEST_GATE_DATA_READY", req.symbol, req.strategyId, req.interval, {
+            {"history_source", m_cfg.data.historySource},
+            {"provider_source", window.source},
+            {"window_size", window.closedKlines.size()},
+            {"required_bars", requiredBars},
+            {"uncapped_required_bars", uncappedRequiredBars},
+            {"window_max_candles", m_cfg.data.windowMaxCandles},
+            {"available_bars", window.availableBars},
+            {"first_bar", window.closedKlines.front().openTime},
+            {"last_bar", window.closedKlines.back().openTime},
+        });
     }
 
     if (deadlineExceeded(deadline)) {
@@ -182,6 +408,8 @@ BacktestGateResult BacktestGateController::evaluate(const BacktestGateRequest& r
     proposalReq.defaultRanges = spec.defaults;
     proposalReq.constraints = spec.constraints;
     proposalReq.currentValues = spec.currentValues;
+    proposalReq.baseAtrPeriod = req.baseConfig.atrPeriod;
+    proposalReq.baseMinConfidence = req.baseConfig.minConfidence;
     proposalReq.signalDirection = req.originalDirection;
     proposalReq.signalBarOpenTimeMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -195,13 +423,10 @@ BacktestGateResult BacktestGateController::evaluate(const BacktestGateRequest& r
         return emitDrop(mapRangeFailure(failure->reason), failure->message, 0);
     }
     const auto& proposal = std::get<IRangeProposer::Output>(proposalResult);
-    {
-        std::ostringstream extra;
-        extra << R"("ranges_count":)" << proposal.ranges.size()
-              << R"(,"prompt_cutoff_bar":)"
-              << (partitions.promptContext.empty() ? 0 : partitions.promptContext.back().openTime);
-        logStructured("BACKTEST_GATE_GEMINI_OK", req.symbol, req.strategyId, req.interval, extra.str());
-    }
+    logStructured("BACKTEST_GATE_GEMINI_OK", req.symbol, req.strategyId, req.interval, {
+        {"ranges_count", proposal.ranges.size()},
+        {"prompt_cutoff_bar", partitions.promptContext.empty() ? 0LL : partitions.promptContext.back().openTime},
+    });
 
     if (deadlineExceeded(deadline)) {
         return emitDrop(DropReason::DeadlineExceeded, "after range proposal", 0);
@@ -227,12 +452,10 @@ BacktestGateResult BacktestGateController::evaluate(const BacktestGateRequest& r
         return emitDrop(DropReason::InsufficientData,
                         "walk-forward could not produce folds from calibration window", 0);
     }
-    {
-        std::ostringstream extra;
-        extra << R"("combos_after_clamp":)" << grid.size()
-              << R"(,"folds":)" << folds.size();
-        logStructured("BACKTEST_GATE_GRID_BUILT", req.symbol, req.strategyId, req.interval, extra.str());
-    }
+    logStructured("BACKTEST_GATE_GRID_BUILT", req.symbol, req.strategyId, req.interval, {
+        {"combos_after_clamp", grid.size()},
+        {"folds", folds.size()},
+    });
 
     // Fold IS must have at least slowestMax+1 bars so the slowest indicator
     // can produce a valid first value on bar index 0.
@@ -246,83 +469,24 @@ BacktestGateResult BacktestGateController::evaluate(const BacktestGateRequest& r
         }
     }
 
-    // 7. Backtest each combo across all folds
+    // 7. Score grid across all folds (delegated)
     BacktestEngine engine(m_engineCfg);
-    std::vector<ScoredPoint> scoredGrid;
-    scoredGrid.reserve(grid.size());
-    int minTradesRejects = 0;
-    int oosIsRejects = 0;
-
-    for (const auto& point : grid) {
-        if (deadlineExceeded(deadline)) {
-            return emitDrop(DropReason::DeadlineExceeded, "mid-grid evaluation", combosEvaluated);
-        }
-
-        double sumIS = 0.0;
-        double sumOOS = 0.0;
-        bool everyFoldPassed = true;
-
-        for (const auto& fold : folds) {
-            if (deadlineExceeded(deadline)) {
-                return emitDrop(DropReason::DeadlineExceeded, "mid-fold evaluation", combosEvaluated);
-            }
-            const auto isStats = engine.runFold(
-                adapter, req.symbol, req.interval, fold.inSample, point,
-                req.baseConfig, req.originalDirection, req.symbolMeta);
-            const auto oosStats = engine.runFold(
-                adapter, req.symbol, req.interval, fold.outOfSample, point,
-                req.baseConfig, req.originalDirection, req.symbolMeta);
-
-            if (isStats.numTrades < m_cfg.filters.minTradesPerFold ||
-                oosStats.numTrades < m_cfg.filters.minTradesPerFold) {
-                minTradesRejects++;
-                everyFoldPassed = false;
-                break;
-            }
-            sumIS += isStats.sortino;
-            sumOOS += oosStats.sortino;
-        }
-
-        ScoredPoint sp;
-        sp.point = point;
-        sp.passedFilters = false;
-        sp.isSortino = 0.0;
-        sp.oosSortino = 0.0;
-
-        if (everyFoldPassed) {
-            const double meanIS = sumIS / static_cast<double>(folds.size());
-            const double meanOOS = sumOOS / static_cast<double>(folds.size());
-            sp.isSortino = meanIS;
-            sp.oosSortino = meanOOS;
-
-            const bool finiteOk = std::isfinite(meanIS) && std::isfinite(meanOOS);
-            const bool bothPositive = meanIS > 0.0 && meanOOS > 0.0;
-            const double floor = std::max(
-                m_cfg.filters.oosIsRatioThreshold * meanIS,
-                m_cfg.filters.minOosSortino);
-            if (finiteOk && bothPositive && meanOOS >= floor) {
-                sp.passedFilters = true;
-            } else {
-                oosIsRejects++;
-            }
-        }
-        scoredGrid.push_back(sp);
-        combosEvaluated++;
+    auto score = scoreGrid(adapter, engine, grid, folds, m_cfg.filters, req, deadline);
+    combosEvaluated = score.combosEvaluated;
+    if (score.deadlineHit) {
+        return emitDrop(DropReason::DeadlineExceeded, score.deadlineLocation, combosEvaluated);
     }
 
     const auto survivorCount = static_cast<int>(std::count_if(
-        scoredGrid.begin(),
-        scoredGrid.end(),
+        score.scoredGrid.begin(),
+        score.scoredGrid.end(),
         [](const ScoredPoint& sp) { return sp.passedFilters; }));
-    {
-        std::ostringstream extra;
-        extra << R"("combos_surviving":)" << survivorCount
-              << R"(,"min_trades_rejects":)" << minTradesRejects
-              << R"(,"oos_is_rejects":)" << oosIsRejects;
-        logStructured("BACKTEST_GATE_FILTER_DONE", req.symbol, req.strategyId, req.interval, extra.str());
-    }
-    bool anySurvivor = survivorCount > 0;
-    if (!anySurvivor) {
+    logStructured("BACKTEST_GATE_FILTER_DONE", req.symbol, req.strategyId, req.interval, {
+        {"combos_surviving", survivorCount},
+        {"min_trades_rejects", score.minTradesRejects},
+        {"oos_is_rejects", score.oosIsRejects},
+    });
+    if (survivorCount == 0) {
         return emitDrop(DropReason::NoComboPassedFilter,
                         "no combo survived filters", combosEvaluated);
     }
@@ -333,7 +497,7 @@ BacktestGateResult BacktestGateController::evaluate(const BacktestGateRequest& r
 
     // 8. Plateau finding
     auto plateauOpt = PlateauFinder::find(
-        scoredGrid, spec.constraints,
+        score.scoredGrid, spec.constraints,
         m_cfg.plateau.neighborhoodRadius,
         m_cfg.plateau.maxNeighborhoodSize,
         m_cfg.plateau.minPassFraction);
@@ -342,100 +506,53 @@ BacktestGateResult BacktestGateController::evaluate(const BacktestGateRequest& r
                         "no robust plateau detected", combosEvaluated);
     }
     auto plateau = *plateauOpt;
-    {
-        std::ostringstream extra;
-        extra << R"("plateau_size":)" << plateau.survivors.size()
-              << R"(,"center_params":)" << paramPointJson(plateau.center)
-              << R"(,"center_oos_sortino":)" << plateau.centerSortinoOOS;
-        logStructured("BACKTEST_GATE_PLATEAU", req.symbol, req.strategyId, req.interval, extra.str());
-    }
+    logStructured("BACKTEST_GATE_PLATEAU", req.symbol, req.strategyId, req.interval, {
+        {"plateau_size", plateau.survivors.size()},
+        {"center_params", paramPointToJson(plateau.center)},
+        {"center_oos_sortino", plateau.centerSortinoOOS},
+    });
 
-    // 9. Majority vote on bar T (uses full window including signal bar)
+    // 9. Majority vote on bar T (delegated)
     auto votePoints = plateau.survivors;
+    const std::string centerKey = paramPointKey(plateau.center);
     const bool centerInSurvivors = std::any_of(
         votePoints.begin(), votePoints.end(),
-        [&](const ParamPoint& p) { return p == plateau.center; });
+        [&](const ParamPoint& p) { return paramPointKey(p) == centerKey; });
     if (!centerInSurvivors) {
         votePoints.push_back(plateau.center);
     }
 
     const auto& evalKlines = window.closedKlines;  // ends at bar T
-    int totalVotes = 0;
-    int matchingVotes = 0;
-    for (const auto& point : votePoints) {
-        const auto voteSig = adapter.evaluateWith(
-            req.symbol, req.interval, evalKlines, point, req.baseConfig);
-        if (voteSig.direction == req.originalDirection &&
-            voteSig.confidence >= req.baseConfig.minConfidence &&
-            voteSig.atr > 0.0) {
-            matchingVotes++;
-        }
-        totalVotes++;
-    }
-    {
-        const double voteRatio = totalVotes > 0
-            ? static_cast<double>(matchingVotes) / static_cast<double>(totalVotes)
-            : 0.0;
-        std::ostringstream extra;
-        extra << R"("vote_pass":)" << matchingVotes
-              << R"(,"vote_total":)" << totalVotes
-              << R"(,"threshold":)" << m_cfg.vote.thresholdFraction
-              << R"(,"decision":")"
-              << (voteRatio >= m_cfg.vote.thresholdFraction ? "pass" : "drop")
-              << '"';
-        logStructured("BACKTEST_GATE_VOTE", req.symbol, req.strategyId, req.interval, extra.str());
-    }
+    std::unordered_map<std::string, strategy::Signal> evalCache;
+    const auto vote = runVote(adapter, votePoints, evalKlines, req, evalCache);
 
-    if (totalVotes == 0 ||
-        static_cast<double>(matchingVotes) / totalVotes < m_cfg.vote.thresholdFraction) {
+    const double voteRatio = vote.total > 0
+        ? static_cast<double>(vote.matching) / static_cast<double>(vote.total)
+        : 0.0;
+    logStructured("BACKTEST_GATE_VOTE", req.symbol, req.strategyId, req.interval, {
+        {"vote_pass", vote.matching},
+        {"vote_total", vote.total},
+        {"threshold", m_cfg.vote.thresholdFraction},
+        {"decision", voteRatio >= m_cfg.vote.thresholdFraction ? "pass" : "drop"},
+    });
+
+    if (vote.total == 0 || voteRatio < m_cfg.vote.thresholdFraction) {
         return emitDrop(DropReason::MajorityVoteFailed,
-                        "vote " + std::to_string(matchingVotes) + "/" +
-                        std::to_string(totalVotes), combosEvaluated);
+                        "vote " + std::to_string(vote.matching) + "/" +
+                        std::to_string(vote.total), combosEvaluated);
     }
 
-    // 10. Build pass result
-    PassResult pass;
-    pass.direction = req.originalDirection;
-    pass.optimizedParams = plateau.center;
-    pass.centerSortinoIS = plateau.centerSortinoIS;
-    pass.centerSortinoOOS = plateau.centerSortinoOOS;
-    pass.plateauVotePass = matchingVotes;
-    pass.plateauVoteTotal = totalVotes;
-    pass.combosEvaluated = combosEvaluated;
-    pass.wallTime = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - start);
+    // 10. Build pass result (delegated)
+    auto pass = buildPassResult(
+        adapter, plateau, vote, evalKlines, req, combosEvaluated, start, evalCache);
 
-    // Recompute ATR on full window through bar T using optimized atr_period
-    const auto atrIt = plateau.center.find("atr_period");
-    const int finalAtrPeriod = atrIt != plateau.center.end()
-        ? static_cast<int>(atrIt->second)
-        : req.baseConfig.atrPeriod;
-    const auto centerSig = adapter.evaluateWith(
-        req.symbol, req.interval, evalKlines, plateau.center, req.baseConfig);
-    pass.atr = centerSig.atr > 0.0 ? centerSig.atr : req.originalAtr;
-    (void)finalAtrPeriod;  // adapter already used it via params
-
-    const auto slIt = plateau.center.find("sl_multiplier");
-    const auto tpIt = plateau.center.find("tp_multiplier");
-    pass.slMultiplier = slIt != plateau.center.end() ? slIt->second : req.baseConfig.slMultiplier;
-    pass.tpMultiplier = tpIt != plateau.center.end() ? tpIt->second : req.baseConfig.tpMultiplier;
-    pass.riskPct = req.baseConfig.riskPct;  // not tuned in v1.1
-
-    if (pass.direction == strategy::Signal::Direction::Long) {
-        pass.initialStopPrice = req.currentPrice - pass.slMultiplier * pass.atr;
-    } else {
-        pass.initialStopPrice = req.currentPrice + pass.slMultiplier * pass.atr;
-    }
-
-    {
-        std::ostringstream extra;
-        extra << R"("combos":)" << pass.combosEvaluated
-              << R"(,"vote_pass":)" << pass.plateauVotePass
-              << R"(,"vote_total":)" << pass.plateauVoteTotal
-              << R"(,"oos_sortino":)" << pass.centerSortinoOOS
-              << R"(,"wall_ms":)" << pass.wallTime.count();
-        logStructured("BACKTEST_GATE_PASS", req.symbol, req.strategyId, req.interval, extra.str());
-    }
+    logStructured("BACKTEST_GATE_PASS", req.symbol, req.strategyId, req.interval, {
+        {"combos", pass.combosEvaluated},
+        {"vote_pass", pass.plateauVotePass},
+        {"vote_total", pass.plateauVoteTotal},
+        {"oos_sortino", pass.centerSortinoOOS},
+        {"wall_ms", pass.wallTime.count()},
+    });
     return pass;
 }
 

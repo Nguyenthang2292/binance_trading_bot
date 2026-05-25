@@ -48,7 +48,6 @@
   },
   "gemini_filter": {
     "enabled": false,
-    "mode": "enforce",
     "python_path": ".venv\\Scripts\\python.exe",
     "module_name": "tools.gemini_filter.gemini_filter",
     "working_directory": ".",

@@ -38,6 +38,28 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _safe_int(value: object | None, default: int = 0) -> int:
+    if value is None:
+        return default
+    # fast path for actual ints (including bool handled as int by design)
+    if isinstance(value, int):
+        return value
+    try:
+        s = str(value).strip()
+        return int(s) if s else default
+    except Exception:
+        return default
+
+
+def _safe_str(value: object | None, default: str = "") -> str:
+    if value is None:
+        return default
+    try:
+        return str(value)
+    except Exception:
+        return default
+
+
 def split_quantity(quantity: str, count: int) -> list[str]:
     count = max(count, 1)
     qty = Decimal(quantity)
@@ -86,10 +108,10 @@ def plan_config_for_request(request: sqlite3.Row, default_slice_count: int, defa
     if isinstance(metadata, dict):
         twap = metadata.get("twap")
         if isinstance(twap, dict):
-            slice_count = int(twap.get("slice_count", slice_count))
-            duration_ms = int(twap.get("duration_ms", duration_ms))
-        slice_count = int(metadata.get("twap_slice_count", metadata.get("slice_count", slice_count)))
-        duration_ms = int(metadata.get("twap_duration_ms", metadata.get("duration_ms", duration_ms)))
+            slice_count = _safe_int(twap.get("slice_count", slice_count), slice_count)
+            duration_ms = _safe_int(twap.get("duration_ms", duration_ms), duration_ms)
+        slice_count = _safe_int(metadata.get("twap_slice_count", metadata.get("slice_count", slice_count)), slice_count)
+        duration_ms = _safe_int(metadata.get("twap_duration_ms", metadata.get("duration_ms", duration_ms)), duration_ms)
     return max(slice_count, 1), max(duration_ms, 1)
 
 
@@ -100,12 +122,12 @@ def create_twap_plan(
     default_duration_ms: int,
 ) -> None:
     current_ms = now_ms()
-    if int(request["deadline_ms"]) <= current_ms:
+    if _safe_int(request["deadline_ms"], 0) <= current_ms:
         mark_expired(db, request["request_id"], "deadline expired before watcher plan")
         return
 
     slice_count, duration_ms = plan_config_for_request(request, default_slice_count, default_duration_ms)
-    quantities = split_quantity(request["quantity"], slice_count)
+    quantities = split_quantity(_safe_str(request["quantity"], "0"), slice_count)
     if not quantities:
         mark_expired(db, request["request_id"], "zero quantity after slice split")
         return

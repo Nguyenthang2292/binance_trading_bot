@@ -6,14 +6,17 @@
 **Audience:** AI agents, human developers
 
 **Design under review:**
+
 - `docs/design/2026-05-21-qlib-strategy-adapters-v1.1.md`
 
 **Predecessor design:**
+
 - `docs/design/2026-05-21-qlib-strategy-adapters-v1.0.md`
 
 **Files reviewed:**
 
 New files (Phase 1, 2, 6, 7 implementation):
+
 - `plugins/src/qlib_strategy_signal/CMakeLists.txt`
 - `plugins/src/qlib_strategy_signal/strategy_qlib_strategy_signal.cpp`
 - `src/engine/iexecution_planner.{h,cpp}`
@@ -23,6 +26,7 @@ New files (Phase 1, 2, 6, 7 implementation):
 - `tests/python/test_run_strategy.py`
 
 Modified files:
+
 - `CMakeLists.txt`
 - `src/engine/position_tracker.h`
 - `src/engine/signal_engine.{cpp,h}`
@@ -157,6 +161,7 @@ def run_strategy_policy(db, args, config, qlib_class):
 **Problem:** Both `TopkDropoutStrategy` and `SoftTopkStrategy` dispatch to the **same `run_topk` function**. Neither calls into Qlib. `try_load_qlib_class()` (line 46) imports the class but only stores its resolved name in metadata.
 
 **Consequences:**
+
 1. **No `n_drop` rotation logic.** TopkDropout's defining feature — rotating up to `n_drop` symbols per run to control turnover — is missing.
 2. **No `trade_impact_limit` for SoftTopk.** SoftTopk's defining feature — capping per-rebalance turnover — is missing.
 3. **SoftTopk output is identical to TopK.** Makes the Decision Arbiter's "disagreeing live emits" branch dead code in the only realistic shadow scenario.
@@ -167,6 +172,7 @@ def run_strategy_policy(db, args, config, qlib_class):
 **Resolution (per user direction in review session):** Integrate real Qlib classes.
 
 Steps:
+
 1. After allowlist + import (line 273-274), construct a Qlib `Position` / `Account` view from current trade state (or use a stateless single-tick view).
 2. Instantiate the strategy with config params: `TopkDropoutStrategy(topk=k, n_drop=n_drop, signal=qlib_predictions_df, ...)`.
 3. Call `strategy.generate_trade_decision()` (Qlib's `TradeDecision` API) for the current trading period.
@@ -209,6 +215,7 @@ auto selectedOpt = arbiter.arbitrate(symbol, maxPos, maxRisk, currentPositions, 
 **Four distinct bugs:**
 
 **(1) `runtimeState` never populated.** `globalShadow` is always `false`. Two cascading consequences:
+
 - `placeOrders = !globalShadow` (line 751) is always `true`. Live orders will be attempted in shadow mode if any non-shadowOnly signal is selected.
 - `recordShadow` lambda only records when `globalShadow || cand.signal.shadowOnly`. Real shadow-mode candidates that fail downstream gates never get recorded. Shadow metrics are silently incomplete.
 

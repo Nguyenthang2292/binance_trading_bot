@@ -2,6 +2,8 @@
 #include "backtest/backtest_gate_controller.h"
 #include "backtest/gemini_range_proposer.h"
 #include "backtest/historical_window_provider.h"
+#include "backtest/rest_backfilling_historical_window_provider.h"
+#include "backtest/rest_client_kline_adapter.h"
 #include "backtest/indicator_adapters.h"
 #include "catalog/catalog_reporter.h"
 #include "catalog/plugin_loader.h"
@@ -295,24 +297,6 @@ std::optional<Socks5ProxyConfig> parseSocks5Proxy(std::string_view raw, std::str
     }
 
     return Socks5ProxyConfig{.host = host, .port = static_cast<std::uint16_t>(parsedPort)};
-}
-
-engine::GeminiFilterMode parseGeminiFilterMode(std::string modeRaw) {
-    const std::string mode = lowerCopy(trimCopy(std::move(modeRaw)));
-    if (mode == "disabled") {
-        return engine::GeminiFilterMode::Disabled;
-    }
-    if (mode == "enforce") {
-        return engine::GeminiFilterMode::Enforce;
-    }
-    if (mode == "shadow") {
-        Logger::instance().log(LogLevel::Warning, "gemini_filter.mode=shadow has been removed; forcing enforce");
-        return engine::GeminiFilterMode::Enforce;
-    }
-    Logger::instance().log(
-        LogLevel::Warning,
-        "unsupported gemini_filter.mode=" + quoteString(mode) + "; forcing enforce");
-    return engine::GeminiFilterMode::Enforce;
 }
 
 account::AccountTradeMode parseAccountTradeMode(std::string modeRaw, bool testnet) {
@@ -660,7 +644,11 @@ int main(int argc, char* argv[]) {
 
     engine::GeminiFilterConfig geminiConfig;
     geminiConfig.enabled = geminiJson.value("enabled", geminiConfig.enabled);
-    geminiConfig.mode = parseGeminiFilterMode(geminiJson.value("mode", std::string("enforce")));
+    if (geminiJson.contains("mode")) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "gemini_filter.mode is ignored; use gemini_filter.enabled as the only on/off switch");
+    }
     geminiConfig.pythonPath = geminiJson.value("python_path", geminiConfig.pythonPath);
     geminiConfig.moduleName = geminiJson.value("module_name", geminiConfig.moduleName);
     geminiConfig.workingDirectory = geminiJson.value("working_directory", geminiConfig.workingDirectory);
@@ -753,9 +741,6 @@ int main(int argc, char* argv[]) {
         autotuneJson.value("config_path", geminiConfig.autotuneConfigPath);
     geminiConfig.extraTfs = geminiJson.value("extra_tfs", geminiConfig.extraTfs);
 
-    if (!geminiConfig.enabled) {
-        geminiConfig.mode = engine::GeminiFilterMode::Disabled;
-    }
     if (geminiConfig.timeoutSeconds <= 0) {
         Logger::instance().log(
             LogLevel::Warning,
@@ -810,7 +795,7 @@ int main(int argc, char* argv[]) {
         geminiConfig.autotuneControllerTimeoutSeconds = 60;
     }
 
-    const bool geminiActive = geminiConfig.enabled && geminiConfig.mode != engine::GeminiFilterMode::Disabled;
+    const bool geminiActive = geminiConfig.enabled;
     if (geminiActive) {
         const std::unordered_set<std::string> scannerIntervalSet(scannerIntervals.begin(), scannerIntervals.end());
         for (const auto& tf : geminiConfig.extraTfs) {
@@ -951,13 +936,13 @@ int main(int argc, char* argv[]) {
     engine::NoOpGeminiFilterPort noOpGemini;
     std::unique_ptr<engine::GeminiFilterController> geminiController;
     engine::IGeminiFilterPort* geminiPort = &noOpGemini;
-    if (geminiConfig.enabled && geminiConfig.mode != engine::GeminiFilterMode::Disabled) {
+    if (geminiConfig.enabled) {
         try {
             geminiController = std::make_unique<engine::GeminiFilterController>(geminiConfig);
             geminiPort = geminiController.get();
             Logger::instance().log(
                 LogLevel::Info,
-                std::string("Gemini filter enabled mode=enforce") +
+                std::string("Gemini filter enabled") +
                     " python=" + quoteString(geminiConfig.pythonPath) +
                     " module=" + quoteString(geminiConfig.moduleName) +
                     " model_resolution=" +
@@ -1089,6 +1074,7 @@ int main(int argc, char* argv[]) {
         .randomLeverageEnabled = engineJson.value("random_leverage_enabled", false),
         .randomLeverageMin = engineJson.value("random_leverage_min", 2),
         .randomLeverageMax = engineJson.value("random_leverage_max", 20),
+        .externalCloseCooldown = std::chrono::seconds(engineJson.value("external_close_cooldown_seconds", 900)),
         .lossManager = lossManagerConfig,
     };
     if (engineJson.contains("take_profit")) {
@@ -1143,6 +1129,8 @@ int main(int argc, char* argv[]) {
         bgDataJson.value("history_source", backtestGateConfig.data.historySource);
     backtestGateConfig.data.windowMinCandles =
         bgDataJson.value("window_min_candles", backtestGateConfig.data.windowMinCandles);
+    backtestGateConfig.data.windowMaxCandles =
+        bgDataJson.value("window_max_candles", backtestGateConfig.data.windowMaxCandles);
     backtestGateConfig.data.windowSlowestMultiplier =
         bgDataJson.value("window_slowest_multiplier", backtestGateConfig.data.windowSlowestMultiplier);
     backtestGateConfig.data.runtimeRestFetchEnabled =
@@ -1211,14 +1199,26 @@ int main(int argc, char* argv[]) {
         bgFeeJson.value("slippage_bps", backtestGateConfig.fee.slippageBps);
 
     // Construct gate components (lazily — only when enabled)
-    std::unique_ptr<backtest::HistoricalWindowProvider> backtestWindowProvider;
-    std::unique_ptr<backtest::GeminiRangeProposer>      backtestRangeProposer;
-    std::unique_ptr<backtest::BacktestGateController>   backtestGateController;
+    std::unique_ptr<backtest::IHistoricalWindowProvider> backtestWindowProvider;
+    std::unique_ptr<backtest::GeminiRangeProposer>       backtestRangeProposer;
+    std::unique_ptr<backtest::BacktestGateController>    backtestGateController;
 
     if (backtestGateConfig.enabled) {
         try {
-            backtestWindowProvider = std::make_unique<backtest::HistoricalWindowProvider>(
-                scanner.cache(), backtestGateConfig.data);
+            if (backtestGateConfig.data.historySource == "cache_then_rest") {
+                auto cacheOnlyProvider = std::make_unique<backtest::HistoricalWindowProvider>(
+                    scanner.cache(), backtestGateConfig.data);
+                auto restAdapter = std::make_unique<backtest::RestClientKlineAdapter>(rest, ctx.ioc());
+                backtestWindowProvider =
+                    std::make_unique<backtest::RestBackfillingHistoricalWindowProvider>(
+                        std::move(cacheOnlyProvider),
+                        std::move(restAdapter),
+                        scanner.cache(),
+                        backtestGateConfig.data);
+            } else {
+                backtestWindowProvider = std::make_unique<backtest::HistoricalWindowProvider>(
+                    scanner.cache(), backtestGateConfig.data);
+            }
 
             backtestRangeProposer = std::make_unique<backtest::GeminiRangeProposer>(
                 backtestGateConfig.gemini, backtestGateConfig.cache);
@@ -1253,25 +1253,29 @@ int main(int argc, char* argv[]) {
             bool disableBacktestGateAtStartup = false;
 
             // Startup validation: cache_only mode requires the kline buffer to
-            // hold at least window_min_candles bars; otherwise every signal will
+            // hold the effective capped window; otherwise every signal will
             // immediately drop with InsufficientData.
             if (backtestGateConfig.data.historySource == "cache_only") {
                 const int bufSize = static_cast<int>(scannerBufferSize);
-                if (bufSize < backtestGateConfig.data.windowMinCandles) {
+                const int requiredBuffer = backtestGateConfig.data.windowMaxCandles > 0
+                    ? std::min(backtestGateConfig.data.windowMinCandles, backtestGateConfig.data.windowMaxCandles)
+                    : backtestGateConfig.data.windowMinCandles;
+                if (bufSize < requiredBuffer) {
                     Logger::instance().log(
                         LogLevel::Error,
                         "backtest_gate: kline_buffer_size=" + std::to_string(bufSize) +
-                        " < window_min_candles=" +
-                        std::to_string(backtestGateConfig.data.windowMinCandles) +
-                        "; disabling gate. Raise kline_buffer_size or lower window_min_candles.");
+                        " < required_buffer=" +
+                        std::to_string(requiredBuffer) +
+                        "; disabling gate. Raise kline_buffer_size or lower backtest gate window settings.");
                     disableBacktestGateAtStartup = true;
                 }
             } else if (backtestGateConfig.data.historySource == "cache_then_rest") {
-                Logger::instance().log(
-                    LogLevel::Error,
-                    "backtest_gate: history_source=cache_then_rest requires a REST-backed "
-                    "historical provider, which is not implemented in v1.1; disabling gate.");
-                disableBacktestGateAtStartup = true;
+                if (!backtestGateConfig.data.runtimeRestFetchEnabled) {
+                    Logger::instance().log(
+                        LogLevel::Error,
+                        "backtest_gate: history_source=cache_then_rest requires runtime_rest_fetch_enabled=true; disabling gate.");
+                    disableBacktestGateAtStartup = true;
+                }
             } else {
                 Logger::instance().log(
                     LogLevel::Error,

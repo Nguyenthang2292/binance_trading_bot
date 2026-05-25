@@ -69,3 +69,28 @@ TEST(PlateauFinderTest, ConstraintRevalidation) {
     ASSERT_TRUE(r.has_value());
     EXPECT_LT(r->center.at("ma_short"), r->center.at("ma_long"));
 }
+
+TEST(PlateauFinderTest, InactiveDimensionUsesGridIndexNotFloatEquality) {
+    std::vector<ScoredPoint> grid;
+    for (double ma : {10.0, 20.0, 30.0}) {
+        ScoredPoint sp;
+        sp.point = {
+            {"ma", ma},
+            {"noise", ma == 20.0 ? 0.30000000000000004 : 0.3},
+            {"aux", 1.0},
+        };
+        sp.oosSortino = (ma == 20.0) ? 2.0 : 1.0;
+        sp.isSortino = sp.oosSortino;
+        sp.passedFilters = true;
+        grid.push_back(sp);
+    }
+
+    auto r = PlateauFinder::find(
+        grid,
+        {},
+        /*neighborhoodRadius=*/1,
+        /*maxNeighborhoodSize=*/3,
+        /*minPassFraction=*/0.5);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_DOUBLE_EQ(r->center.at("ma"), 20.0);
+}

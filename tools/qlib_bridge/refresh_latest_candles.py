@@ -14,6 +14,39 @@ import pandas as pd
 BINANCE_FAPI_KLINES = "https://fapi.binance.com/fapi/v1/klines"
 
 
+def _safe_int(value: object | None, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    try:
+        s = str(value).strip()
+        return int(s) if s else default
+    except Exception:
+        return default
+
+
+def _safe_float(value: object | None, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    if isinstance(value, float):
+        return value
+    try:
+        s = str(value).strip()
+        return float(s) if s else default
+    except Exception:
+        return default
+
+
+def _safe_str(value: object | None, default: str = "") -> str:
+    if value is None:
+        return default
+    try:
+        return str(value)
+    except Exception:
+        return default
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Refresh exact latest closed candles for prediction asof.")
     parser.add_argument("--symbols", nargs="+", required=True)
@@ -60,8 +93,8 @@ def fetch_exact_candle(base_url: str, symbol: str, interval: str, asof_ms: int) 
     row = payload[0]
     if not isinstance(row, list) or len(row) < 9:
         raise RuntimeError(f"unexpected kline payload for {symbol}: {row!r}")
-    open_time = int(row[0])
-    close_time = int(row[6])
+    open_time = _safe_int(row[0])
+    close_time = _safe_int(row[6])
     if open_time != asof_ms:
         raise RuntimeError(
             f"unexpected open_time for {symbol}: got={open_time} expected={asof_ms}"
@@ -69,14 +102,14 @@ def fetch_exact_candle(base_url: str, symbol: str, interval: str, asof_ms: int) 
     return {
         "datetime": pd.to_datetime(open_time, unit="ms", utc=True),
         "symbol": symbol,
-        "open": float(row[1]),
-        "high": float(row[2]),
-        "low": float(row[3]),
-        "close": float(row[4]),
-        "volume": float(row[5]),
+        "open": _safe_float(row[1]),
+        "high": _safe_float(row[2]),
+        "low": _safe_float(row[3]),
+        "close": _safe_float(row[4]),
+        "volume": _safe_float(row[5]),
         "factor": 1.0,
-        "quote_volume": float(row[7]),
-        "trade_count": int(row[8]),
+        "quote_volume": _safe_float(row[7]),
+        "trade_count": _safe_int(row[8]),
         "open_time_ms": open_time,
         "close_time_ms": close_time,
     }
@@ -174,17 +207,17 @@ def upsert_candles(db_path: Path, interval: str, rows: list[dict[str, object]]) 
         init_db(conn)
         payload = [
             (
-                str(r["symbol"]),
+                _safe_str(r.get("symbol"), ""),
                 interval,
-                int(r["open_time_ms"]),
-                int(r["close_time_ms"]),
-                float(r["open"]),
-                float(r["high"]),
-                float(r["low"]),
-                float(r["close"]),
-                float(r["volume"]),
-                float(r["quote_volume"]),
-                int(r["trade_count"]),
+                _safe_int(r.get("open_time_ms")),
+                _safe_int(r.get("close_time_ms")),
+                _safe_float(r.get("open")),
+                _safe_float(r.get("high")),
+                _safe_float(r.get("low")),
+                _safe_float(r.get("close")),
+                _safe_float(r.get("volume")),
+                _safe_float(r.get("quote_volume")),
+                _safe_int(r.get("trade_count")),
                 int(time.time() * 1000),
             )
             for r in rows

@@ -76,6 +76,19 @@ std::string quoteStr(std::string_view v) {
     return o.str();
 }
 
+void appendSortedCurrentValues(
+    std::ostringstream& key,
+    const std::unordered_map<std::string, double>& currentValues) {
+    std::vector<std::pair<std::string, double>> entries(
+        currentValues.begin(), currentValues.end());
+    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+        return a.first < b.first;
+    });
+    for (const auto& [name, value] : entries) {
+        key << "|cv:" << name << "=" << fmt6(value);
+    }
+}
+
 void logSubprocess(std::string_view diag, LogLevel level = LogLevel::Subprocess) {
     std::istringstream lines{std::string(diag)};
     std::string line;
@@ -210,9 +223,9 @@ std::string GeminiRangeProposer::buildCacheKey(
     const RangeProposalRequest& req,
     const PromptContextAggregates& aggs) const
 {
-    // key v1.1|symbol|strategyId|interval|ret30d|atrPct|trend|numCandles
+    // key v1.2|symbol|strategyId|interval|prompt-aggs|base-config|current-values
     std::ostringstream k;
-    k << "v1.1"
+    k << "v1.2"
       << "|" << req.symbol
       << "|" << req.strategyId
       << "|" << req.interval
@@ -220,7 +233,10 @@ std::string GeminiRangeProposer::buildCacheKey(
       << "|atr=" << fmt6(aggs.atrPctCurrent)
       << "|trend=" << aggs.trendDirection
       << "|n=" << aggs.numCandles
+      << "|base_atr=" << req.baseAtrPeriod
+      << "|base_min_conf=" << fmt6(req.baseMinConfidence)
       << "|model=" << m_cfg.model;
+    appendSortedCurrentValues(k, req.currentValues);
     return k.str();
 }
 
@@ -246,8 +262,29 @@ void GeminiRangeProposer::putCached(const std::string& key, const Output& result
     const auto ttl = std::chrono::seconds(std::max(1, m_cacheCfg.ttlSeconds));
     const auto maxEntries = static_cast<size_t>(std::max(1, m_cacheCfg.maxEntries));
     std::lock_guard lock(m_cacheMutex);
-    if (m_cache.size() >= maxEntries) evictExpiredLocked();
-    m_cache[key] = CachedResult{result, std::chrono::steady_clock::now() + ttl};
+    const auto expiresAt = std::chrono::steady_clock::now() + ttl;
+
+    auto existing = m_cache.find(key);
+    if (existing != m_cache.end()) {
+        existing->second = CachedResult{result, expiresAt};
+        return;
+    }
+
+    if (m_cache.size() >= maxEntries) {
+        evictExpiredLocked();
+    }
+    if (m_cache.size() >= maxEntries) {
+        const auto oldest = std::min_element(
+            m_cache.begin(), m_cache.end(),
+            [](const auto& a, const auto& b) {
+                return a.second.expiresAt < b.second.expiresAt;
+            });
+        if (oldest != m_cache.end()) {
+            m_cache.erase(oldest);
+        }
+    }
+
+    m_cache.emplace(key, CachedResult{result, expiresAt});
 }
 
 // ── Stale cleanup ──────────────────────────────────────────────────────────
@@ -339,8 +376,11 @@ std::string GeminiRangeProposer::buildInputJson(
         {"bar_open_time",  req.signalBarOpenTimeMs},
     };
 
-    // budget — max grid size so Gemini knows how tightly to focus ranges
-    j["budget"] = {{"max_total_combos", req.maxTotalCombos}};
+    // budget — max grid size and outer timeout for the Python proposer.
+    j["budget"] = {
+        {"max_total_combos", req.maxTotalCombos},
+        {"timeout_seconds", m_cfg.timeoutSeconds},
+    };
 
     return j.dump();
 }
@@ -381,12 +421,14 @@ std::string GeminiRangeProposer::runPythonModule(
     std::string diag;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSeconds);
     for (;;) {
+        readAvailable(outR, diag);
         readAvailable(errR, diag);
         const DWORD w = WaitForSingleObject(pi.hProcess, 50);
         if (w == WAIT_OBJECT_0) break;
         if (std::chrono::steady_clock::now() >= deadline) {
             TerminateProcess(pi.hProcess, 1);
             WaitForSingleObject(pi.hProcess, 5000);
+            readAvailable(outR, diag);
             readAvailable(errR, diag);
             if (!diag.empty()) logSubprocess(diag, LogLevel::Warning);
             CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
@@ -394,6 +436,7 @@ std::string GeminiRangeProposer::runPythonModule(
             throw std::runtime_error("backtest_proposer subprocess timeout");
         }
     }
+    readAvailable(outR, diag);
     readAvailable(errR, diag);
     if (!diag.empty()) logSubprocess(diag);
     DWORD exitCode = 1; GetExitCodeProcess(pi.hProcess, &exitCode);
@@ -418,12 +461,18 @@ std::string GeminiRangeProposer::runPythonModule(
     if (child == 0) {
         dup2(errPipe[1], STDERR_FILENO);
         close(errPipe[0]); close(errPipe[1]);
-        if (!m_cfg.workingDirectory.empty()) chdir(m_cfg.workingDirectory.c_str());
+        if (!m_cfg.workingDirectory.empty() && chdir(m_cfg.workingDirectory.c_str()) != 0) {
+            const std::string err = "chdir failed: " + std::string(std::strerror(errno)) + "\n";
+            (void)::write(STDERR_FILENO, err.data(), err.size());
+            _exit(127);
+        }
         std::vector<std::string> ownedArgs = {pythonPath, "-m", moduleName, inputPath, outputPath};
         std::vector<char*> argv;
         for (auto& a : ownedArgs) argv.push_back(a.data());
         argv.push_back(nullptr);
         execvp(argv[0], argv.data());
+        const std::string err = "execvp failed: " + std::string(std::strerror(errno)) + "\n";
+        (void)::write(STDERR_FILENO, err.data(), err.size());
         _exit(127);
     }
     close(errPipe[1]);
@@ -444,7 +493,10 @@ std::string GeminiRangeProposer::runPythonModule(
         }
         if (!childDone || errOpen) std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    if (!diag.empty()) logSubprocess(timedOut ? diag : diag, timedOut ? LogLevel::Warning : LogLevel::Subprocess);
+    if (!diag.empty()) {
+        const std::string prefixed = timedOut ? "[timeout] " + diag : diag;
+        logSubprocess(prefixed, timedOut ? LogLevel::Warning : LogLevel::Subprocess);
+    }
     std::ifstream ifs(outputPath);
     if (!ifs) {
         if (timedOut) throw std::runtime_error("backtest_proposer subprocess timeout");

@@ -13,11 +13,6 @@
 
 namespace engine {
 
-enum class GeminiFilterMode {
-    Disabled,
-    Enforce,
-};
-
 struct GeminiFilterConfig {
     struct QuotaModelLimit {
         std::string model;
@@ -26,7 +21,6 @@ struct GeminiFilterConfig {
     };
 
     bool enabled{false};
-    GeminiFilterMode mode{GeminiFilterMode::Enforce};
 
     std::string pythonPath{"python"};
     std::string moduleName{"tools.gemini_filter.gemini_filter"};

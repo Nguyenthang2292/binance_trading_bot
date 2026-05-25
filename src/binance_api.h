@@ -25,6 +25,7 @@ public:
     std::vector<Kline> getKlines(const std::string& symbol, const std::string& interval, int limit = 100);
     std::vector<Ticker> get24hrTickers();
     std::optional<AccountInfo> getAccountInfo();
+    std::optional<std::vector<Position>> getPositions(const std::string& symbol);
     bool testConnectivity();
 
     std::expected<NormalPlacementResult, BinanceError> marketOrder(MarketOrderDraft draft);

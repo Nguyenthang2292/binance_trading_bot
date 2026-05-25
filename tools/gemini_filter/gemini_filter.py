@@ -10,7 +10,7 @@ from typing import Any, cast
 from dotenv import load_dotenv
 
 from .analyzer import analyze
-from .key_manager import GeminiKeyManager
+from tools.shared.gemini_key_manager import GeminiKeyManager
 
 LOGGER = logging.getLogger("gemini_filter")
 
@@ -81,6 +81,12 @@ def main() -> int:
 
     try:
         key_manager = GeminiKeyManager()
+        LOGGER.info(
+            "gemini key manager initialized eval_id=%s key_count=%d key_sources=%s",
+            eval_id,
+            int(getattr(key_manager, "key_count", 0)),
+            ",".join(getattr(key_manager, "key_names", ())),
+        )
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("gemini key initialization failed eval_id=%s", eval_id)
         print(json.dumps(_block_result(eval_id, "No Gemini API key found", "no_api_key", str(exc))))

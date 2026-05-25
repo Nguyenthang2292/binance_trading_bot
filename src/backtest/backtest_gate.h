@@ -76,6 +76,7 @@ public:
 struct BacktestGateDataConfig {
     std::string historySource{"cache_only"};
     int windowMinCandles{2000};
+    int windowMaxCandles{1500};
     int windowSlowestMultiplier{10};
     bool runtimeRestFetchEnabled{false};
     int runtimeRestFetchTimeoutSeconds{10};

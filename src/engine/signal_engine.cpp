@@ -282,9 +282,7 @@ std::optional<int64_t> latestClosedCandleOpenTime(
 } // namespace
 
 bool SignalEngine::shouldSkipForClosedGeminiGate() const {
-    return m_geminiConfig.enabled &&
-        m_geminiConfig.mode == GeminiFilterMode::Enforce &&
-        m_geminiCycleGate.closed;
+    return m_geminiConfig.enabled && m_geminiCycleGate.closed;
 }
 
 void SignalEngine::closeGeminiGateForCycle(std::string reason, std::string_view symbol, std::string_view tf) {
@@ -562,7 +560,7 @@ SignalEngine::SignalEngine(
           orderCap,
           exposure,
           defaultGeminiPort(),
-          GeminiFilterConfig{.enabled = false, .mode = GeminiFilterMode::Disabled},
+          GeminiFilterConfig{.enabled = false},
           config,
           riskPort) {}
 
@@ -582,7 +580,7 @@ SignalEngine::SignalEngine(
           defaultOrderCapPort(),
           exposure,
           defaultGeminiPort(),
-          GeminiFilterConfig{.enabled = false, .mode = GeminiFilterMode::Disabled},
+          GeminiFilterConfig{.enabled = false},
           config,
           riskPort) {}
 
@@ -1325,6 +1323,14 @@ boost::asio::awaitable<Result<std::optional<SignalEngine::OpenPositionPreflight>
     m_lastOpenDecision = {};
     m_lastOpenDecision.blockedStage = "unknown";
     m_lastOpenDecision.wouldPlaceOrder = false;
+    if (isExternalCloseCooldownActive(symbol, std::chrono::system_clock::now())) {
+        m_lastOpenDecision.blockedStage = "external_close_cooldown";
+        Logger::instance().log(
+            LogLevel::Info,
+            "signal skipped symbol=" + std::string(symbol) +
+                " reason=" + quoteString("external reduce-only close cooldown"));
+        co_return std::optional<OpenPositionPreflight>{};
+    }
     const double stepSize = symbolMeta.has_value() && symbolMeta->stepSize > 0.0 ? symbolMeta->stepSize : 0.001;
     const double tickSize = symbolMeta.has_value() ? symbolMeta->tickSize : 0.0;
     account::AccountSnapshot snapshot;
@@ -1471,30 +1477,24 @@ boost::asio::awaitable<Result<std::optional<SignalEngine::OpenPositionPreflight>
         co_return std::optional<OpenPositionPreflight>{};
     }
 
-    if (evaluateGemini && m_geminiConfig.enabled && m_geminiConfig.mode != GeminiFilterMode::Disabled) {
+    if (evaluateGemini && m_geminiConfig.enabled) {
         if (m_geminiEvaluationsThisCycle >= m_geminiConfig.maxEvaluationsPerScanCycle) {
-            if (m_geminiConfig.mode == GeminiFilterMode::Enforce || m_geminiConfig.blockOnBudgetExhausted) {
-                if (m_geminiConfig.mode == GeminiFilterMode::Enforce && m_geminiConfig.closeGateOnBudgetExhausted) {
-                    closeGeminiGateForCycle("budget_exhausted", symbol, signalInterval);
-                }
-                Logger::instance().log(
-                    LogLevel::Warning,
-                    "gemini budget exhausted symbol=" + std::string(symbol) + " tf=" + std::string(signalInterval) +
-                        " decision=Block");
-                m_lastOpenDecision.blockedStage = "gemini_budget";
-                co_return std::optional<OpenPositionPreflight>{};
+            if (m_geminiConfig.closeGateOnBudgetExhausted) {
+                closeGeminiGateForCycle("budget_exhausted", symbol, signalInterval);
             }
             Logger::instance().log(
-                LogLevel::Info,
+                LogLevel::Warning,
                 "gemini budget exhausted symbol=" + std::string(symbol) + " tf=" + std::string(signalInterval) +
-                    " policy=allow");
+                    " decision=Block");
+            m_lastOpenDecision.blockedStage = "gemini_budget";
+            co_return std::optional<OpenPositionPreflight>{};
         } else {
             ++m_geminiEvaluationsThisCycle;
             Logger::instance().log(
                 LogLevel::Info,
                 "gemini evaluation requested symbol=" + std::string(symbol) +
                     " tf=" + std::string(signalInterval) +
-                    " mode=enforce" +
+                    " enabled=true" +
                     " budget_used=" + std::to_string(m_geminiEvaluationsThisCycle) +
                     "/" + std::to_string(m_geminiConfig.maxEvaluationsPerScanCycle));
             GeminiFilterResult geminiResult;
@@ -1527,8 +1527,7 @@ boost::asio::awaitable<Result<std::optional<SignalEngine::OpenPositionPreflight>
 
             const bool geminiHasError = geminiResult.hasError || !geminiResult.errorCode.empty();
             if (geminiHasError) {
-                if (m_geminiConfig.mode == GeminiFilterMode::Enforce &&
-                    m_geminiConfig.closeGateOnQuotaExhausted &&
+                if (m_geminiConfig.closeGateOnQuotaExhausted &&
                     isQuotaExhaustedGeminiError(geminiResult)) {
                     closeGeminiGateForCycle("quota_exhausted", symbol, signalInterval);
                 }
@@ -1958,6 +1957,39 @@ boost::asio::awaitable<void> SignalEngine::notifyRiskPositionClosed() {
     m_riskPort->onPositionClosed(*snapshotResult, nowMs());
 }
 
+bool SignalEngine::isExternalCloseCooldownActive(std::string_view symbol, std::chrono::system_clock::time_point now) {
+    if (symbol.empty() || m_config.externalCloseCooldown.count() <= 0) {
+        return false;
+    }
+
+    std::lock_guard lock(m_externalCloseCooldownMutex);
+    const auto it = m_externalCloseCooldownUntil.find(std::string(symbol));
+    if (it == m_externalCloseCooldownUntil.end()) {
+        return false;
+    }
+    if (now >= it->second) {
+        m_externalCloseCooldownUntil.erase(it);
+        return false;
+    }
+    return true;
+}
+
+void SignalEngine::markExternalCloseCooldown(std::string_view symbol, std::chrono::system_clock::time_point now) {
+    if (symbol.empty() || m_config.externalCloseCooldown.count() <= 0) {
+        return;
+    }
+
+    const auto until = now + m_config.externalCloseCooldown;
+    {
+        std::lock_guard lock(m_externalCloseCooldownMutex);
+        m_externalCloseCooldownUntil[std::string(symbol)] = until;
+    }
+    Logger::instance().log(
+        LogLevel::Info,
+        "external reduce-only close detected symbol=" + std::string(symbol) +
+            " cooldown_seconds=" + std::to_string(m_config.externalCloseCooldown.count()));
+}
+
 boost::asio::awaitable<void> SignalEngine::monitorTimeExit() {
     while (m_running) {
         m_timeExitTimer.expires_after(m_config.positionCheckInterval);
@@ -2260,8 +2292,13 @@ void SignalEngine::onUserDataEvent(const UserDataEvent& event) {
             return;
         }
         if (isFilled) {
-            (void)m_tracker.removeByExitOrderClientId(order->originalClientOrderId);
+            if (m_tracker.removeByExitOrderClientId(order->originalClientOrderId)) {
+                return;
+            }
         }
+    }
+    if ((order->isReduceOnly || order->closePosition) && (isPartial || isFilled)) {
+        markExternalCloseCooldown(order->symbol, std::chrono::system_clock::now());
     }
 }
 

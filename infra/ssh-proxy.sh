@@ -10,6 +10,18 @@ STATE_FILE="$SCRIPT_DIR/.ec2-state"
 source "$STATE_FILE"
 
 PROXY_PORT="${1:-1080}"
+TMP_KEY_PATH=""
+cleanup_tmp_key() {
+    if [[ -n "$TMP_KEY_PATH" ]]; then
+        rm -f "$TMP_KEY_PATH"
+    fi
+}
+trap cleanup_tmp_key EXIT
+
+TMP_KEY_PATH="$(mktemp)"
+cp "$KEY_PATH" "$TMP_KEY_PATH"
+chmod 600 "$TMP_KEY_PATH"
+KEY_PATH="$TMP_KEY_PATH"
 
 echo "============================================================"
 echo "Opening SOCKS5 proxy tunnel"

@@ -2,7 +2,9 @@
 
 #include "backtest/backtest_gate.h"
 #include "backtest/ihistorical_window_provider.h"
+#include "backtest/ikline_rest_client.h"
 
+#include <memory>
 
 namespace scanner {
 class KlineCache;
@@ -10,14 +12,12 @@ class KlineCache;
 
 namespace backtest {
 
-// Concrete cache-backed provider.
-// `cache_only`: returns klines only when KlineCache holds enough closed bars.
-// `cache_then_rest`: this class remains cache-only and is used as the inner
-// provider by RestBackfillingHistoricalWindowProvider.
-class HistoricalWindowProvider : public IHistoricalWindowProvider {
+class RestBackfillingHistoricalWindowProvider final : public IHistoricalWindowProvider {
 public:
-    HistoricalWindowProvider(
-        const scanner::KlineCache& cache,
+    RestBackfillingHistoricalWindowProvider(
+        std::unique_ptr<IHistoricalWindowProvider> innerProvider,
+        std::unique_ptr<IKlineRestClient> restClient,
+        scanner::KlineCache& cache,
         BacktestGateDataConfig config);
 
     WindowResult closedWindow(
@@ -27,7 +27,9 @@ public:
         std::chrono::system_clock::time_point signalBarOpenTime) const override;
 
 private:
-    const scanner::KlineCache& m_cache;
+    std::unique_ptr<IHistoricalWindowProvider> m_innerProvider;
+    std::unique_ptr<IKlineRestClient> m_restClient;
+    scanner::KlineCache& m_cache;
     BacktestGateDataConfig m_config;
 };
 

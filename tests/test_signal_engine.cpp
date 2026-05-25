@@ -874,6 +874,68 @@ TEST(SignalEngineTest, FilledTpSlClientOrderRemovesTrackedPosition) {
     EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
 }
 
+TEST(SignalEngineTest, ExternalReduceOnlyCloseCooldownBlocksImmediateReopen) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setStep("BTCUSDT", 0.001);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 2200 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine::Config engineConfig;
+    engineConfig.externalCloseCooldown = std::chrono::seconds{3600};
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, engineConfig);
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+    ASSERT_TRUE(engine.tracker().has("BTCUSDT"));
+    ASSERT_EQ(orders.marketCalls, 1);
+
+    OrderUpdateEvent manualClose;
+    manualClose.symbol = "BTCUSDT";
+    manualClose.orderStatus = "FILLED";
+    manualClose.clientOrderId = "electron_manual_close";
+    manualClose.isReduceOnly = true;
+    manualClose.lastFilledQty = 0.001;
+    engine.onUserDataEvent(manualClose);
+
+    account::AccountSnapshot flatSnapshot;
+    flatSnapshot.account.availableBalance = 1000.0;
+    flatSnapshot.positions = std::vector<Position>{Position{.symbol = "BTCUSDT", .positionAmt = 0.0}};
+    ioc.restart();
+    runAwaitable(ioc, engine.reconcileTrackedPositions(flatSnapshot));
+    ASSERT_FALSE(engine.tracker().has("BTCUSDT"));
+
+    ioc.restart();
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+    EXPECT_EQ(orders.marketCalls, 1);
+}
+
 TEST(SignalEngineTest, CanDisableStopLossPlacement) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
@@ -1848,7 +1910,6 @@ TEST(SignalEngineTest, ExposureBlockSkipsRiskGate) {
 
     engine::GeminiFilterConfig geminiCfg;
     geminiCfg.enabled = true;
-    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
     geminiCfg.maxEvaluationsPerScanCycle = 3;
     engine::SignalEngine signalEngine(
         scanner, registry, account, orders, exposure, gemini, geminiCfg, {}, &risk);
@@ -1902,7 +1963,6 @@ TEST(SignalEngineTest, RiskGateBlockSkipsGeminiAndOrderPlacement) {
 
     engine::GeminiFilterConfig geminiCfg;
     geminiCfg.enabled = true;
-    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
     geminiCfg.maxEvaluationsPerScanCycle = 3;
     engine::SignalEngine signalEngine(
         scanner, registry, account, orders, exposure, gemini, geminiCfg, {}, &risk);
@@ -2247,7 +2307,7 @@ TEST(SignalEngineTest, ExposureExceptionHonorsFailureMode) {
     EXPECT_EQ(orders.marketCalls, 1);
 }
 
-TEST(SignalEngineTest, GeminiEnforceBlockSkipsOrderPlacement) {
+TEST(SignalEngineTest, GeminiFilterBlockSkipsOrderPlacement) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
     scanner.setSymbols({"BTCUSDT"});
@@ -2295,7 +2355,6 @@ TEST(SignalEngineTest, GeminiEnforceBlockSkipsOrderPlacement) {
 
     engine::GeminiFilterConfig geminiCfg;
     geminiCfg.enabled = true;
-    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
     geminiCfg.maxEvaluationsPerScanCycle = 3;
     engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
     runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "1h")));
@@ -2305,7 +2364,7 @@ TEST(SignalEngineTest, GeminiEnforceBlockSkipsOrderPlacement) {
     EXPECT_EQ(orders.marketCalls, 0);
 }
 
-TEST(SignalEngineTest, GeminiEnforceBlockWithoutErrorSkipsOrderPlacement) {
+TEST(SignalEngineTest, GeminiFilterBlockWithoutErrorSkipsOrderPlacement) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
     scanner.setSymbols({"BTCUSDT"});
@@ -2353,7 +2412,6 @@ TEST(SignalEngineTest, GeminiEnforceBlockWithoutErrorSkipsOrderPlacement) {
 
     engine::GeminiFilterConfig geminiCfg;
     geminiCfg.enabled = true;
-    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
     geminiCfg.maxEvaluationsPerScanCycle = 3;
     engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
     runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "4h")));
@@ -2362,7 +2420,7 @@ TEST(SignalEngineTest, GeminiEnforceBlockWithoutErrorSkipsOrderPlacement) {
     EXPECT_EQ(orders.marketCalls, 0);
 }
 
-TEST(SignalEngineTest, GeminiEnforceComponentErrorBlocksOrderPlacement) {
+TEST(SignalEngineTest, GeminiFilterComponentErrorBlocksOrderPlacement) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
     scanner.setSymbols({"BTCUSDT"});
@@ -2410,7 +2468,6 @@ TEST(SignalEngineTest, GeminiEnforceComponentErrorBlocksOrderPlacement) {
 
     engine::GeminiFilterConfig geminiCfg;
     geminiCfg.enabled = true;
-    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
     geminiCfg.blockOnError = true;
     geminiCfg.maxEvaluationsPerScanCycle = 3;
     engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
@@ -2468,7 +2525,6 @@ TEST(SignalEngineTest, GeminiComponentErrorCanFailOpenWhenConfigured) {
 
     engine::GeminiFilterConfig geminiCfg;
     geminiCfg.enabled = true;
-    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
     geminiCfg.blockOnError = false;
     geminiCfg.maxEvaluationsPerScanCycle = 3;
     engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
@@ -2478,7 +2534,7 @@ TEST(SignalEngineTest, GeminiComponentErrorCanFailOpenWhenConfigured) {
     EXPECT_EQ(orders.marketCalls, 1);
 }
 
-TEST(SignalEngineTest, GeminiBudgetEnforceBlocksBeforeEvaluateByDefault) {
+TEST(SignalEngineTest, GeminiBudgetBlocksBeforeEvaluateByDefault) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
     scanner.setSymbols({"BTCUSDT"});
@@ -2517,7 +2573,6 @@ TEST(SignalEngineTest, GeminiBudgetEnforceBlocksBeforeEvaluateByDefault) {
 
     engine::GeminiFilterConfig geminiCfg;
     geminiCfg.enabled = true;
-    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
     geminiCfg.maxEvaluationsPerScanCycle = 0;
     engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
     runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "30m")));
@@ -2574,7 +2629,6 @@ TEST(SignalEngineTest, GeminiDisabledDoesNotEvaluateAndAllowsOrderPlacement) {
 
     engine::GeminiFilterConfig geminiCfg;
     geminiCfg.enabled = false;
-    geminiCfg.mode = engine::GeminiFilterMode::Disabled;
     engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
     runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "30m")));
 
@@ -2582,7 +2636,7 @@ TEST(SignalEngineTest, GeminiDisabledDoesNotEvaluateAndAllowsOrderPlacement) {
     EXPECT_EQ(orders.marketCalls, 1);
 }
 
-TEST(SignalEngineTest, GeminiBudgetEnforceBlocksBeforeEvaluate) {
+TEST(SignalEngineTest, GeminiBudgetBlocksBeforeEvaluate) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
     scanner.setSymbols({"BTCUSDT"});
@@ -2621,7 +2675,6 @@ TEST(SignalEngineTest, GeminiBudgetEnforceBlocksBeforeEvaluate) {
 
     engine::GeminiFilterConfig geminiCfg;
     geminiCfg.enabled = true;
-    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
     geminiCfg.maxEvaluationsPerScanCycle = 0;
     engine::SignalEngine engine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
     runAwaitable(ioc, engine.processItem(singleWork(strategyPtr, "30m")));
@@ -2630,7 +2683,7 @@ TEST(SignalEngineTest, GeminiBudgetEnforceBlocksBeforeEvaluate) {
     EXPECT_EQ(orders.marketCalls, 0);
 }
 
-TEST(SignalEngineTest, GeminiBudgetEnforceClosesGateForFollowingItemsInCycle) {
+TEST(SignalEngineTest, GeminiBudgetClosesGateForFollowingItemsInCycle) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
     scanner.setSymbols({"BTCUSDT", "ETHUSDT"});
@@ -2677,7 +2730,6 @@ TEST(SignalEngineTest, GeminiBudgetEnforceClosesGateForFollowingItemsInCycle) {
 
     engine::GeminiFilterConfig geminiCfg;
     geminiCfg.enabled = true;
-    geminiCfg.mode = engine::GeminiFilterMode::Enforce;
     geminiCfg.maxEvaluationsPerScanCycle = 0;
     geminiCfg.closeGateOnBudgetExhausted = true;
     engine::SignalEngine signalEngine(scanner, registry, account, orders, exposure, gemini, geminiCfg, {});
@@ -2781,7 +2833,6 @@ TEST(SignalEngineTest, GeminiControllerLockContentionDoesNotBlockSignalPath) {
 
     engine::GeminiFilterConfig controllerCfg;
     controllerCfg.enabled = true;
-    controllerCfg.mode = engine::GeminiFilterMode::Enforce;
     controllerCfg.pythonPath = "python";
     controllerCfg.moduleName = "fake_eval";
     controllerCfg.workingDirectory = workingDir.string();
@@ -2796,7 +2847,6 @@ TEST(SignalEngineTest, GeminiControllerLockContentionDoesNotBlockSignalPath) {
 
     engine::GeminiFilterConfig signalGeminiCfg;
     signalGeminiCfg.enabled = true;
-    signalGeminiCfg.mode = engine::GeminiFilterMode::Enforce;
     signalGeminiCfg.maxEvaluationsPerScanCycle = 3;
     engine::SignalEngine signalEngine(scanner, registry, account, orders, exposure, geminiController, signalGeminiCfg, {});
 
