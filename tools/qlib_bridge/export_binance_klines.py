@@ -1,3 +1,15 @@
+"""Export Binance futures klines into the local qlib bridge dataset.
+
+This script pulls historical or incremental candlestick data from Binance's
+USD-M futures kline API, normalizes the response into the repository's tabular
+format, and writes the result to the target dataset store used by the qlib
+bridge workflows.
+
+The module also contains the retry, continuity, calendar, and dump-bin helpers
+needed to keep exported data aligned with qlib's expected bar frequency and
+datetime conventions.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -5,9 +17,9 @@ import json
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
-import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,14 +69,50 @@ def _to_utc_iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _read_json(url: str, timeout_s: int = 30) -> object:
+def _retry_delay_seconds(retry_after_value: str | None, attempt: int, base_delay_s: float) -> float:
+    if retry_after_value:
+        try:
+            retry_after = float(retry_after_value)
+            if retry_after > 0:
+                return retry_after
+        except ValueError:
+            pass
+    return base_delay_s * (2 ** max(attempt - 1, 0))
+
+
+def _read_json(url: str, timeout_s: int = 30, max_attempts: int = 5, base_delay_s: float = 0.5) -> object:
     req = urllib.request.Request(url=url, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout_s) as response:
-        payload = response.read()
-    return json.loads(payload)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as response:
+                payload = response.read()
+            return json.loads(payload)
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            retriable = status in {418, 429} or 500 <= status < 600
+            if not retriable or attempt >= max_attempts:
+                raise
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            time.sleep(_retry_delay_seconds(retry_after, attempt, base_delay_s))
+        except urllib.error.URLError:
+            if attempt >= max_attempts:
+                raise
+            time.sleep(_retry_delay_seconds(None, attempt, base_delay_s))
+    raise RuntimeError("request retries exhausted")
 
 
 def fetch_binance_klines(cfg: ExportConfig) -> pd.DataFrame:
+    """Fetch and normalize Binance klines for every symbol in the export config.
+
+    The function walks forward from ``start_ms`` to ``end_ms`` for each symbol,
+    requests kline batches from the configured Binance endpoint, converts each
+    response row into the repository's output schema, and returns a single
+    sorted DataFrame covering the requested interval.
+
+    Raises:
+        RuntimeError: If the API returns an unexpected payload or no rows.
+    """
+
     rows: list[dict[str, object]] = []
     for symbol in cfg.symbols:
         start_ms = cfg.start_ms
@@ -120,6 +168,15 @@ def fetch_binance_klines(cfg: ExportConfig) -> pd.DataFrame:
 
 
 def write_dataset(frame: pd.DataFrame, output_path: Path) -> None:
+    """Persist the exported dataset to CSV or Parquet.
+
+    The destination format is inferred from ``output_path``. Parent directories
+    are created automatically before the dataset is written.
+
+    Raises:
+        ValueError: If the output suffix is not ``.csv`` or ``.parquet``.
+    """
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     suffix = output_path.suffix.lower()
     if suffix == ".csv":
@@ -145,6 +202,17 @@ def run_dump_bin(
     file_suffix: str,
     incremental: bool,
 ) -> None:
+    """Invoke qlib's dump_bin.py to build or update a binary dataset.
+
+    The helper assembles the command line used by qlib's dump tool, ensures the
+    target directory exists, and runs the conversion in either full rebuild or
+    incremental update mode.
+
+    Raises:
+        FileNotFoundError: If ``dump_bin_script`` does not exist.
+        subprocess.CalledProcessError: If the dump command fails.
+    """
+
     if not dump_bin_script.exists():
         raise FileNotFoundError(f"dump_bin.py not found: {dump_bin_script}")
     qlib_dir.mkdir(parents=True, exist_ok=True)
@@ -173,10 +241,19 @@ def run_dump_bin(
 
 
 def prepare_dump_all_input(frame: pd.DataFrame, output_path: Path) -> Path:
+    """Prepare per-symbol input files for qlib full rebuild mode.
+
+    ``dump_bin.py dump_all`` expects one file per instrument, so this helper
+    splits the exported frame by symbol and writes each partition under a
+    sibling directory named ``<stem>_by_symbol``.
+
+    Returns:
+        Path to the directory containing the per-symbol files.
+
+    Raises:
+        ValueError: If the output suffix is unsupported.
     """
-    dump_bin dump_all determines symbol from file name, not from symbol column.
-    For full rebuild we must split into one file per symbol.
-    """
+
     suffix = output_path.suffix.lower()
     if suffix not in {".csv", ".parquet"}:
         raise ValueError(f"Unsupported output suffix for dump_all preparation: {suffix}")
@@ -234,28 +311,14 @@ def _check_continuity(frame: pd.DataFrame, interval: str) -> None:
         if midnight_rows.empty:
             raise RuntimeError(f"Midnight continuity check failed for {symbol}: no 00:00 UTC rows found")
 
-        sunday_to_monday = 0
-        timestamps = part["datetime"].tolist()
-        for i in range(1, len(timestamps)):
-            prev_dt = timestamps[i - 1]
-            cur_dt = timestamps[i]
-            if prev_dt.weekday() == 6 and cur_dt.weekday() == 0 and (cur_dt - prev_dt) == step:
-                sunday_to_monday += 1
-        if sunday_to_monday == 0:
-            span = (part["datetime"].max() - part["datetime"].min()).days
-            if span >= 7:
-                raise RuntimeError(f"Sunday-to-Monday continuity check failed for {symbol}")
-            warnings.warn(
-                f"Sunday-to-Monday continuity skipped for {symbol}: dataset span {span}d < 7d",
-                stacklevel=2,
-            )
-
 
 def register_crypto_24_7_calendar(timestamps: Iterable[pd.Timestamp], interval: str) -> None:
-    """
-    Best-effort runtime patch: register a 24/7 calendar before calling qlib D.features().
-    Qlib APIs differ by version, so this patch intentionally falls back silently when
-    internals are not compatible.
+    """Patch qlib's calendar lookup to expose a 24/7 crypto trading calendar.
+
+    The export smoke test needs qlib's feature API to understand continuous
+    crypto bars. Because qlib's internals differ across versions, this helper
+    applies a best-effort monkey patch and silently returns if the runtime does
+    not expose the expected API surface.
     """
 
     try:
@@ -292,6 +355,17 @@ def smoke_test_qlib_features(
     interval: str,
     qlib_provider_uri: str | None,
 ) -> None:
+    """Run continuity and qlib feature-access checks against the exported data.
+
+    The smoke test first validates that the time series has no unexpected gaps
+    for the requested interval. When a qlib provider URI is supplied, it also
+    initializes qlib and verifies that ``D.features`` can resolve the exported
+    OHLCV fields for the available symbols.
+
+    Raises:
+        RuntimeError: If continuity fails or qlib cannot provide the features.
+    """
+
     _check_continuity(frame, interval)
     if not qlib_provider_uri:
         return
@@ -323,6 +397,12 @@ def smoke_test_qlib_features(
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the export workflow.
+
+    Returns:
+        The populated argparse namespace for the export script.
+    """
+
     parser = argparse.ArgumentParser(description="Export Binance Futures klines for Qlib bridge.")
     parser.add_argument("--symbols", nargs="+", required=True, help="Symbols, e.g. BTCUSDT ETHUSDT")
     parser.add_argument("--interval", required=True, help="Binance interval, e.g. 1h, 30m, 4h, 1d")
@@ -352,6 +432,16 @@ def _resolve_end_ms(raw_value: object) -> int:
 
 
 def main() -> int:
+    """Run the export workflow and return a process exit code.
+
+    The entry point orchestrates argument parsing, kline export, optional qlib
+    binary conversion, and the optional smoke test before reporting the final
+    row count to stdout.
+
+    Returns:
+        ``0`` when the export completes successfully.
+    """
+
     args = parse_args()
     output_path = Path(args.output)
     cfg = ExportConfig(

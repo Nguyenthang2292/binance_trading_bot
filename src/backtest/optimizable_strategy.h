@@ -1,3 +1,8 @@
+/**
+ * @file optimizable_strategy.h
+ * @brief Interface for strategy adapters that expose tunable parameter spaces.
+ */
+
 #pragma once
 
 #include "backtest/parameter_space.h"
@@ -20,6 +25,9 @@ namespace backtest {
 // acceptable because Gemini uses currentValues only as a contextual hint, and
 // the actual sweep uses the proposed ranges (which span well beyond defaults).
 // A v1.2 ABI change is required to thread overridden params through here.
+/**
+ * @brief Parameter-space contract provided by an optimizable strategy adapter.
+ */
 struct StrategyParamSpec {
     std::vector<std::string> tunableParams;
     std::vector<ParamRange> defaults;
@@ -27,14 +35,24 @@ struct StrategyParamSpec {
     std::unordered_map<std::string, double> currentValues;
 };
 
+/**
+ * @brief Adapter interface used by the backtest gate for parameterized signals.
+ */
 class IOptimizableStrategy {
 public:
     virtual ~IOptimizableStrategy() = default;
+
+    /**
+     * @brief Returns tunable ranges, constraints, and contextual current values.
+     */
     virtual StrategyParamSpec spec(const strategy::StrategyConfig& base) const = 0;
 
     // `klines` are closed bars only, ending at the evaluation bar.
     // `baseConfig` provides cfg.atrPeriod, cfg.minConfidence etc. that are
     // not part of `params` but are needed to faithfully reproduce live behavior.
+    /**
+     * @brief Evaluates strategy signal with a specific parameter point.
+     */
     virtual strategy::Signal evaluateWith(
         std::string_view symbol,
         std::string_view interval,

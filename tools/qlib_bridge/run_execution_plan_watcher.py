@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+"""Watch execution-plan requests and expand them into slice-based TWAP plans.
+
+The watcher polls the SQLite control plane for pending execution requests,
+splits each request into smaller time-sliced child orders, marks expired work,
+and keeps the execution-plan schema synchronized with the strategy layer.
+
+This daemon is used when the bridge needs a lightweight scheduler that can turn
+strategy intent into a controlled execution plan without relying on a separate
+job queue or service.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -90,6 +101,11 @@ def fetch_pending_requests(db: sqlite3.Connection, limit: int = 25) -> list[sqli
     )
 
 
+def fetch_pending_request(db: sqlite3.Connection) -> sqlite3.Row | None:
+    rows = fetch_pending_requests(db, limit=1)
+    return rows[0] if rows else None
+
+
 def mark_expired(db: sqlite3.Connection, request_id: str, reason: str) -> None:
     db.execute(
         "UPDATE qlib_execution_requests SET status = 'expired', error = ? WHERE request_id = ? AND status = 'pending'",
@@ -136,14 +152,17 @@ def create_twap_plan(
     expires_at_ms = current_ms + max(duration_ms, 1)
     spacing = max(duration_ms // max(len(quantities), 1), 1)
 
-    db.execute(
+    inserted = db.execute(
         """
         INSERT INTO qlib_execution_plans
         (plan_id, request_id, algorithm, status, generated_at_ms, expires_at_ms, total_quantity, slice_count, error)
         VALUES (?, ?, 'TWAP', 'running', ?, ?, ?, ?, NULL)
+        ON CONFLICT(request_id) DO NOTHING
         """,
         (plan_id, request["request_id"], current_ms, expires_at_ms, request["quantity"], len(quantities)),
     )
+    if inserted.rowcount == 0:
+        return
     for index, quantity in enumerate(quantities):
         db.execute(
             """
@@ -160,29 +179,37 @@ def create_twap_plan(
                 quantity,
             ),
         )
-    db.execute(
-        "UPDATE qlib_execution_plans SET status = 'succeeded' WHERE plan_id = ?",
-        (plan_id,),
-    )
+    # Plan stays running until downstream execution updates slices to terminal states.
 
 
 def process_once(db: sqlite3.Connection, slice_count: int, duration_ms: int) -> int:
     processed = 0
-    for request in fetch_pending_requests(db):
+    while True:
+        request: sqlite3.Row | None = None
         try:
             db.execute("BEGIN IMMEDIATE;")
+            request = fetch_pending_request(db)
+            if request is None:
+                db.rollback()
+                break
             create_twap_plan(db, request, slice_count, duration_ms)
             db.commit()
             processed += 1
         except Exception as exc:
             db.rollback()
+            if request is None:
+                logging.exception("failed to create execution plan before selecting a pending request")
+                continue
             logging.exception("failed to create execution plan request_id=%s", request["request_id"])
-            db.execute("BEGIN IMMEDIATE;")
-            db.execute(
-                "UPDATE qlib_execution_requests SET status = 'failed', error = ? WHERE request_id = ?",
-                (str(exc), request["request_id"]),
-            )
-            db.commit()
+            try:
+                db.execute("BEGIN IMMEDIATE;")
+                db.execute(
+                    "UPDATE qlib_execution_requests SET status = 'failed', error = ? WHERE request_id = ? AND status = 'pending'",
+                    (str(exc), request["request_id"]),
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
     return processed
 
 

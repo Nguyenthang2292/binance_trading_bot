@@ -82,6 +82,7 @@ set(LIB_SOURCES
     src/engine/gemini_filter.cpp
     src/engine/loss_manager.cpp
     src/engine/price_filter.cpp
+    src/engine/take_profit_reconciler.cpp
     src/engine/trailing_stop_controller.cpp
     src/engine/signal_engine.cpp
     src/engine/qlib_execution_planner.cpp
@@ -169,6 +170,7 @@ set(LIB_HEADERS
     src/engine/gemini_filter.h
     src/engine/loss_manager.h
     src/engine/price_filter.h
+    src/engine/take_profit_reconciler.h
     src/engine/trailing_stop_controller.h
     src/engine/signal_engine.h
     src/risk/risk_types.h

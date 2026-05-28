@@ -278,6 +278,7 @@
       <a href="#traffic-model">Traffic Model</a>
       <a href="#prerequisites">Prerequisites</a>
       <a href="#powershell">PowerShell Run</a>
+      <a href="#reconnect">Reconnect After Reboot</a>
       <a href="#verify">Verification</a>
       <a href="#expected-logs">Expected Logs</a>
       <a href="#troubleshooting">Troubleshooting</a>
@@ -332,6 +333,7 @@
           <li>EC2 instance is running and has an Elastic IP.</li>
           <li>Binance API key whitelist includes the EC2 Elastic IP.</li>
           <li>Local machine has SSH access to EC2 with the repo-local private key at <code>.\infra\binance-bot-key.pem</code>.</li>
+          <li>For EC2 Instance Connect reconnects, <code>.env</code> contains <code>AWS_ACCESS_KEY_ID</code>, <code>AWS_SECRET_ACCESS_KEY</code>, optional <code>AWS_SESSION_TOKEN</code>, and <code>AWS_REGION</code>.</li>
           <li><code>BINANCE_API_KEY</code> and <code>BINANCE_SECRET_KEY</code> are set in the bot terminal.</li>
           <li>For live trading, <code>BINANCE_TESTNET</code> is not set. For testnet, set <code>BINANCE_TESTNET=1</code>.</li>
         </ul>
@@ -436,6 +438,53 @@ $bot = ".\build\windows-msvc-debug\bin\Debug\binance_trading_bot.exe"
         </div>
       </section>
 
+      <section id="reconnect">
+        <h2>Reconnect After Reboot</h2>
+        <div class="callout ok">
+          Use this path after Windows restarts or the SSH process exits. It reads AWS credentials from <code>.env</code>,
+          detects the current local public IP, adds a narrow SSH ingress rule for that IP, creates a temporary
+          EC2 Instance Connect key, and opens the SOCKS5 tunnel on <code>127.0.0.1:1080</code>.
+        </div>
+
+        <h3>One-command reconnect</h3>
+        <div class="terminal-pair">
+          <div class="terminal-card">
+            <h4>On TVKT-TAC</h4>
+            <pre><code>cd "D:\NGUYEN QUANG THANG\binance_trading_bot"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\connect_ec2_socks.ps1</code></pre>
+          </div>
+          <div class="terminal-card">
+            <h4>On this local machine</h4>
+            <pre><code>cd "C:\Users\Admin\Desktop\binance_trading_bot"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\connect_ec2_socks.ps1</code></pre>
+          </div>
+        </div>
+
+        <p>Expected successful output:</p>
+        <pre><code>SOCKS tunnel is listening on 127.0.0.1:1080
+SSH process id: &lt;pid&gt;
+Proxy egress IP: 47.131.185.59</code></pre>
+
+        <p>If the tunnel is already running, the script exits without creating a duplicate:</p>
+        <pre><code>SOCKS port 1080 is already listening. Owning process: &lt;pid&gt;</code></pre>
+
+        <h3>What the script fixes automatically</h3>
+        <ul>
+          <li>Local ISP public IP changed after router or Windows restart.</li>
+          <li>EC2 security group is missing the current <code>/32</code> source IP for SSH.</li>
+          <li>The original private key is unavailable locally, by using EC2 Instance Connect with a temporary key.</li>
+          <li>Port <code>1080</code> needs a fresh hidden SSH process after reboot.</li>
+        </ul>
+
+        <h3>Stop the tunnel</h3>
+        <pre><code>Get-NetTCPConnection -LocalPort 1080 -State Listen |
+  Select-Object LocalAddress,LocalPort,OwningProcess
+
+Stop-Process -Id &lt;OwningProcess&gt;</code></pre>
+      </section>
+
       <section id="verify">
         <h2>Verification</h2>
 
@@ -521,6 +570,11 @@ $env:BINANCE_REQUIRE_SOCKS5_PROXY</code></pre>
               <td>Restart SSH with <code>-o ExitOnForwardFailure=yes</code>.</td>
             </tr>
             <tr>
+              <td>SSH timeout after reboot</td>
+              <td>Run <code>Invoke-RestMethod https://checkip.amazonaws.com</code> and compare it with the EC2 security group SSH source rules.</td>
+              <td>Run <code>.\tools\connect_ec2_socks.ps1</code> to add the current <code>/32</code> source IP and recreate the tunnel.</td>
+            </tr>
+            <tr>
               <td>Testnet key fails on live endpoint</td>
               <td>Check <code>$env:BINANCE_TESTNET</code>.</td>
               <td>Use matching key type and endpoint mode.</td>
@@ -544,7 +598,7 @@ $env:BINANCE_REQUIRE_SOCKS5_PROXY</code></pre>
           for EC2-proxied live operation. Use the main executable flow documented above.
         </div>
 
-        <p class="muted">Last updated: 2026-05-16.</p>
+        <p class="muted">Last updated: 2026-05-27.</p>
       </section>
     </main>
   </div>

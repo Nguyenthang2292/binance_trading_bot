@@ -1,7 +1,12 @@
+/**
+ * @file gemini_range_proposer.h
+ * @brief Gemini/Python-backed implementation of the range proposer interface.
+ */
+
 #pragma once
 
-#include "backtest/range_proposer.h"
 #include "backtest/backtest_gate.h"
+#include "backtest/range_proposer.h"
 #include "backtest/walk_forward.h"  // for Partitions
 
 #include <chrono>
@@ -13,28 +18,41 @@
 
 namespace backtest {
 
-// Computes prompt_context aggregates strictly from the promptContext slice.
-// Called by GeminiRangeProposer before building the input JSON.
+/**
+ * @brief Compact market-context features derived from prompt-context candles.
+ */
 struct PromptContextAggregates {
-    double ret30dPct{0.0};       // return over the prompt context window
-    double atrPctCurrent{0.0};   // ATR of last bar as % of close
-    double avgVolumeUsd{0.0};    // average volume * close (USD proxy)
-    std::string trendDirection;  // "up" | "down" | "flat"
-    double realizedVol{0.0};     // realized volatility (std of log returns)
-    int numCandles{0};
+    double ret30dPct{0.0};       ///< Return over prompt-context window.
+    double atrPctCurrent{0.0};   ///< ATR of last bar as percent of close.
+    double avgVolumeUsd{0.0};    ///< Mean volume*close proxy over prompt context.
+    std::string trendDirection;  ///< "up", "down", or "flat".
+    double realizedVol{0.0};     ///< Std-dev of prompt-context log returns.
+    int numCandles{0};           ///< Candle count in prompt context.
 };
 
+/**
+ * @brief Computes proposer features from prompt-context candles only.
+ */
 PromptContextAggregates computePromptAggregates(const std::vector<Kline>& promptContext);
 
+/**
+ * @brief Range proposer that delegates generation to a Python module.
+ *
+ * Responsibilities:
+ * - Build bounded input JSON from C++ request data.
+ * - Execute Python subprocess with timeout and stderr drainage.
+ * - Validate and map output into typed C++ ranges.
+ * - Cache successful outputs by contextual key.
+ */
 class GeminiRangeProposer : public IRangeProposer {
 public:
     GeminiRangeProposer(BacktestGateGeminiConfig cfg, BacktestGateCacheConfig cacheCfg = {});
 
-    // propose() computes aggregates from `partitions.promptContext` only —
-    // calibration / OOS / signal bar are never read.
+    // Computes aggregates from promptContext only; calibration/OOS bars are
+    // intentionally excluded to prevent look-ahead leakage.
     Result propose(const RangeProposalRequest& req) override;
 
-    // Overload receiving Partitions to enforce prompt-context isolation.
+    // Explicit overload used by tests/callers that already split partitions.
     Result proposeWithPartitions(
         const RangeProposalRequest& req,
         const std::vector<Kline>& promptContext,
@@ -64,8 +82,9 @@ private:
         const std::vector<std::string>& tunableParams) const;
 
     // LRU cache helpers.
-    std::string buildCacheKey(const RangeProposalRequest& req,
-                              const PromptContextAggregates& aggs) const;
+    std::string buildCacheKey(
+        const RangeProposalRequest& req,
+        const PromptContextAggregates& aggs) const;
     std::optional<Output> getCached(const std::string& key) const;
     void putCached(const std::string& key, const Output& result) const;
     void evictExpiredLocked() const;
@@ -84,3 +103,4 @@ private:
 };
 
 }  // namespace backtest
+

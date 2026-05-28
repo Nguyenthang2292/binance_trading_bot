@@ -1,7 +1,7 @@
 # Qlib Strategy Adapter Integration — Implementation Review v1.0
 
 **Date:** 2026-05-21
-**Status:** REVIEW COMPLETE
+**Status:** COMPLETE - superseded by v1.1 and v1.2
 **Reviewer:** Brainstorming + structured code review
 **Audience:** AI agents, human developers
 
@@ -367,7 +367,7 @@ Decisions made during the review session that shape next-step implementation:
 
 | # | Decision | Alternatives considered | Resolution |
 |---|---|---|---|
-| 1 | QlibExecutionPlanner direction | (a) Complete SliceExecutor; (b) Shadow_only + native fallback; (c) Remove from flow | **Pending — analysis provided, awaiting confirmation.** Recommended (b) for current PR with (a) as Phase 8. |
+| 1 | QlibExecutionPlanner direction | (a) Complete SliceExecutor; (b) Shadow_only + native fallback; (c) Remove from flow | **Resolved later.** v1.1 adopted (b) for the shadow-only path; v1.2 completed Phase 8 slice execution. |
 | 2 | `run_strategy.py` Qlib integration | (a) Keep score-sort reimpl; (b) Integrate real Qlib; (c) Manual n_drop/impact_limit; (d) Defer SoftTopk | **Chose (b): Integrate real Qlib classes now.** Larger scope but unblocks meaningful multi-adapter shadow runs. |
 | 3 | Decision Arbiter bug fixes | (a) Fix all 4 in this PR; (b) Fix bugs 1+4 only; (c) Defer to v1.2 | **Chose (a): Fix all 4 in this PR.** All four are blockers for first meaningful shadow run. |
 

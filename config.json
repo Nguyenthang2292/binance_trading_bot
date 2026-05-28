@@ -93,7 +93,7 @@
     "failure_mode": "closed"
   },
   "gemini_filter": {
-    "enabled": true,
+    "enabled": false,
     "python_path": ".venv\\Scripts\\python.exe",
     "module_name": "tools.gemini_filter.gemini_filter",
     "working_directory": ".",
@@ -200,7 +200,7 @@
     "hard_min_upi": -1.0
   },
   "backtest_gate": {
-    "enabled": true,
+    "enabled": false,
     "shadow_only": false,
     "worker_pool_size": 1,
     "deadline_seconds": 90,

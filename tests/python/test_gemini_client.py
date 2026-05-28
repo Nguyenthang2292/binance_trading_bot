@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock
 from google.genai import types
 
-from tools.gemini_filter.gemini_client import parse_score_text
+from tools.gemini_filter.gemini_client import parse_score_payload, parse_score_text
 
 
 def test_parse_score_text_valid() -> None:
@@ -16,6 +16,11 @@ def test_parse_score_text_valid() -> None:
 def test_parse_score_text_invalid_raises() -> None:
     with pytest.raises(Exception):
         parse_score_text('{"score": 5, "analysis": "bad"}')
+
+
+def test_parse_score_payload_non_numeric_score_raises_runtime_error() -> None:
+    with pytest.raises(RuntimeError):
+        parse_score_payload({"score": "not-a-number", "analysis": "bad"})
 
 
 def _make_fake_response(text: str) -> MagicMock:
@@ -62,12 +67,14 @@ def test_generate_json_score_with_search_omits_json_schema() -> None:
     )
     assert result["score"] == 0.6
     config_used = fake_client.models.generate_content.call_args.kwargs["config"]
+    contents_used = fake_client.models.generate_content.call_args.kwargs["contents"]
     # JSON schema mode must be absent when grounding is active
     assert getattr(config_used, "response_mime_type", None) != "application/json"
     # Search tool must be present
     tools = getattr(config_used, "tools", None) or []
     assert len(tools) == 1
     assert hasattr(tools[0], "google_search")
+    assert 'Return strict JSON only with keys "score" and "analysis"' in contents_used
 
 
 def test_generate_json_score_config_built_in_single_call() -> None:

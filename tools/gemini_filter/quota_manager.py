@@ -48,6 +48,15 @@ class QuotaManager:
             self._metric(model, "reserve_zero_cost")
             return ReserveResult(ok=True, retry_after_seconds=0, reason="no cost")
 
+        rpm_limit = self._scaled_limit(self._config.default_rpm)
+        rpd_limit = self._scaled_limit(self._config.default_rpd)
+        if model in self._config.model_limits:
+            model_rpm, model_rpd = self._config.model_limits[model]
+            rpm_limit = self._scaled_limit(model_rpm)
+            rpd_limit = self._scaled_limit(model_rpd)
+
+        metric_name = ""
+        result = ReserveResult(ok=False, retry_after_seconds=1, reason="quota_state_error")
         with file_lock(self._lock_path):
             state = self._read_state()
             now = time.time()
@@ -56,49 +65,47 @@ class QuotaManager:
             cooldown_until = float(model_state.get("cooldown_until", 0.0))
             if cooldown_until > now:
                 retry_after = int(math.ceil(cooldown_until - now))
-                self._metric(model, "reserve_reject_cooldown")
-                return ReserveResult(ok=False, retry_after_seconds=max(1, retry_after), reason="model cooldown")
+                metric_name = "reserve_reject_cooldown"
+                result = ReserveResult(ok=False, retry_after_seconds=max(1, retry_after), reason="model cooldown")
+            else:
+                capacity = float(rpm_limit)
+                refill_per_second = capacity / 60.0
 
-            rpm_limit = max(1, int(self._config.default_rpm * self._config.safety_factor))
-            rpd_limit = max(1, int(self._config.default_rpd * self._config.safety_factor))
-            if model in self._config.model_limits:
-                model_rpm, model_rpd = self._config.model_limits[model]
-                rpm_limit = max(1, int(model_rpm * self._config.safety_factor))
-                rpd_limit = max(1, int(model_rpd * self._config.safety_factor))
-            capacity = float(rpm_limit)
-            refill_per_second = capacity / 60.0
+                tokens = float(model_state.get("tokens", capacity))
+                last_refill = float(model_state.get("last_refill", now))
+                elapsed = max(0.0, now - last_refill)
+                tokens = min(capacity, tokens + elapsed * refill_per_second)
 
-            tokens = float(model_state.get("tokens", capacity))
-            last_refill = float(model_state.get("last_refill", now))
-            elapsed = max(0.0, now - last_refill)
-            tokens = min(capacity, tokens + elapsed * refill_per_second)
+                day_key = datetime.now(PACIFIC_TZ).strftime("%Y-%m-%d")
+                used_day_key = str(model_state.get("rpd_day", day_key))
+                used_today = int(model_state.get("rpd_used", 0))
+                if used_day_key != day_key:
+                    used_today = 0
+                    used_day_key = day_key
 
-            day_key = datetime.now(PACIFIC_TZ).strftime("%Y-%m-%d")
-            used_day_key = str(model_state.get("rpd_day", day_key))
-            used_today = int(model_state.get("rpd_used", 0))
-            if used_day_key != day_key:
-                used_today = 0
-                used_day_key = day_key
+                if used_today + cost > rpd_limit:
+                    retry = self._seconds_until_next_pacific_day()
+                    metric_name = "reserve_reject_rpd"
+                    result = ReserveResult(ok=False, retry_after_seconds=max(1, retry), reason="rpd exhausted")
+                elif tokens < cost:
+                    missing = float(cost) - tokens
+                    retry = int(math.ceil(missing / refill_per_second))
+                    metric_name = "reserve_reject_rpm"
+                    result = ReserveResult(ok=False, retry_after_seconds=max(1, retry), reason="rpm exhausted")
+                else:
+                    tokens -= float(cost)
+                    used_today += cost
+                    model_state["tokens"] = tokens
+                    model_state["last_refill"] = now
+                    model_state["rpd_day"] = used_day_key
+                    model_state["rpd_used"] = used_today
+                    self._write_state(state)
+                    metric_name = "reserve_ok"
+                    result = ReserveResult(ok=True, retry_after_seconds=0, reason="reserved")
 
-            if used_today + cost > rpd_limit:
-                retry = self._seconds_until_next_pacific_day()
-                self._metric(model, "reserve_reject_rpd")
-                return ReserveResult(ok=False, retry_after_seconds=max(1, retry), reason="rpd exhausted")
-            if tokens < cost:
-                missing = float(cost) - tokens
-                retry = int(math.ceil(missing / refill_per_second))
-                self._metric(model, "reserve_reject_rpm")
-                return ReserveResult(ok=False, retry_after_seconds=max(1, retry), reason="rpm exhausted")
-
-            tokens -= float(cost)
-            used_today += cost
-            model_state["tokens"] = tokens
-            model_state["last_refill"] = now
-            model_state["rpd_day"] = used_day_key
-            model_state["rpd_used"] = used_today
-            self._write_state(state)
-            self._metric(model, "reserve_ok")
-            return ReserveResult(ok=True, retry_after_seconds=0, reason="reserved")
+        if metric_name:
+            self._metric(model, metric_name)
+        return result
 
     def cooldown(self, model: str) -> None:
         if not self._config.enabled:
@@ -133,6 +140,10 @@ class QuotaManager:
             self._metrics_store.incr_quota(model, metric)
         except Exception:
             pass
+
+    def _scaled_limit(self, value: int) -> int:
+        scaled = int(math.floor(float(value) * self._config.safety_factor))
+        return max(1, scaled)
 
     @staticmethod
     def _seconds_until_next_pacific_day() -> int:

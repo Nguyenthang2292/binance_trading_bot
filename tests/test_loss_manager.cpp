@@ -21,6 +21,7 @@ T runAwaitable(boost::asio::io_context& ioc, boost::asio::awaitable<T> task) {
 
 class MockOrdersPort final : public engine::IOrdersPort {
 public:
+    int openNormalOrdersCalls{0};
     int marketCalls{0};
     int limitCalls{0};
     int amendLimitCalls{0};
@@ -63,6 +64,15 @@ public:
         out.clientOrderId = "sl-404";
         return OrdersResult<NormalPlacementResult>(out);
     }();
+
+    OrdersResult<std::vector<NormalOrderSnapshot>> openNormalOrdersResult =
+        std::vector<NormalOrderSnapshot>{};
+
+    boost::asio::awaitable<OrdersResult<std::vector<NormalOrderSnapshot>>>
+    openNormalOrders(std::optional<Symbol>) override {
+        ++openNormalOrdersCalls;
+        co_return openNormalOrdersResult;
+    }
 
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> market(MarketOrderDraft draft) override {
         ++marketCalls;

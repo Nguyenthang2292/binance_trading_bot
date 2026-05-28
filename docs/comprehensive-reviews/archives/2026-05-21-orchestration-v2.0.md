@@ -1,6 +1,7 @@
 # Comprehensive Review: `src/orchestration` Module (Follow-up)
 
 **Date:** 2026-05-21
+**Status:** COMPLETE - approved
 **Reviewer:** Claude Code (manual multi-dimensional review — quality, architecture, security, performance, concurrency, testing, docs)
 **Scope:** `src/orchestration/` — verifying fixes from [`2026-05-21-orchestration-v1.0.md`](2026-05-21-orchestration-v1.0.md). Cross-referenced with new tests (`tests/test_model_publisher.cpp`, `tests/test_shadow_metrics_recorder.cpp`), updated `process_manager.cpp`, `qlib_state_store.cpp`, `model_publisher.cpp`, `batch_scheduler_thread.cpp`, `shadow_metrics_recorder.cpp`, `promotion_checker.cpp`.
 **Module:** Qlib Orchestration runtime
@@ -50,7 +51,7 @@ The module is materially safer now: the POSIX ProcessManager enforces timeouts, 
 
 **Files:** [`process_manager.cpp:300-301`](../../src/orchestration/process_manager.cpp)
 
-**Status:** ✅ Fixed.
+**Status:** Fixed.
 
 The child still uses `_exit(127)` on `execvp` failure, preserving the shell convention "command not found", but the log now distinguishes a parent-side launch failure from a script that legitimately exits 127:
 

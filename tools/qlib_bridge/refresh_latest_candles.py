@@ -1,11 +1,23 @@
+"""Refresh the latest Binance candles inside the local qlib bridge dataset.
+
+The script fetches the newest candle for each tracked symbol and interval from
+Binance, reconciles it with the stored dataset, and upserts the result into the
+SQLite cache used by the bridge workflows.
+
+It is intended for low-latency incremental updates where a full historical
+re-export would be unnecessary or too expensive.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -56,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", required=True, help="SQLite path for qlib_candles")
     parser.add_argument("--merge-mode", choices=["upsert"], default="upsert")
     parser.add_argument("--base-url", default=BINANCE_FAPI_KLINES)
+    parser.add_argument("--max-workers", type=int, default=4, help="Parallel HTTP workers for symbol refresh")
     return parser.parse_args()
 
 
@@ -144,12 +157,14 @@ def load_dataset(path: Path) -> pd.DataFrame:
 def save_dataset(path: Path, frame: pd.DataFrame) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     ordered = frame.sort_values(["symbol", "datetime"], ascending=[True, True]).reset_index(drop=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
     if path.suffix.lower() == ".csv":
-        ordered.to_csv(path, index=False)
+        ordered.to_csv(tmp_path, index=False)
     elif path.suffix.lower() == ".parquet":
-        ordered.to_parquet(path, index=False)
+        ordered.to_parquet(tmp_path, index=False)
     else:
         raise ValueError(f"unsupported dataset suffix: {path.suffix}")
+    os.replace(tmp_path, path)
 
 
 def upsert_dataset(path: Path, rows: list[dict[str, object]]) -> None:
@@ -250,7 +265,17 @@ def upsert_candles(db_path: Path, interval: str, rows: list[dict[str, object]]) 
 def main() -> int:
     args = parse_args()
     symbols = [s.upper() for s in args.symbols]
-    rows = [fetch_exact_candle(args.base_url, s, args.interval, args.asof_ms) for s in symbols]
+    max_workers = max(1, min(int(args.max_workers), max(len(symbols), 1)))
+    rows_by_symbol: dict[str, dict[str, object]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(fetch_exact_candle, args.base_url, symbol, args.interval, args.asof_ms): symbol
+            for symbol in symbols
+        }
+        for future in as_completed(future_map):
+            symbol = future_map[future]
+            rows_by_symbol[symbol] = future.result()
+    rows = [rows_by_symbol[s] for s in symbols]
 
     upsert_dataset(Path(args.dataset), rows)
     upsert_candles(Path(args.db_path), args.interval, rows)

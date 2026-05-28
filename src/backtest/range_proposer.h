@@ -1,3 +1,8 @@
+/**
+ * @file range_proposer.h
+ * @brief Contracts for proposing optimized parameter ranges before grid search.
+ */
+
 #pragma once
 
 #include "backtest/parameter_space.h"
@@ -12,6 +17,9 @@
 
 namespace backtest {
 
+/**
+ * @brief Input payload for one range-proposal request.
+ */
 struct RangeProposalRequest {
     std::string symbol;
     std::string interval;
@@ -34,14 +42,24 @@ struct RangeProposalRequest {
     std::chrono::steady_clock::time_point deadline{};
 };
 
+/**
+ * @brief Abstract interface for parameter-range proposal engines.
+ */
 class IRangeProposer {
 public:
     virtual ~IRangeProposer() = default;
+
+    /**
+     * @brief Successful proposal payload.
+     */
     struct Output {
         std::vector<ParamRange> ranges;
         std::string notes;
     };
 
+    /**
+     * @brief Canonical failure reasons used by gate error mapping.
+     */
     enum class FailureReason {
         Unavailable,
         Timeout,
@@ -49,6 +67,9 @@ public:
         InternalError,
     };
 
+    /**
+     * @brief Failure payload with type and diagnostic text.
+     */
     struct Failure {
         FailureReason reason{FailureReason::Unavailable};
         std::string message;
@@ -56,6 +77,9 @@ public:
 
     using Result = std::variant<Output, Failure>;
 
+    /**
+     * @brief Proposes constrained ranges for subsequent grid generation.
+     */
     virtual Result propose(const RangeProposalRequest& req) = 0;
 };
 

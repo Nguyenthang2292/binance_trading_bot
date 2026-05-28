@@ -12,6 +12,7 @@ import time
 from typing import Any, cast
 
 from .cache_store import file_lock
+from .time_utils import parse_utc_iso
 
 LOGGER = logging.getLogger("gemini_filter.autotune")
 
@@ -57,21 +58,6 @@ def _to_utc_iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _parse_utc_iso(value: str) -> int | None:
-    text = value.strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except Exception:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return int(parsed.timestamp())
-
-
 def _read_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
@@ -105,7 +91,7 @@ def _collect_buckets(bucket_dir: Path, window_seconds: int) -> list[dict[str, An
         if data is None:
             continue
         bucket_start = str(data.get("bucket_start_utc", ""))
-        bucket_epoch = _parse_utc_iso(bucket_start)
+        bucket_epoch = parse_utc_iso(bucket_start)
         if bucket_epoch is None:
             continue
         if bucket_epoch < lower_bound:
@@ -160,14 +146,18 @@ def _aggregate_model_stats(buckets: list[dict[str, Any]]) -> dict[str, ModelStat
                 hist = stats.get("histogram", [])
                 if not isinstance(hist, list):
                     continue
-                if len(entry["latency_histogram"]) != len(hist):
-                    # Keep a fixed-length internal representation.
-                    fixed = [0] * max(1, len(hist))
-                    entry["latency_histogram"] = fixed
+                current_hist = entry.get("latency_histogram", [])
+                if not isinstance(current_hist, list):
+                    current_hist = []
+                merged_hist = [int(x) for x in current_hist]
+                target_len = max(1, len(merged_hist), len(hist))
+                if len(merged_hist) < target_len:
+                    merged_hist.extend([0] * (target_len - len(merged_hist)))
                 for i, count in enumerate(hist):
-                    if i >= len(entry["latency_histogram"]):
+                    if i >= len(merged_hist):
                         break
-                    entry["latency_histogram"][i] = int(entry["latency_histogram"][i]) + int(count)
+                    merged_hist[i] = int(merged_hist[i]) + int(count)
+                entry["latency_histogram"] = merged_hist
                 entry["latency_bucket_ms"] = max(1, bucket_ms)
     result: dict[str, ModelStats] = {}
     for model, raw in accum.items():
@@ -278,7 +268,7 @@ def _cleanup_buckets(bucket_dir: Path, retention_seconds: int) -> None:
         bucket_epoch: int | None = None
         data = _read_json(path)
         if data is not None:
-            bucket_epoch = _parse_utc_iso(str(data.get("bucket_start_utc", "")))
+            bucket_epoch = parse_utc_iso(str(data.get("bucket_start_utc", "")))
         if bucket_epoch is None:
             try:
                 bucket_epoch = int(path.stat().st_mtime)
@@ -409,12 +399,15 @@ def _build_override(gemini_cfg: dict[str, Any], autotune_cfg: dict[str, Any], ru
     state_raw = _read_json(state_path) or {}
     state = dict(state_raw)
     consecutive = int(state.get("consecutive_quota_exhausted_cycles", 0))
-    if decisions_5m.get("quota_exhausted", 0) > 0:
+    previous_quota_exhausted_5m = max(0, int(state.get("last_quota_exhausted_5m", 0)))
+    current_quota_exhausted_5m = max(0, int(decisions_5m.get("quota_exhausted", 0)))
+    if current_quota_exhausted_5m > previous_quota_exhausted_5m:
         consecutive += 1
     else:
         consecutive = 0
     state["schema_version"] = 1
     state["consecutive_quota_exhausted_cycles"] = consecutive
+    state["last_quota_exhausted_5m"] = current_quota_exhausted_5m
     state["last_updated"] = _to_utc_iso(_now_utc())
 
     override_type = "normal"
@@ -534,7 +527,7 @@ def run(config_path: Path, runtime_base_dir: Path | None) -> int:
     retention_seconds = max(3600, int(autotune_cfg.get("bucket_retention_seconds", 90000)))
 
     try:
-        with file_lock(lock_path, timeout_seconds=0.1):
+        with file_lock(lock_path, timeout_seconds=0.1, stale_seconds=5.0):
             override, state = _build_override(gemini_cfg, autotune_cfg, runtime_base)
             _write_json_atomic(last_recommendation_path, override)
             routing = override.get("model_routing_override", {})

@@ -146,6 +146,42 @@ def _read_override(runtime_base: Path, name: str) -> dict[str, Any]:
     return json.loads((runtime_base / "cache" / "autotune" / name).read_text(encoding="utf-8"))
 
 
+def _read_state(runtime_base: Path) -> dict[str, Any]:
+    return json.loads((runtime_base / "cache" / "autotune" / "state.json").read_text(encoding="utf-8"))
+
+
+def test_aggregate_model_stats_preserves_histogram_when_lengths_change() -> None:
+    buckets = [
+        {
+            "quota": {},
+            "analyzer": {
+                "model-a": {
+                    "latency_stats": {
+                        "histogram_bucket_ms": 100,
+                        "histogram": [1, 2, 3],
+                    }
+                }
+            },
+        },
+        {
+            "quota": {},
+            "analyzer": {
+                "model-a": {
+                    "latency_stats": {
+                        "histogram_bucket_ms": 100,
+                        "histogram": [4, 5, 6, 7, 8],
+                    }
+                }
+            },
+        },
+    ]
+
+    stats = autotune._aggregate_model_stats(buckets)
+    merged = stats["model-a"].latency_histogram
+    assert merged[:5] == [5, 7, 9, 7, 8]
+    assert len(merged) == 51
+
+
 def test_autotune_observe_writes_recommendation_only(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     runtime_base = tmp_path / "runtime"
     _seed_default_bucket(runtime_base)
@@ -189,6 +225,27 @@ def test_emergency_triggers_at_threshold_not_after(tmp_path: Path) -> None:
     assert rc == 0
     active = _read_override(runtime_base, "active_override.json")
     assert active["override_type"] == "emergency"
+
+
+def test_consecutive_quota_exhausted_requires_new_events(tmp_path: Path) -> None:
+    runtime_base = tmp_path / "runtime"
+    _write_bucket(
+        runtime_base,
+        minutes_ago=0,
+        decisions={"allow": 0, "block": 1, "quota_exhausted": 1, "component_error": 0},
+    )
+    config_path = tmp_path / "config.json"
+    _write_config(config_path, runtime_base, "apply", emergency_quota_exhausted_cycles=3)
+
+    rc1 = autotune.run(config_path, runtime_base)
+    assert rc1 == 0
+    state1 = _read_state(runtime_base)
+    assert state1["consecutive_quota_exhausted_cycles"] == 1
+
+    rc2 = autotune.run(config_path, runtime_base)
+    assert rc2 == 0
+    state2 = _read_state(runtime_base)
+    assert state2["consecutive_quota_exhausted_cycles"] == 0
 
 
 def test_dynamic_quota_never_exceeds_static_limits(tmp_path: Path) -> None:

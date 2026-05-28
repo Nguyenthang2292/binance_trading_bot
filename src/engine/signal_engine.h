@@ -8,6 +8,7 @@
 #include "engine/loss_manager.h"
 #include "engine/position_tracker.h"
 #include "engine/sizing_policy.h"
+#include "engine/take_profit_reconciler.h"
 #include "engine/trailing_stop_controller.h"
 #include "engine/work_queue.h"
 #include "engine/iexecution_planner.h"
@@ -56,6 +57,8 @@ public:
 class IOrdersPort {
 public:
     virtual ~IOrdersPort() = default;
+    virtual boost::asio::awaitable<OrdersResult<std::vector<NormalOrderSnapshot>>>
+    openNormalOrders(std::optional<Symbol> symbol = std::nullopt) = 0;
     virtual boost::asio::awaitable<OrdersResult<NormalPlacementResult>> market(MarketOrderDraft draft) = 0;
     virtual boost::asio::awaitable<OrdersResult<NormalPlacementResult>> limit(LimitOrderDraft draft) = 0;
     virtual boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> amendLimitOrder(AmendLimitOrderDraft draft) = 0;
@@ -82,6 +85,8 @@ public:
         bool placeStopLoss{true};
         bool takeProfitOverrideEnabled{false};
         double takeProfitOverridePercent{0.0};
+        std::chrono::seconds recoveredMaxHoldDuration{std::chrono::hours(24)};
+        TakeProfitReconcilerConfig takeProfitReconciler{};
         bool monitorTrailingStops{true};
         bool randomLeverageEnabled{false};
         int randomLeverageMin{2};
@@ -301,6 +306,7 @@ private:
     Config m_config;
     PositionTracker m_tracker;
     std::unique_ptr<LossManager> m_lossManager;
+    std::unique_ptr<TakeProfitReconciler> m_takeProfitReconciler;
     TrailingStopController m_trailingStops;
     orchestration::IExecutionStatePort* m_executionStatePort{nullptr};
     orchestration::IShadowMetricsPort* m_shadowMetricsPort{nullptr};
@@ -347,6 +353,10 @@ private:
 class OrdersPort final : public IOrdersPort {
 public:
     explicit OrdersPort(Orders& orders) : m_orders(orders) {}
+    boost::asio::awaitable<OrdersResult<std::vector<NormalOrderSnapshot>>>
+    openNormalOrders(std::optional<Symbol> symbol = std::nullopt) override {
+        co_return co_await m_orders.openNormalOrders(std::move(symbol));
+    }
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> market(MarketOrderDraft draft) override {
         co_return co_await m_orders.market(std::move(draft));
     }

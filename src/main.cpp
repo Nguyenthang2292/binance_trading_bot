@@ -1070,6 +1070,7 @@ int main(int argc, char* argv[]) {
         .placeStopLoss = engineJson.value("place_stop_loss", true),
         .takeProfitOverrideEnabled = false,
         .takeProfitOverridePercent = 0.0,
+        .recoveredMaxHoldDuration = std::chrono::seconds(engineJson.value("recovered_max_hold_duration_seconds", 86400)),
         .monitorTrailingStops = engineJson.value("monitor_trailing_stops", true),
         .randomLeverageEnabled = engineJson.value("random_leverage_enabled", false),
         .randomLeverageMin = engineJson.value("random_leverage_min", 2),
@@ -1077,8 +1078,9 @@ int main(int argc, char* argv[]) {
         .externalCloseCooldown = std::chrono::seconds(engineJson.value("external_close_cooldown_seconds", 900)),
         .lossManager = lossManagerConfig,
     };
+    nlohmann::json takeProfitJson = nlohmann::json::object();
     if (engineJson.contains("take_profit")) {
-        const auto& takeProfitJson = engineJson.at("take_profit");
+        takeProfitJson = engineJson.at("take_profit");
         if (takeProfitJson.is_object()) {
             engineConfig.takeProfitOverrideEnabled =
                 takeProfitJson.value("enabled", engineJson.value("take_profit_enabled", false));
@@ -1098,8 +1100,67 @@ int main(int argc, char* argv[]) {
         Logger::instance().log(
             LogLevel::Warning,
             "engine take_profit is enabled but percent <= 0; global take-profit override disabled");
-        engineConfig.takeProfitOverrideEnabled = false;
+            engineConfig.takeProfitOverrideEnabled = false;
     }
+    if (engineConfig.recoveredMaxHoldDuration.count() <= 0) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "engine recovered_max_hold_duration_seconds <= 0; fallback to 86400s");
+        engineConfig.recoveredMaxHoldDuration = std::chrono::hours(24);
+    }
+
+    engine::TakeProfitReconcilerConfig takeProfitReconcilerConfig;
+    takeProfitReconcilerConfig.enabled = engineConfig.takeProfitOverrideEnabled;
+    bool takeProfitReconcilerConfigValid = true;
+    std::string takeProfitReconcilerConfigError;
+    if (takeProfitJson.is_object() && takeProfitJson.contains("reconciler")) {
+        const auto& reconcilerJson = takeProfitJson.at("reconciler");
+        if (!reconcilerJson.is_object()) {
+            takeProfitReconcilerConfigValid = false;
+            takeProfitReconcilerConfigError = "engine.take_profit.reconciler must be an object";
+        } else {
+            takeProfitReconcilerConfig.enabled =
+                reconcilerJson.value("enabled", takeProfitReconcilerConfig.enabled);
+            const std::string rawMode = lowerCopy(trimCopy(reconcilerJson.value("mode", std::string("adopt_or_place"))));
+            if (rawMode == "adopt_or_place") {
+                takeProfitReconcilerConfig.mode = engine::TakeProfitReconcilerConfig::Mode::AdoptOrPlace;
+            } else if (rawMode == "enforce_global") {
+                takeProfitReconcilerConfig.mode = engine::TakeProfitReconcilerConfig::Mode::EnforceGlobal;
+            } else {
+                takeProfitReconcilerConfigValid = false;
+                takeProfitReconcilerConfigError =
+                    "engine.take_profit.reconciler.mode must be 'adopt_or_place' or 'enforce_global'";
+            }
+            takeProfitReconcilerConfig.priceTickTolerance = reconcilerJson.value(
+                "price_tick_tolerance",
+                takeProfitReconcilerConfig.priceTickTolerance);
+            takeProfitReconcilerConfig.quantityStepTolerance = reconcilerJson.value(
+                "quantity_step_tolerance",
+                takeProfitReconcilerConfig.quantityStepTolerance);
+            takeProfitReconcilerConfig.maxOrdersPerCycle = reconcilerJson.value(
+                "max_orders_per_cycle",
+                takeProfitReconcilerConfig.maxOrdersPerCycle);
+            if (takeProfitReconcilerConfig.priceTickTolerance < 0 ||
+                takeProfitReconcilerConfig.quantityStepTolerance < 0 ||
+                takeProfitReconcilerConfig.maxOrdersPerCycle <= 0) {
+                takeProfitReconcilerConfigValid = false;
+                takeProfitReconcilerConfigError =
+                    "engine.take_profit.reconciler tolerance must be >= 0 and max_orders_per_cycle must be > 0";
+            }
+        }
+    }
+    if (!engineConfig.takeProfitOverrideEnabled) {
+        takeProfitReconcilerConfig.enabled = false;
+    }
+    if (!takeProfitReconcilerConfigValid) {
+        Logger::instance().log(
+            LogLevel::Error,
+            "invalid take-profit reconciler config; reconciler disabled reason=" +
+                quoteString(takeProfitReconcilerConfigError));
+        takeProfitReconcilerConfig.enabled = false;
+    }
+    engineConfig.takeProfitReconciler = takeProfitReconcilerConfig;
+
     if (riskProfile.enabled) {
         engineConfig.maxPositionNotionalXAvailableBalance = riskProfile.profile.maxPositionNotionalXAvailableBalance;
     }
@@ -1141,6 +1202,16 @@ int main(int argc, char* argv[]) {
     backtestGateConfig.data.maxRestRequestsPerSignal =
         bgDataJson.value("max_rest_requests_per_signal",
                          backtestGateConfig.data.maxRestRequestsPerSignal);
+    if (backtestGateConfig.data.windowMaxCandles > 0 &&
+        backtestGateConfig.data.windowMinCandles > backtestGateConfig.data.windowMaxCandles) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "backtest_gate: window_min_candles=" +
+                std::to_string(backtestGateConfig.data.windowMinCandles) +
+                " > window_max_candles=" +
+                std::to_string(backtestGateConfig.data.windowMaxCandles) +
+                "; effective required bars will be capped by window_max_candles");
+    }
 
     backtestGateConfig.walkForward.folds =
         bgWfJson.value("folds", backtestGateConfig.walkForward.folds);

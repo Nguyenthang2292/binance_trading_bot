@@ -1,7 +1,7 @@
 # Qlib Strategy Adapter Integration — Implementation Review v1.1
 
 **Date:** 2026-05-21
-**Status:** REVIEW COMPLETE — APPROVED FOR MERGE (Phase 1+2+5+6+7 shadow_only)
+**Status:** COMPLETE - Phase 1+2+5+6+7 approved; superseded by v1.2
 **Reviewer:** Brainstorming + structured code review (re-review of fixes from review v1.0)
 **Audience:** AI agents, human developers
 
@@ -266,7 +266,7 @@ These are tracked tech debt, not blockers. Each has explicit scope-out rationale
 | 1 | Async-only execution planner | ⚠️ | ✅ | Shadow_only + native fallback for v1; SliceExecutor for Phase 8 |
 | 2 | Decision Arbiter in SignalEngine | ⚠️ | ✅ | All 4 sub-bugs fixed |
 | 3 | SQLite contract (WAL, busy_timeout, atomic flag, schema_version, retry) | ✅ | ✅ | Retry uses `busy_timeout=5000` (equivalent to design intent) |
-| 4 | TWAP per-slice revocation | ❌ | ❌ | Deferred to Phase 8, explicitly acknowledged |
+| 4 | TWAP per-slice revocation | ❌ | ❌ | Explicitly deferred at v1.1 approval time; completed later in v1.2 |
 | 5 | v1 TopK only `buy/hold/none`, `long/none` | ✅ | ✅ | Schema CHECK + plugin enforce |
 | 6 | Per-adapter exposure caps | ⚠️ | ✅ | Wired into arbiter, enforced at arbitration time |
 | 7 | `qlib_adapter_runtime_state` new table | ⚠️ | ⚠️ | Schema differs from design; design v1.2 task |
@@ -275,9 +275,9 @@ These are tracked tech debt, not blockers. Each has explicit scope-out rationale
 | 10 | Universe hash validation in C++ | ⚠️ | ✅ | `universeHashStrict` gates the `"default"` bypass |
 | 11 | Hardcoded allowlist (`frozenset`) | ✅ | ✅ | Still correct; class import preserved for deployment verification |
 | 12 | Rollout: Phase 6 before Phase 4 | ✅ | ✅ | `IExecutionPlanner` with `NativeExecutionPlanner` pass-through preserves current behavior |
-| 13 | Acceptance criteria 9, 10, 11 | ⚠️ | ⚠️ | 9 ✓ (arbiter), 10 ✓ (schema check at plugin construct), 11 deferred to Phase 8 |
+| 13 | Acceptance criteria 9, 10, 11 | ⚠️ | ⚠️ | 9 ✓ (arbiter), 10 ✓ (schema check at plugin construct), 11 completed later in v1.2 |
 
-**Score: 9 ✅, 2 ⚠️ (design-doc reconciliation), 2 ❌ (deferred with explicit acknowledgement)**
+**Historical v1.1 score: 9 ✅, 2 ⚠️ (design-doc reconciliation), 2 ❌ (items later completed or intentionally deferred).**
 
 ---
 
@@ -381,11 +381,11 @@ From design v1.1 Section 24 + review v1.0 Section 10:
 | 8 | Invalid/stale artifacts cannot place live orders | ✅ (universe hash strict + interval-derived stale checks + schema version check) |
 | 9 | Decision Arbiter resolves multi-adapter conflicts deterministically | ✅ |
 | 10 | SQLite contract specs verified at startup | ✅ (`PRAGMA user_version` + WAL + busy_timeout) |
-| 11 | TWAP per-slice revocation cancels pending slices when direction reverses | ❌ Deferred to Phase 8 |
+| 11 | TWAP per-slice revocation cancels pending slices when direction reverses | ✅ Completed in v1.2 |
 | 12 | Test coverage: SoftTopk impact limit, n_drop rotation, stale, schema mismatch, arbiter conflict | ✅ Tests added for n_drop and impact_limit; stale/schema/arbiter need integration tests (acceptable for v1) |
-| 13 | Design v1.2 written with schema reconciliations | ⏳ Pending — should follow merge |
+| 13 | Design v1.2 written with schema reconciliations | ✅ Completed in v1.2 |
 
-**12 of 13 criteria met. Criterion 11 is the only outstanding item, and it's explicitly deferred to Phase 8.**
+**13 of 13 criteria are now complete. Criteria 11 and 13 were completed in v1.2.**
 
 ---
 
@@ -397,7 +397,7 @@ From design v1.1 Section 24 + review v1.0 Section 10:
 | 2 | `run_strategy.py` Qlib integration | v1.0 review | Resolved in v1.1: stateless algorithm port (user architectural choice) |
 | 3 | Decision Arbiter bug fixes | v1.0 review | Resolved in v1.1: all 4 sub-bugs fixed |
 | 4 | Promotion profiles per `qlib_class` | Design v1.1 #8 | Deferred — re-evaluate when multi-adapter live becomes operational |
-| 5 | SliceExecutor with per-slice revocation | Design v1.1 #4 | Deferred to Phase 8 next PR |
+| 5 | SliceExecutor with per-slice revocation | Design v1.1 #4 | Completed in v1.2 |
 | 6 | Schema deviations (M5, M6) reconciliation | This review | Update design v1.2 to match implementation patterns |
 
 ---

@@ -1,3 +1,8 @@
+/**
+ * @file rest_backfilling_historical_window_provider.cpp
+ * @brief Cache-first provider that performs REST backfill when needed.
+ */
+
 #include "backtest/rest_backfilling_historical_window_provider.h"
 
 #include "scanner/kline_cache.h"
@@ -8,6 +13,14 @@
 
 namespace backtest {
 
+/**
+ * @brief Construct a cache-first historical window provider with REST fallback.
+ *
+ * @param innerProvider Primary provider used before falling back to REST.
+ * @param restClient REST client used to backfill missing candles.
+ * @param cache Shared kline cache updated after successful backfill.
+ * @param config Runtime backfill settings and request limits.
+ */
 RestBackfillingHistoricalWindowProvider::RestBackfillingHistoricalWindowProvider(
     std::unique_ptr<IHistoricalWindowProvider> innerProvider,
     std::unique_ptr<IKlineRestClient> restClient,
@@ -18,6 +31,20 @@ RestBackfillingHistoricalWindowProvider::RestBackfillingHistoricalWindowProvider
       m_cache(cache),
       m_config(std::move(config)) {}
 
+/**
+ * @brief Resolve a closed candle window, backfilling from REST when needed.
+ *
+ * The provider first consults the inner cache-backed provider. If that does
+ * not supply enough closed bars and runtime REST fetching is enabled, it asks
+ * the REST client for historical candles, validates the returned signal bar,
+ * and writes the data back into the shared cache.
+ *
+ * @param symbol Trading symbol to inspect.
+ * @param interval Candle interval string.
+ * @param requiredClosedBars Number of closed bars required for the request.
+ * @param signalBarOpenTime Open time of the signal bar.
+ * @return A populated window result describing the available historical data.
+ */
 IHistoricalWindowProvider::WindowResult RestBackfillingHistoricalWindowProvider::closedWindow(
     std::string_view symbol,
     std::string_view interval,

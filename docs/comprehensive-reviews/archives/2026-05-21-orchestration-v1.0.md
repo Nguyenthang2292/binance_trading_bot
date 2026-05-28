@@ -1,6 +1,7 @@
 # Comprehensive Review: `src/orchestration` Module
 
 **Date:** 2026-05-21
+**Status:** COMPLETE - findings closed in v2.0 and v3.0
 **Reviewer:** Claude Code (manual multi-dimensional review — quality, architecture, security, performance, concurrency, testing, docs)
 **Scope:** `src/orchestration/` — all 16 files (5 headers, 5 implementations, 6 header-only helpers / configs / ports). Cross-referenced with `tests/test_process_manager.cpp`, `tests/test_batch_scheduler_thread.cpp`, `tests/test_candle_scheduler_thread.cpp`, `tests/test_promotion_checker.cpp`, `src/main.cpp` (wiring), and `config.json`.
 **Module:** Qlib Orchestration runtime (`ProcessManager`, `BatchSchedulerThread`, `CandleSchedulerThread`, `QlibStateStore`, `PromotionChecker`, `ShadowMetricsRecorder`, `ModelPublisher`)

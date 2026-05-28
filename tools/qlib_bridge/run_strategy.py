@@ -1,9 +1,21 @@
+"""Materialize qlib predictions into strategy decisions and promotion records.
+
+This script is responsible for loading qlib strategy classes, validating the
+configured strategy payload, reading the latest prediction rows, and writing the
+derived decision set back to SQLite for later execution or promotion.
+
+It acts as the bridge between model inference and strategy execution by keeping
+schema management, strategy normalization, and decision persistence in one
+place.
+"""
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import importlib
 import json
+import logging
 import sqlite3
 import sys
 import time
@@ -26,6 +38,8 @@ CLASS_ALIASES = {
     "FileOrderStrategy": "qlib.contrib.strategy.rule_strategy.FileOrderStrategy",
 }
 
+LOGGER = logging.getLogger(__name__)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -47,7 +61,8 @@ def try_load_qlib_class(class_path: str) -> type[Any] | None:
     module_name, class_name = class_path.rsplit(".", 1)
     try:
         module = importlib.import_module(module_name)
-    except ImportError:
+    except ImportError as exc:
+        LOGGER.warning("qlib class import failed for '%s': %s", class_path, exc)
         return None
     loaded = getattr(module, class_name, None)
     return loaded if isinstance(loaded, type) else None
@@ -69,12 +84,41 @@ def ensure_column(db: sqlite3.Connection, table: str, name: str, definition: str
         db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition};")
 
 
+def ensure_unique_execution_plan_request(db: sqlite3.Connection) -> None:
+    duplicates = db.execute(
+        """
+        SELECT request_id
+        FROM qlib_execution_plans
+        GROUP BY request_id
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    for (request_id,) in duplicates:
+        plan_rows = db.execute(
+            """
+            SELECT plan_id
+            FROM qlib_execution_plans
+            WHERE request_id = ?
+            ORDER BY generated_at_ms ASC, rowid ASC
+            """,
+            (request_id,),
+        ).fetchall()
+        keep_plan_id = plan_rows[0][0]
+        for (plan_id,) in plan_rows[1:]:
+            if plan_id == keep_plan_id:
+                continue
+            db.execute("DELETE FROM qlib_execution_slices WHERE plan_id = ?", (plan_id,))
+            db.execute("DELETE FROM qlib_execution_plans WHERE plan_id = ?", (plan_id,))
+
+
 def ensure_user_version(db: sqlite3.Connection) -> None:
     row = db.execute("PRAGMA user_version;").fetchone()
     current = int(row[0]) if row else 0
-    if current not in (0, SCHEMA_VERSION):
-        raise RuntimeError(f"schema version mismatch: expected {SCHEMA_VERSION}, got {current}")
-    if current == 0:
+    # Support forward-only additive rollout: allow older schemas and patch in-place.
+    # Reject only when the DB is newer than this code understands.
+    if current > SCHEMA_VERSION:
+        raise RuntimeError(f"schema version is newer than code: expected <= {SCHEMA_VERSION}, got {current}")
+    if current < SCHEMA_VERSION:
         db.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
 
 
@@ -223,6 +267,13 @@ def create_tables_if_needed(db: sqlite3.Connection) -> None:
         );
         """
     )
+    ensure_unique_execution_plan_request(db)
+    db.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_qlib_execution_plans_request_id
+        ON qlib_execution_plans(request_id);
+        """
+    )
 
 
 def prediction_run_column(db: sqlite3.Connection) -> str | None:
@@ -330,7 +381,61 @@ def materialize_decisions(
                 "model_run_id": row.get("model_run_id", ""),
             }
         )
-    decisions.sort(key=lambda item: item.get("score") or 0.0, reverse=True)
+    decisions.sort(key=_score_sort_key)
+    return decisions
+
+
+def _score_sort_key(item: dict[str, Any]) -> tuple[int, float]:
+    score = item.get("score")
+    if score is None:
+        return (1, 0.0)
+    try:
+        return (0, -float(score))
+    except (TypeError, ValueError):
+        return (1, 0.0)
+
+
+def validate_file_orders(config: dict[str, Any], qlib_class: str) -> list[dict[str, Any]]:
+    raw_orders = config.get("orders", [])
+    if not isinstance(raw_orders, list):
+        raise ValueError("config.orders must be a list for FileOrderStrategy")
+
+    decisions: list[dict[str, Any]] = []
+    for index, raw_order in enumerate(raw_orders):
+        if not isinstance(raw_order, dict):
+            raise ValueError(f"orders[{index}] must be an object")
+        symbol = str(raw_order.get("symbol", "")).strip()
+        if not symbol:
+            raise ValueError(f"orders[{index}].symbol is required")
+        if "asof_open_time_ms" not in raw_order:
+            raise ValueError(f"orders[{index}].asof_open_time_ms is required")
+        if "target_weight" not in raw_order:
+            raise ValueError(f"orders[{index}].target_weight is required")
+
+        action = str(raw_order.get("action", "buy"))
+        direction = str(raw_order.get("direction", "long"))
+        if action not in {"buy", "hold", "none"}:
+            raise ValueError(f"orders[{index}].action must be one of buy/hold/none")
+        if direction not in {"long", "none"}:
+            raise ValueError(f"orders[{index}].direction must be one of long/none")
+
+        score_percentile = raw_order.get("score_percentile")
+        decisions.append(
+            {
+                "symbol": symbol,
+                "asof_open_time_ms": int(raw_order["asof_open_time_ms"]),
+                "score": raw_order.get("score"),
+                "score_percentile": score_percentile,
+                "action": action,
+                "direction": direction,
+                "target_weight": float(raw_order["target_weight"]),
+                "confidence": confidence_from_percentile(raw_order.get("confidence", score_percentile)),
+                "reason": str(raw_order.get("reason", f"qlib_class={qlib_class} file_order")),
+                "model_run_id": str(raw_order.get("model_run_id", "")),
+            }
+        )
+
+    decisions.sort(key=_score_sort_key)
     return decisions
 
 
@@ -354,12 +459,14 @@ def run_topk_dropout(
     else:
         current = [symbol for symbol in previous if symbol in ranked_set]
         last_by_score = [symbol for symbol in ranked_symbols if symbol in current]
-        today = [symbol for symbol in ranked_symbols if symbol not in set(last_by_score)]
-        combined = [symbol for symbol in ranked_symbols if symbol in set(last_by_score).union(today[: n_drop + topk - len(last_by_score)])]
-        sell = [symbol for symbol in reversed(combined) if symbol in set(last_by_score)][:n_drop]
+        last_by_score_set = set(last_by_score)
+        today = [symbol for symbol in ranked_symbols if symbol not in last_by_score_set]
+        drop_count = min(n_drop, len(last_by_score))
+        sell = last_by_score[-drop_count:] if drop_count > 0 else []
         sell_set = set(sell)
-        keep = [symbol for symbol in last_by_score if symbol not in sell_set]
-        buy_count = max(0, len(sell) + topk - len(last_by_score))
+        keep_quota = max(0, topk - drop_count)
+        keep = [symbol for symbol in last_by_score if symbol not in sell_set][:keep_quota]
+        buy_count = max(0, topk - len(keep))
         buy = today[:buy_count]
         selected = (keep + buy)[:topk]
         if len(selected) < topk:
@@ -388,6 +495,7 @@ def run_soft_topk(
         return []
 
     top_symbols = [row["symbol"] for row in predictions[:topk]]
+    predicted_symbols = {row["symbol"] for row in predictions}
     buy_signal = set(top_symbols)
     previous = latest_target_weights(db, args.strategy_id, args.interval)
     if not previous:
@@ -407,6 +515,7 @@ def run_soft_topk(
             add = sold_weight / len(buy_signal)
             for symbol in top_symbols:
                 weights[symbol] = weights.get(symbol, 0.0) + add
+            sold_weight = 0.0
         else:
             for symbol in top_symbols:
                 add = min(max((1.0 / topk) - weights.get(symbol, 0.0), 0.0), sold_weight)
@@ -414,11 +523,19 @@ def run_soft_topk(
                 sold_weight -= add
                 if sold_weight <= 0:
                     break
+            if sold_weight > 0 and top_symbols:
+                add = sold_weight / len(top_symbols)
+                for symbol in top_symbols:
+                    weights[symbol] = weights.get(symbol, 0.0) + add
+                sold_weight = 0.0
         weights = {
             symbol: weight
             for symbol, weight in weights.items()
-            if weight > 0 and symbol in {row["symbol"] for row in predictions}
+            if weight > 0 and symbol in predicted_symbols
         }
+        total_weight = sum(weights.values())
+        if total_weight > 0:
+            weights = {symbol: weight / total_weight for symbol, weight in weights.items()}
 
     return materialize_decisions(
         predictions,
@@ -434,7 +551,7 @@ def run_strategy_policy(db: sqlite3.Connection, args: argparse.Namespace, config
     if qlib_class.endswith("SoftTopkStrategy"):
         return run_soft_topk(db, args, config, qlib_class)
     if qlib_class.endswith("FileOrderStrategy"):
-        return list(config.get("orders", []))
+        return validate_file_orders(config, qlib_class)
     return []
 
 
@@ -472,17 +589,15 @@ def main(args: argparse.Namespace) -> int:
     run_id = str(uuid.uuid4())
     started_at_ms = int(time.time() * 1000)
 
-    db = sqlite3.connect(args.db_path)
+    db = sqlite3.connect(args.db_path, isolation_level=None)
     configure_connection(db)
 
     try:
         create_tables_if_needed(db)
-        decisions = run_strategy_policy(db, args, config, qlib_class)
-        completed_at_ms = int(time.time() * 1000)
-        model_run_id_for_run = ""
 
+        # Persist start event first so run visibility survives crashes during policy execution.
         db.execute("BEGIN IMMEDIATE;")
-        upsert_promotion_profile(db, config, qlib_class, completed_at_ms)
+        upsert_promotion_profile(db, config, qlib_class, started_at_ms)
         db.execute(
             """
             INSERT INTO qlib_strategy_runs
@@ -501,7 +616,13 @@ def main(args: argparse.Namespace) -> int:
                 started_at_ms,
             ),
         )
+        db.commit()
 
+        decisions = run_strategy_policy(db, args, config, qlib_class)
+        completed_at_ms = int(time.time() * 1000)
+        model_run_id_for_run = ""
+
+        db.execute("BEGIN IMMEDIATE;")
         for decision in decisions:
             model_run_id_for_run = decision.get("model_run_id", "") or model_run_id_for_run
             db.execute(
@@ -559,26 +680,37 @@ def main(args: argparse.Namespace) -> int:
     except Exception as exc:
         db.rollback()
         try:
-            db.execute(
+            failed_at_ms = int(time.time() * 1000)
+            db.execute("BEGIN IMMEDIATE;")
+            updated = db.execute(
                 """
-                INSERT OR REPLACE INTO qlib_strategy_runs
-                (run_id, strategy_id, qlib_class, config_hash, model_id, model_run_id,
-                 interval, universe_hash, started_at_ms, completed_at_ms, status, error)
-                VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, 'failed', ?)
+                UPDATE qlib_strategy_runs
+                SET completed_at_ms = ?, status = 'failed', error = ?
+                WHERE run_id = ?
                 """,
-                (
-                    run_id,
-                    args.strategy_id,
-                    qlib_class,
-                    config_hash,
-                    args.model_id,
-                    args.interval,
-                    args.universe_hash,
-                    started_at_ms,
-                    int(time.time() * 1000),
-                    str(exc),
-                ),
-            )
+                (failed_at_ms, str(exc), run_id),
+            ).rowcount
+            if updated == 0:
+                db.execute(
+                    """
+                    INSERT INTO qlib_strategy_runs
+                    (run_id, strategy_id, qlib_class, config_hash, model_id, model_run_id,
+                     interval, universe_hash, started_at_ms, completed_at_ms, status, error)
+                    VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, 'failed', ?)
+                    """,
+                    (
+                        run_id,
+                        args.strategy_id,
+                        qlib_class,
+                        config_hash,
+                        args.model_id,
+                        args.interval,
+                        args.universe_hash,
+                        started_at_ms,
+                        failed_at_ms,
+                        str(exc),
+                    ),
+                )
             db.commit()
         except Exception:
             db.rollback()

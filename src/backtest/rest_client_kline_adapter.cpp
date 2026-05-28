@@ -1,3 +1,8 @@
+/**
+ * @file rest_client_kline_adapter.cpp
+ * @brief REST kline pagination and timeout-aware adapter implementation.
+ */
+
 #include "backtest/rest_client_kline_adapter.h"
 
 #include "rest/rest_client.h"

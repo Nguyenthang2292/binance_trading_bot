@@ -52,3 +52,24 @@ def test_to_ohlc_dataframe_sorts_by_time_and_casts_numeric_columns() -> None:
         assert frame[column].dtype.kind == "f"
     assert frame["Open"].iloc[0] == pytest.approx(1.0)
     assert frame["Close"].iloc[1] == pytest.approx(2.2)
+
+
+def test_to_ohlc_dataframe_rejects_missing_required_fields() -> None:
+    with pytest.raises(RuntimeError, match="missing fields"):
+        _to_ohlc_dataframe([{"open_time": 1_000, "open": "1.0"}])
+
+
+def test_to_ohlc_dataframe_rejects_bad_open_time() -> None:
+    with pytest.raises(RuntimeError, match="open_time"):
+        _to_ohlc_dataframe(
+            [
+                {
+                    "open_time": "not-ms",
+                    "open": "1.0",
+                    "high": "1.5",
+                    "low": "0.5",
+                    "close": "1.2",
+                    "volume": "10",
+                }
+            ]
+        )

@@ -1,3 +1,8 @@
+/**
+ * @file plateau_finder.cpp
+ * @brief Plateau detection over scored parameter grids.
+ */
+
 #include "backtest/plateau_finder.h"
 #include <algorithm>
 #include <cmath>
@@ -9,13 +14,9 @@ namespace backtest {
 
 namespace {
 
-// Helper to calculate Euclidean distance in grid steps.
-// For this, we assume parameters are numeric and we check steps.
-// However, the v2.0 design says "build neighborhood: +/- radius steps in each tunable dim".
-// To do this simply, we find the closest point in the grid or just build it.
-// Wait, the grid might have varying steps, but since it was built from ParamRange, 
-// points that are "within radius steps" can be found by just sorting and taking indices,
-// or by collecting the unique values for each dimension from the scoredGrid.
+// Neighborhood membership is evaluated in discrete grid indices, not raw float
+// deltas. Each dimension's unique values are sorted from scoredGrid, then points
+// are mapped to nearest indices so +/- radius checks remain stable across steps.
 
 std::map<std::string, std::vector<double>> extractDimensions(const std::vector<ScoredPoint>& grid) {
     std::map<std::string, std::set<double>> dims;

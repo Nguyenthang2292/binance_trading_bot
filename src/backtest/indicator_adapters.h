@@ -1,3 +1,8 @@
+/**
+ * @file indicator_adapters.h
+ * @brief Strategy adapters that mirror plugin formulas for parameter sweeps.
+ */
+
 #pragma once
 
 #include "backtest/optimizable_strategy.h"
@@ -7,6 +12,9 @@
 
 namespace backtest {
 
+/**
+ * @brief Adapter for golden-crossover plugin signal logic.
+ */
 class GoldenCrossoverAdapter : public IOptimizableStrategy {
 public:
     StrategyParamSpec spec(const strategy::StrategyConfig& base) const override;
@@ -18,6 +26,9 @@ public:
         const strategy::StrategyConfig& baseConfig) const override;
 };
 
+/**
+ * @brief Adapter for donchian_5_20_crossover plugin signal logic.
+ */
 class Donchian520CrossoverAdapter : public IOptimizableStrategy {
 public:
     StrategyParamSpec spec(const strategy::StrategyConfig& base) const override;
@@ -29,6 +40,9 @@ public:
         const strategy::StrategyConfig& baseConfig) const override;
 };
 
+/**
+ * @brief Adapter for gartley_day_crossover plugin signal logic.
+ */
 class GartleyDayCrossoverAdapter : public IOptimizableStrategy {
 public:
     StrategyParamSpec spec(const strategy::StrategyConfig& base) const override;

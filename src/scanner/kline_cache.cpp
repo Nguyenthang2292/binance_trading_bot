@@ -6,8 +6,37 @@
 
 namespace scanner {
 
+/**
+ * KlineCache constructor.
+ *
+ * @param bufferSize Maximum number of Kline entries to retain per (symbol, interval)
+ * bucket. Values less than 1 are normalized to 1.
+ *
+ * The cache stores recent Kline (candlestick) data per symbol/interval pair
+ * and maintains at most `m_bufferSize` entries per bucket.
+ */
 KlineCache::KlineCache(size_t bufferSize) : m_bufferSize(bufferSize > 0 ? bufferSize : 1) {}
 
+/**
+ * Update the cache with a single `kline` for the given `symbol` and `interval`.
+ *
+ * Thread-safety: acquires an exclusive `std::unique_lock` on `m_mutex` while
+ * modifying the internal data structures.
+ *
+ * Behavior:
+ * - If the target bucket is empty, the kline is appended.
+ * - If the incoming kline has the same `openTime` as the last entry, the last
+ *   entry is replaced (in-place update of the most recent candle).
+ * - If the incoming kline is older than the last entry (out-of-order), the
+ *   function unlocks and delegates to `merge()` to insert the kline in order
+ *   (preserves deduplication semantics by `openTime`).
+ * - After insertion, the bucket is trimmed from the front to ensure it never
+ *   stores more than `m_bufferSize` items (keeps the most recent entries).
+ *
+ * @param symbol Market symbol (e.g., "BTCUSDT").
+ * @param interval Time interval string (e.g., "1m").
+ * @param kline The Kline (candlestick) data to insert or merge.
+ */
 void KlineCache::update(std::string_view symbol, std::string_view interval, const Kline& kline) {
     std::unique_lock lock(m_mutex);
     auto& bucket = m_data[std::string(symbol)][std::string(interval)];
@@ -27,6 +56,27 @@ void KlineCache::update(std::string_view symbol, std::string_view interval, cons
     }
 }
 
+/**
+ * Merge a sequence of `klines` into the cache for the specified symbol/interval.
+ *
+ * Thread-safety: acquires an exclusive `std::unique_lock` on `m_mutex` while
+ * computing and replacing the target bucket.
+ *
+ * Behavior:
+ * - Deduplicates entries by `openTime`: later entries override earlier ones for
+ *   the same `openTime`.
+ * - Combines existing bucket entries with the provided `klines`, then sorts
+ *   by `openTime` to maintain chronological order.
+ * - Keeps only the most recent `m_bufferSize` entries (drops older candles).
+ * - If `klines` is empty, the call is a no-op.
+ *
+ * This is the safe path used when out-of-order updates must be merged into the
+ * existing time-ordered sequence.
+ *
+ * @param symbol Market symbol to merge into.
+ * @param interval Time interval string.
+ * @param klines Span of Kline objects to merge.
+ */
 void KlineCache::merge(std::string_view symbol, std::string_view interval, std::span<const Kline> klines) {
     if (klines.empty()) {
         return;
@@ -60,6 +110,18 @@ void KlineCache::merge(std::string_view symbol, std::string_view interval, std::
     }
 }
 
+/**
+ * Take a snapshot (copy) of the current bucket for `symbol` and `interval`.
+ *
+ * Thread-safety: acquires a shared/read `std::shared_lock` on `m_mutex` so
+ * concurrent readers do not block each other. The returned vector is a copy and
+ * safe for the caller to use without holding locks.
+ *
+ * @param symbol Market symbol to snapshot.
+ * @param interval Time interval string.
+ * @return `std::optional<std::vector<Kline>>` containing the bucket copy, or
+ * `std::nullopt` if the symbol or interval is not present in the cache.
+ */
 std::optional<std::vector<Kline>> KlineCache::snapshot(std::string_view symbol, std::string_view interval) const {
     std::shared_lock lock(m_mutex);
     const auto itSymbol = m_data.find(std::string(symbol));
@@ -73,6 +135,13 @@ std::optional<std::vector<Kline>> KlineCache::snapshot(std::string_view symbol, 
     return std::vector<Kline>(itInterval->second.begin(), itInterval->second.end());
 }
 
+/**
+ * Return a list of symbols currently stored in the cache.
+ *
+ * Thread-safety: read-only operation that acquires a shared lock.
+ *
+ * @return Vector of symbol strings (copy of keys in the internal map).
+ */
 std::vector<std::string> KlineCache::symbols() const {
     std::shared_lock lock(m_mutex);
     std::vector<std::string> out;
@@ -83,6 +152,15 @@ std::vector<std::string> KlineCache::symbols() const {
     return out;
 }
 
+/**
+ * Return a list of unique intervals currently present in the cache across all
+ * symbols.
+ *
+ * Thread-safety: read-only operation that acquires a shared lock. The result
+ * contains unique interval strings; order is unspecified.
+ *
+ * @return Vector of interval strings.
+ */
 std::vector<std::string> KlineCache::intervals() const {
     std::shared_lock lock(m_mutex);
     std::vector<std::string> out;

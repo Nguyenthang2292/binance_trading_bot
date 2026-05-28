@@ -13,6 +13,7 @@ from .analyzer import analyze
 from tools.shared.gemini_key_manager import GeminiKeyManager
 
 LOGGER = logging.getLogger("gemini_filter")
+_REQUIRED_KLINE_FIELDS = ("open_time", "open", "high", "low", "close", "volume")
 
 
 def _block_result(eval_id: str, reason: str, error_code: str, error: str | None) -> dict[str, Any]:
@@ -49,6 +50,34 @@ def _validate_input(data: dict[str, Any]) -> None:
         if field not in data:
             raise RuntimeError(f"missing input field: {field}")
 
+    primary_tf = str(data.get("primary_tf", "")).strip()
+    if not primary_tf:
+        raise RuntimeError("invalid_input: primary_tf must be non-empty")
+
+    klines_raw = data.get("klines")
+    if not isinstance(klines_raw, dict):
+        raise RuntimeError("invalid_input: klines must be an object keyed by timeframe")
+    if primary_tf not in klines_raw:
+        raise RuntimeError(f"invalid_input: klines missing primary timeframe {primary_tf}")
+
+    for tf, series in klines_raw.items():
+        if not isinstance(series, list):
+            raise RuntimeError(f"invalid_input: klines[{tf}] must be a list")
+        if tf == primary_tf and not series:
+            raise RuntimeError(f"invalid_input: klines[{tf}] must be non-empty")
+        for idx, row in enumerate(series):
+            if not isinstance(row, dict):
+                raise RuntimeError(f"invalid_input: klines[{tf}][{idx}] must be an object")
+            missing = [name for name in _REQUIRED_KLINE_FIELDS if name not in row]
+            if missing:
+                raise RuntimeError(
+                    f"invalid_input: klines[{tf}][{idx}] missing fields: {','.join(missing)}"
+                )
+
+    extra_tfs = data.get("extra_tfs")
+    if extra_tfs is not None and not isinstance(extra_tfs, list):
+        raise RuntimeError("invalid_input: extra_tfs must be a list when provided")
+
 
 def main() -> int:
     logging.basicConfig(
@@ -62,6 +91,7 @@ def main() -> int:
 
     if len(sys.argv) != 2:
         print(json.dumps(_block_result("", "usage error", "usage_error", "python -m tools.gemini_filter.gemini_filter <input_file>")))
+        # Exit 0 by contract: C++ parent reads structured JSON from stdout instead of shell status.
         return 0
 
     input_path = Path(sys.argv[1])

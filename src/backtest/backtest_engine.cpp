@@ -1,3 +1,8 @@
+/**
+ * @file backtest_engine.cpp
+ * @brief Deterministic fold backtest implementation used by gate scoring.
+ */
+
 #include "backtest/backtest_engine.h"
 
 #include <cmath>
@@ -7,7 +12,13 @@
 namespace backtest {
 
 namespace {
-
+/**
+ * @brief Represents an open position tracked by the backtest engine.
+ *
+ * Holds direction, entry price, stop-loss and take-profit levels, and the
+ * time the position was opened. This is an internal helper used by the
+ * deterministic fold runner.
+ */
 struct OpenPosition {
     strategy::Signal::Direction direction{strategy::Signal::Direction::None};
     double entryPrice{0.0};
@@ -16,16 +27,46 @@ struct OpenPosition {
     int64_t openTimeMs{0};
 };
 
+/**
+ * @brief Retrieve a numeric parameter value from a parameter map.
+ *
+ * Looks up `key` in `params` and returns the associated value if present,
+ * otherwise returns the provided default `def`.
+ *
+ * @param params Parameter map (string -> double).
+ * @param key Key to look up.
+ * @param def Default value to return when the key is not found.
+ * @return The parameter value from the map or `def` when missing.
+ */
 double getParam(const ParamPoint& params, const std::string& key, double def) {
     auto it = params.find(key);
     return it != params.end() ? it->second : def;
 }
 
+/**
+ * @brief Direction to use when rounding a price to tick size.
+ *
+ * - `Down` rounds toward negative infinity (floor-like behavior).
+ * - `Up` rounds toward positive infinity (ceil-like behavior).
+ */
 enum class TickRounding {
     Down,
     Up,
 };
 
+/**
+ * @brief Round a raw price/value to the nearest tick multiple.
+ *
+ * Performs robust rounding using the specified `tickSize`. If `tickSize`
+ * is non-positive or either input is non-finite the original `value` is
+ * returned unchanged. The `rounding` parameter controls whether rounding
+ * moves the value up or down to the nearest tick grid.
+ *
+ * @param value The price/value to round.
+ * @param tickSize Tick increment to round to.
+ * @param rounding Whether to round up or down.
+ * @return The rounded value on success, otherwise the original `value`.
+ */
 double roundToTick(double value, double tickSize, TickRounding rounding) {
     if (tickSize <= 0.0 || !std::isfinite(tickSize) || value <= 0.0 || !std::isfinite(value)) {
         return value;
@@ -51,6 +92,26 @@ BacktestStats BacktestEngine::runFold(
     strategy::Signal::Direction acceptedDirection,
     const std::optional<ExchangeSymbol>& symbolMeta) const {
 
+    /**
+     * @brief Execute a deterministic fold backtest for a single symbol/interval.
+     *
+     * The runner uses the provided `adapter` to evaluate trade signals on an
+     * expanding window of historical `foldKlines`. Signals are filtered by
+     * `acceptedDirection` and `baseConfig.minConfidence`, then executed at the
+     * open of the next bar. Positions use stop-loss and take-profit derived
+     * from ATR and configured multipliers. Returns aggregated statistics for
+     * the fold including counts, risk metrics and performance ratios.
+     *
+     * @param adapter Strategy adapter used to generate signals.
+     * @param symbol Symbol under test.
+     * @param interval Candle interval string (e.g. "1m", "1h").
+     * @param foldKlines Kline sequence for the fold (time-ordered).
+     * @param params Optimizable parameters supplied to the strategy.
+     * @param baseConfig Base strategy config (leverage, fees, thresholds).
+     * @param acceptedDirection Only signals matching this direction are traded.
+     * @param symbolMeta Optional symbol metadata (tick size, etc.).
+     * @return BacktestStats Aggregated statistics for the fold.
+     */
     BacktestStats stats;
     if (foldKlines.size() < 2) return stats;
 
@@ -182,6 +243,16 @@ BacktestStats BacktestEngine::runFold(
     return stats;
 }
 
+/**
+ * @brief Calculate the Sortino ratio for a series of P&L percentages.
+ *
+ * The Sortino ratio uses only downside volatility in the denominator. When
+ * there are no downside observations a large positive mean maps to
+ * +infinity while a non-positive mean yields 0.0.
+ *
+ * @param pnlPcts Vector of trade P&L percentages (fractional, e.g. 0.05 = 5%).
+ * @return The Sortino ratio or `0.0`/`infinity` for degenerate cases.
+ */
 double BacktestEngine::calculateSortino(const std::vector<double>& pnlPcts) {
     if (pnlPcts.empty()) return 0.0;
     double sum = 0.0;
@@ -199,6 +270,16 @@ double BacktestEngine::calculateSortino(const std::vector<double>& pnlPcts) {
     return mean / downsideStd;
 }
 
+/**
+ * @brief Calculate the (sample) Sharpe-like ratio for a series of P&L percentages.
+ *
+ * This implementation computes mean / standard-deviation using the population
+ * denominator (N). For degenerate cases where std == 0.0, a positive mean
+ * maps to +infinity and non-positive mean yields 0.0.
+ *
+ * @param pnlPcts Vector of trade P&L percentages (fractional, e.g. 0.02 = 2%).
+ * @return The Sharpe-like ratio or `0.0`/`infinity` for degenerate cases.
+ */
 double BacktestEngine::calculateSharpe(const std::vector<double>& pnlPcts) {
     if (pnlPcts.empty()) return 0.0;
     double sum = 0.0;

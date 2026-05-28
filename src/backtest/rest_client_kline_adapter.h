@@ -1,3 +1,8 @@
+/**
+ * @file rest_client_kline_adapter.h
+ * @brief Adapter and pagination helpers for Binance REST kline backfill.
+ */
+
 #pragma once
 
 #include "backtest/ikline_rest_client.h"
@@ -51,8 +56,14 @@ std::optional<int64_t> parseIntervalMs(std::string_view interval);
 
 class RestClientKlineAdapter final : public IKlineRestClient {
 public:
+    /**
+     * @brief Wraps an async RestClient and io_context into IKlineRestClient API.
+     */
     RestClientKlineAdapter(RestClient& restClient, boost::asio::io_context& ioc);
 
+    /**
+     * @brief Fetches closed klines with page budget and timeout controls.
+     */
     FetchResult fetchClosedKlines(
         std::string_view symbol,
         std::string_view interval,

@@ -1,3 +1,14 @@
+"""Score the latest qlib bridge dataset and persist prediction outputs.
+
+This script loads the prepared feature dataset, validates the feature manifest,
+applies the trained LightGBM model to the most recent eligible rows, and stores
+the resulting predictions, debug payloads, and readiness flags in SQLite.
+
+It is the last mile of the qlib bridge workflow: it turns freshly refreshed
+market data into model outputs that downstream strategy and execution jobs can
+consume.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -13,6 +24,8 @@ import numpy as np
 import pandas as pd
 
 from features import FEATURE_COLS, add_features
+
+_SCHEMA_READY_DB_PATHS: set[str] = set()
 
 
 def _safe_int(value: object | None, default: int = 0) -> int:
@@ -80,6 +93,41 @@ def load_dataset(path: Path) -> pd.DataFrame:
     return frame
 
 
+def _to_epoch_ms(series: pd.Series) -> pd.Series:
+    dt = pd.to_datetime(series, utc=True)
+    dt_utc_naive = dt.dt.tz_convert("UTC").dt.tz_localize(None)
+    # Keep conversion explicit to avoid deprecated tz-aware int casts on pandas 2.x+.
+    return dt_utc_naive.astype("datetime64[ms]").view("int64").astype(np.int64)
+
+
+def _feature_manifest_path(model_path: Path) -> Path:
+    return model_path.with_suffix(model_path.suffix + ".features.json")
+
+
+def validate_feature_manifest(model_path: Path, expected_cols: Sequence[str]) -> None:
+    manifest_path = _feature_manifest_path(model_path)
+    if not manifest_path.exists():
+        raise RuntimeError(
+            f"Missing model feature manifest: {manifest_path}. "
+            "Retrain the model with current train_workflow.py to generate it."
+        )
+
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"Invalid manifest format in {manifest_path}")
+
+    trained_cols = raw.get("feature_columns")
+    if not isinstance(trained_cols, list) or not all(isinstance(item, str) for item in trained_cols):
+        raise RuntimeError(f"Invalid feature_columns in {manifest_path}")
+
+    expected = list(expected_cols)
+    if trained_cols != expected:
+        raise RuntimeError(
+            "Model feature mismatch between training and inference. "
+            f"trained={trained_cols} expected={expected}"
+        )
+
+
 def score_latest(
     frame: pd.DataFrame,
     booster: lgb.Booster,
@@ -89,7 +137,7 @@ def score_latest(
     if scored.empty:
         raise RuntimeError("No rows available after feature NA filtering.")
 
-    scored["asof_open_time_ms"] = (scored["datetime"].astype("int64") // 1_000_000).astype(np.int64)
+    scored["asof_open_time_ms"] = _to_epoch_ms(scored["datetime"])
     if asof_ms is None:
         asof_ms = int(scored["asof_open_time_ms"].max())
 
@@ -152,7 +200,10 @@ def upsert_predictions(
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
-        init_schema(conn)
+        db_key = str(db_path.resolve())
+        if db_key not in _SCHEMA_READY_DB_PATHS:
+            init_schema(conn)
+            _SCHEMA_READY_DB_PATHS.add(db_key)
         payload: list[tuple[object, ...]] = []
         for row in rows.itertuples(index=False):
             payload.append(
@@ -266,7 +317,9 @@ def main() -> int:
 
     frame = load_dataset(Path(args.dataset))
     frame = add_features(frame)
-    booster = lgb.Booster(model_file=args.model_path)
+    model_path = Path(args.model_path)
+    validate_feature_manifest(model_path, FEATURE_COLS)
+    booster = lgb.Booster(model_file=str(model_path))
 
     latest = score_latest(frame, booster, args.asof_ms)
     generated_at_ms = int(time.time() * 1000)

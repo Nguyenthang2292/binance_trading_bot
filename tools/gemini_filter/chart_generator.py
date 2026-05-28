@@ -9,6 +9,7 @@ import plotly.graph_objects as go  # type: ignore
 from plotly.subplots import make_subplots  # type: ignore
 
 LOGGER = logging.getLogger("gemini_filter.chart")
+_REQUIRED_KLINE_FIELDS = ("open_time", "open", "high", "low", "close", "volume")
 
 
 def _sanitize_component(value: str) -> str:
@@ -16,9 +17,24 @@ def _sanitize_component(value: str) -> str:
     return cleaned or "unknown"
 
 
+def _validate_klines_shape(klines: list[dict[str, Any]]) -> None:
+    for idx, row in enumerate(klines):
+        if not isinstance(row, dict):
+            raise RuntimeError(f"invalid_input: klines[{idx}] must be an object")
+        missing = [field for field in _REQUIRED_KLINE_FIELDS if field not in row]
+        if missing:
+            raise RuntimeError(
+                f"invalid_input: klines[{idx}] missing fields: {','.join(missing)}"
+            )
+
+
 def _to_ohlc_dataframe(klines: list[dict[str, Any]]) -> pd.DataFrame:
+    _validate_klines_shape(klines)
     frame = pd.DataFrame(klines)
-    frame["Date"] = pd.to_datetime(frame["open_time"], unit="ms", utc=True)
+    try:
+        frame["Date"] = pd.to_datetime(frame["open_time"], unit="ms", utc=True)
+    except Exception as exc:
+        raise RuntimeError("invalid_input: malformed klines field open_time") from exc
     frame = frame.rename(
         columns={
             "open": "Open",
@@ -30,7 +46,12 @@ def _to_ohlc_dataframe(klines: list[dict[str, Any]]) -> pd.DataFrame:
     )
     frame = frame[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
     for column in ("Open", "High", "Low", "Close", "Volume"):
-        frame[column] = frame[column].astype(float)
+        try:
+            frame[column] = frame[column].astype(float)
+        except Exception as exc:
+            raise RuntimeError(
+                f"invalid_input: malformed klines numeric field {column.lower()}"
+            ) from exc
     return frame.sort_values("Date")
 
 

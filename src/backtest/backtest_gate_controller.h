@@ -1,3 +1,8 @@
+/**
+ * @file backtest_gate_controller.h
+ * @brief Orchestrator implementing the full backtest-gate decision pipeline.
+ */
+
 #pragma once
 
 #include "backtest/backtest_engine.h"
@@ -12,8 +17,15 @@
 
 namespace backtest {
 
+/**
+ * @brief Concrete gate controller coordinating data fetch, range proposal,
+ *        walk-forward scoring, plateau selection, and final vote.
+ */
 class BacktestGateController : public IBacktestGatePort {
 public:
+    /**
+     * @brief Constructs a gate controller with injected data/proposer/adapters.
+     */
     BacktestGateController(
         IHistoricalWindowProvider& dataProvider,
         IRangeProposer& rangeProposer,
@@ -21,6 +33,9 @@ public:
         BacktestGateConfig cfg,
         BacktestEngine::Config engineCfg);
 
+    /**
+     * @brief Evaluates a signal candidate and returns pass/drop result.
+     */
     BacktestGateResult evaluate(const BacktestGateRequest& req) const override;
 
 private:

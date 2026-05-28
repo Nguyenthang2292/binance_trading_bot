@@ -22,6 +22,7 @@
 #include <sstream>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 
 namespace engine {
@@ -353,7 +354,7 @@ std::string SignalEngine::accountErrorToString(const account::AccountServiceErro
 }
 
 bool SignalEngine::isFlatPositionQty(double quantity) {
-    return std::abs(quantity) <= 1e-10;
+    return engine::isFlatPositionQuantity(quantity);
 }
 
 boost::asio::awaitable<std::optional<double>> SignalEngine::livePositionQuantity(std::string_view symbol) {
@@ -519,6 +520,16 @@ SignalEngine::SignalEngine(
             m_tracker,
             [this](std::string_view symbol) { return m_scanner.symbolInfo(symbol); });
     }
+    if (m_config.takeProfitReconciler.enabled) {
+        m_takeProfitReconciler = std::make_unique<TakeProfitReconciler>(
+            m_config.takeProfitReconciler,
+            m_orders,
+            m_tracker,
+            [this](std::string_view symbol) { return m_scanner.symbolInfo(symbol); },
+            m_config.takeProfitOverridePercent,
+            m_config.recoveredMaxHoldDuration,
+            m_config.positionCheckInterval);
+    }
 }
 
 SignalEngine::SignalEngine(
@@ -593,7 +604,11 @@ boost::asio::awaitable<void> SignalEngine::run() {
     request.includePositions = true;
     auto snapshot = co_await m_account.snapshot(request);
     if (snapshot && snapshot->positions.has_value()) {
-        m_tracker.loadFromSnapshot(*snapshot->positions);
+        m_tracker.loadFromSnapshot(*snapshot->positions, m_config.recoveredMaxHoldDuration);
+        co_await reconcileTrackedPositions(*snapshot);
+        if (m_takeProfitReconciler) {
+            co_await m_takeProfitReconciler->reconcileOnce(*snapshot);
+        }
     }
 
     boost::asio::co_spawn(
@@ -2013,6 +2028,9 @@ boost::asio::awaitable<void> SignalEngine::monitorTimeExit() {
         }
 
         co_await reconcileTrackedPositions(*snapshotResult);
+        if (m_takeProfitReconciler) {
+            co_await m_takeProfitReconciler->reconcileOnce(*snapshotResult);
+        }
         if (m_lossManager && m_lossManager->enabled()) {
             co_await m_lossManager->evaluate(*snapshotResult, snapshotResult->account.availableBalance);
         }
@@ -2036,10 +2054,13 @@ boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions() {
 }
 
 boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions(const account::AccountSnapshot& snapshot) {
-    std::unordered_map<std::string, double> liveQtyBySymbol;
-    auto collectLive = [&liveQtyBySymbol](const std::vector<Position>& positions) {
+    std::unordered_map<std::string, const Position*> liveBySymbol;
+    auto collectLive = [&liveBySymbol](const std::vector<Position>& positions) {
         for (const auto& position : positions) {
-            liveQtyBySymbol[position.symbol] += std::abs(position.positionAmt);
+            if (isFlatPositionQty(position.positionAmt)) {
+                continue;
+            }
+            liveBySymbol[position.symbol] = &position;
         }
     };
     if (snapshot.positions.has_value()) {
@@ -2048,10 +2069,9 @@ boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions(const accou
         collectLive(snapshot.account.positions);
     }
 
+    // 1) Remove tracked positions no longer live.
     for (const auto& tracked : m_tracker.all()) {
-        const auto it = liveQtyBySymbol.find(tracked.symbol);
-        const double liveQty = it != liveQtyBySymbol.end() ? it->second : 0.0;
-        if (!isFlatPositionQty(liveQty)) {
+        if (liveBySymbol.find(tracked.symbol) != liveBySymbol.end()) {
             continue;
         }
         if (m_tracker.removeIfOpenedAt(tracked.symbol, tracked.openedAt)) {
@@ -2063,6 +2083,43 @@ boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions(const accou
                 "tracker reconciliation removed stale symbol=" + tracked.symbol);
         }
     }
+
+    // 2) Add missing live positions and refresh existing ones.
+    for (const auto& [symbol, position] : liveBySymbol) {
+        const double absQty = std::abs(position->positionAmt);
+        const auto existing = m_tracker.bySymbol(symbol);
+        if (!existing.has_value()) {
+            TrackedPosition recovered;
+            recovered.symbol = symbol;
+            recovered.direction = position->positionAmt >= 0.0
+                ? strategy::Signal::Direction::Long
+                : strategy::Signal::Direction::Short;
+            recovered.entryPrice = position->entryPrice;
+            recovered.quantity = absQty;
+            recovered.activeLeverage = position->leverage;
+            recovered.openedAt = std::chrono::system_clock::now();
+            recovered.maxHoldDuration = m_config.recoveredMaxHoldDuration;
+            recovered.openingInFlight = false;
+            recovered.recoveredFromSnapshot = true;
+            if (m_tracker.addRecovered(std::move(recovered))) {
+                Logger::instance().log(
+                    LogLevel::Info,
+                    "tracker reconciliation recovered live symbol=" + symbol);
+            }
+            continue;
+        }
+
+        if (existing->openingInFlight) {
+            continue;
+        }
+
+        (void)m_tracker.refreshFromSnapshot(
+            symbol,
+            position->entryPrice,
+            absQty,
+            position->leverage);
+    }
+
     co_return;
 }
 

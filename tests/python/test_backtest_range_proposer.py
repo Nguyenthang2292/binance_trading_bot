@@ -55,6 +55,10 @@ VALID_GEMINI_RESPONSE_RANGES = [
     {"name": "tp_multiplier", "min": 2.5, "max": 4.5, "step": 0.25, "is_integer": False},
 ]
 
+VALID_CONSTRAINTS = [
+    {"left": "ma_short", "right": "ma_long", "kind": "less_than"},
+]
+
 
 def _make_input_file(tmp_path: Path, data: dict[str, Any] | None = None) -> Path:
     p = tmp_path / "input.json"
@@ -82,6 +86,34 @@ def test_validate_input_ok() -> None:
 def test_validate_input_missing_field(missing_field: str) -> None:
     bad = {k: v for k, v in VALID_INPUT.items() if k != missing_field}
     with pytest.raises(ValueError, match=missing_field):
+        brp._validate_input(bad)
+
+
+def test_validate_input_symbol_must_be_string() -> None:
+    bad = dict(VALID_INPUT)
+    bad["symbol"] = 123
+    with pytest.raises(ValueError, match="symbol must be a non-empty string"):
+        brp._validate_input(bad)
+
+
+def test_validate_input_current_values_must_be_object() -> None:
+    bad = dict(VALID_INPUT)
+    bad["current_values"] = []
+    with pytest.raises(ValueError, match="current_values must be an object"):
+        brp._validate_input(bad)
+
+
+def test_validate_input_rejects_markdown_markers_in_symbol() -> None:
+    bad = dict(VALID_INPUT)
+    bad["symbol"] = "BTCUSDT ## inject"
+    with pytest.raises(ValueError, match="markdown markers"):
+        brp._validate_input(bad)
+
+
+def test_validate_input_rejects_newline_in_strategy_id() -> None:
+    bad = dict(VALID_INPUT)
+    bad["strategy_id"] = "golden\ncrossover"
+    with pytest.raises(ValueError, match="must not contain newlines"):
         brp._validate_input(bad)
 
 
@@ -119,6 +151,49 @@ def test_validate_output_ranges_min_gt_max_rejected() -> None:
     bad_ranges = [{"name": "ma_short", "min": 80.0, "max": 10.0, "step": 5.0, "is_integer": True}]
     with pytest.raises(ValueError, match="min.*max"):
         brp._validate_output_ranges(bad_ranges, TUNABLE_PARAMS)
+
+
+def test_validate_output_ranges_integer_param_requires_whole_numbers() -> None:
+    bad_ranges = [dict(r) for r in VALID_GEMINI_RESPONSE_RANGES]
+    bad_ranges[0]["step"] = 2.5
+    with pytest.raises(ValueError, match="non-integer step"):
+        brp._validate_output_ranges(bad_ranges, TUNABLE_PARAMS)
+
+
+def test_validate_output_ranges_must_cover_current_values() -> None:
+    bad_ranges = [dict(r) for r in VALID_GEMINI_RESPONSE_RANGES]
+    bad_ranges[0]["max"] = 40
+    with pytest.raises(ValueError, match="does not cover current value"):
+        brp._validate_output_ranges(
+            bad_ranges,
+            TUNABLE_PARAMS,
+            current_values=VALID_INPUT["current_values"],
+        )
+
+
+def test_validate_output_ranges_must_keep_default_is_integer_flag() -> None:
+    bad_ranges = [dict(r) for r in VALID_GEMINI_RESPONSE_RANGES]
+    bad_ranges[0]["is_integer"] = False
+    with pytest.raises(ValueError, match="changed is_integer"):
+        brp._validate_output_ranges(
+            bad_ranges,
+            TUNABLE_PARAMS,
+            default_ranges=VALID_DEFAULT_RANGES,
+        )
+
+
+def test_validate_output_ranges_must_be_constraint_compatible() -> None:
+    bad_ranges = [dict(r) for r in VALID_GEMINI_RESPONSE_RANGES]
+    bad_ranges[0]["min"] = 260
+    bad_ranges[0]["max"] = 300
+    bad_ranges[1]["min"] = 200
+    bad_ranges[1]["max"] = 250
+    with pytest.raises(ValueError, match="constraint ma_short < ma_long is incompatible"):
+        brp._validate_output_ranges(
+            bad_ranges,
+            TUNABLE_PARAMS,
+            constraints=VALID_CONSTRAINTS,
+        )
 
 
 # ── Prompt isolation — prompt_context only ───────────────────────────────────
@@ -200,7 +275,87 @@ def test_main_derives_sdk_timeout_from_budget(
     rc = brp.main()
 
     assert rc == 0
-    assert captured["timeout_ms"] == 10_000
+    assert captured["timeout_ms"] == 6_000
+
+
+def test_main_rejects_non_integer_budget_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = dict(VALID_INPUT)
+    payload["budget"] = {"max_total_combos": 6000, "timeout_seconds": 7.9}
+    input_file = _make_input_file(tmp_path, payload)
+    output_file = tmp_path / "out.json"
+    monkeypatch.setattr(sys, "argv", ["main.py", str(input_file), str(output_file)])
+
+    rc = brp.main()
+    assert rc == 1
+    result = json.loads(output_file.read_text())
+    assert result["error"] is True
+    assert result["error_code"] == "invalid_input"
+
+
+def test_main_rejects_budget_timeout_not_above_headroom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = dict(VALID_INPUT)
+    payload["budget"] = {"max_total_combos": 6000, "timeout_seconds": brp.GEMINI_TIMEOUT_HEADROOM_SECONDS}
+    input_file = _make_input_file(tmp_path, payload)
+    output_file = tmp_path / "out.json"
+    monkeypatch.setattr(sys, "argv", ["main.py", str(input_file), str(output_file)])
+
+    rc = brp.main()
+    assert rc == 1
+    result = json.loads(output_file.read_text())
+    assert result["error"] is True
+    assert result["error_code"] == "invalid_input"
+
+
+def test_call_gemini_splits_total_budget_across_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeKeyManager:
+        instances: list["FakeKeyManager"] = []
+
+        def __init__(self, http_timeout_ms: int = 30_000) -> None:
+            self.http_timeout_ms = http_timeout_ms
+            self.key_count = 3
+            self.key_names = ("k1", "k2", "k3")
+            FakeKeyManager.instances.append(self)
+
+        def run_with_rotation(self, fn):
+            client = MagicMock()
+            client.models.generate_content.return_value.text = "ok"
+            return fn(client, object())
+
+    monkeypatch.setattr("tools.shared.gemini_key_manager.GeminiKeyManager", FakeKeyManager)
+
+    response = brp._call_gemini("prompt", "gemini-3.5-flash", http_timeout_ms=12_000)
+
+    assert response == "ok"
+    assert [instance.http_timeout_ms for instance in FakeKeyManager.instances] == [12_000, 4_000]
+
+
+def test_call_gemini_does_not_clamp_per_attempt_above_budget_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeKeyManager:
+        instances: list["FakeKeyManager"] = []
+
+        def __init__(self, http_timeout_ms: int = 30_000) -> None:
+            self.http_timeout_ms = http_timeout_ms
+            self.key_count = 12
+            self.key_names = tuple(f"k{i}" for i in range(12))
+            FakeKeyManager.instances.append(self)
+
+        def run_with_rotation(self, fn):
+            client = MagicMock()
+            client.models.generate_content.return_value.text = "ok"
+            return fn(client, object())
+
+    monkeypatch.setattr("tools.shared.gemini_key_manager.GeminiKeyManager", FakeKeyManager)
+
+    response = brp._call_gemini("prompt", "gemini-3.5-flash", http_timeout_ms=6_000)
+
+    assert response == "ok"
+    assert [instance.http_timeout_ms for instance in FakeKeyManager.instances] == [6_000, 500]
 
 
 def test_main_success_with_output_file(

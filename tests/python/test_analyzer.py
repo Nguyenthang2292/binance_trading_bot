@@ -172,6 +172,86 @@ def test_sentiment_single_step_uses_legacy_search_json_path(
     assert len(calls) == 1
     assert calls[0]["component"] == "sentiment"
     assert calls[0]["use_google_search"] is True
+    assert 'Return strict JSON only with keys "score" and "analysis"' in calls[0]["contents"]
+
+
+def test_analyze_vision_rejects_non_object_klines(
+    tmp_path: Path,
+) -> None:
+    data = _base_data(tmp_path)
+    data["klines"] = []
+    route = RoutedModels(
+        sentiment_candidates=["m1"],
+        vision_candidates=["v1"],
+        vision_pro_escalation_enabled=False,
+        vision_pro_escalation_min_score=0.45,
+        vision_pro_escalation_max_score=0.65,
+    )
+    metrics = MetricsStore(Path(data["runtime_base_dir"]))
+    quota = QuotaManager(
+        Path(data["runtime_base_dir"]),
+        QuotaConfig(
+            enabled=False,
+            safety_factor=1.0,
+            cooldown_seconds_on_429=10,
+            default_rpm=10,
+            default_rpd=100,
+            model_limits={},
+        ),
+        metrics_store=metrics,
+    )
+    with pytest.raises(RuntimeError, match="klines must be an object"):
+        analyzer._analyze_vision(data, _KeyManager(), route, quota, metrics)
+
+
+def test_vision_escalation_filters_to_pro_tier_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _base_data(tmp_path)
+    route = RoutedModels(
+        sentiment_candidates=["m1"],
+        vision_candidates=[
+            "gemini-3.1-flash-lite",
+            "gemini-pro-mini-flash",
+            "gemini-3.1-pro-preview",
+        ],
+        vision_pro_escalation_enabled=True,
+        vision_pro_escalation_min_score=0.45,
+        vision_pro_escalation_max_score=0.65,
+    )
+    metrics = MetricsStore(Path(data["runtime_base_dir"]))
+    quota = QuotaManager(
+        Path(data["runtime_base_dir"]),
+        QuotaConfig(
+            enabled=False,
+            safety_factor=1.0,
+            cooldown_seconds_on_429=10,
+            default_rpm=10,
+            default_rpd=100,
+            model_limits={},
+        ),
+        metrics_store=metrics,
+    )
+    chart_path = tmp_path / "chart.png"
+    chart_path.write_bytes(b"png")
+    monkeypatch.setattr(analyzer, "generate_chart", lambda **_: str(chart_path))
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_json_score(**kwargs: Any) -> tuple[dict[str, Any], str]:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {"score": 0.5, "analysis": "x"}, "gemini-3.1-flash-lite"
+        return {"score": 0.7, "analysis": "y"}, "gemini-3.1-pro-preview"
+
+    monkeypatch.setattr(analyzer, "_run_json_score_with_routes", fake_json_score)
+
+    result = analyzer._analyze_vision(data, _KeyManager(), route, quota, metrics)
+
+    assert result["score"] == 0.7
+    assert len(calls) == 2
+    assert calls[1]["candidates"] == ["gemini-3.1-pro-preview"]
 
 
 def test_analyze_maps_quota_exhausted_error_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -361,4 +441,40 @@ def test_apply_autotune_override_rejects_expired_or_corrupt(tmp_path: Path) -> N
     )
     merged2 = analyzer._apply_autotune_override(data)
     assert merged2["model_routing"]["sentiment"]["candidates"] == ["a", "b"]
+
+
+def test_apply_autotune_override_does_not_mutate_input_nested_dicts(tmp_path: Path) -> None:
+    data = _base_data(tmp_path)
+    data["autotune"] = {"enabled": True, "mode": "apply"}
+    data["model_routing"] = {
+        "enabled": True,
+        "sentiment": {"candidates": ["s1", "s2"]},
+        "vision": {"candidates": ["v1", "v2"], "pro_escalation_enabled": True},
+    }
+    data["quota"] = {"enabled": True, "models": {"s1": {"rpm": 10, "rpd": 100}}}
+    original_snapshot = json.loads(json.dumps(data))
+
+    override_path = Path(data["runtime_base_dir"]) / "cache" / "autotune" / "active_override.json"
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    override_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-05-18T10:15:00Z",
+                "expiry_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat().replace("+00:00", "Z"),
+                "override_type": "normal",
+                "model_routing_override": {
+                    "sentiment": {"candidates": ["s2", "s1"]},
+                    "vision": {"candidates": ["v2", "v1"], "pro_escalation_enabled": False},
+                },
+                "quota_override": {"models": {"s1": {"rpm": 5, "rpd": 50}}},
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+
+    merged = analyzer._apply_autotune_override(data)
+    assert merged["model_routing"]["sentiment"]["candidates"][0] == "s2"
+    assert data == original_snapshot
 

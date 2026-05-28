@@ -1,6 +1,13 @@
 #include "account/rest_account_client_adapter.h"
 
+/**
+ * @file rest_account_client_adapter.cpp
+ * @brief IAccountRestClient adapter implementation backed by RestClient.
+ */
+
 #include <utility>
+
+namespace account {
 
 boost::asio::awaitable<AccountRestResult<FuturesAccount>> AccountRestClientAdapter::account() {
     co_return co_await m_client.account();
@@ -22,3 +29,5 @@ boost::asio::awaitable<AccountRestResult<FuturesAccountConfig>> AccountRestClien
 boost::asio::awaitable<AccountRestResult<void>> AccountRestClientAdapter::testOrder(OrderRequest req) {
     co_return co_await m_client.testOrder(std::move(req));
 }
+
+} // namespace account

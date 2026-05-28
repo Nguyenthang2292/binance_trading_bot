@@ -13,13 +13,13 @@
 
 namespace {
 
-class StubAccountRestClient final : public IAccountRestClient {
+class StubAccountRestClient final : public account::IAccountRestClient {
 public:
-    AccountRestResult<FuturesAccount> accountResult = FuturesAccount{};
-    AccountRestResult<std::vector<Balance>> balanceResult = std::vector<Balance>{};
-    AccountRestResult<std::vector<Position>> positionsResult = std::vector<Position>{};
-    AccountRestResult<FuturesAccountConfig> accountConfigResult = FuturesAccountConfig{};
-    AccountRestResult<void> testOrderResult = AccountRestResult<void>{};
+    account::AccountRestResult<FuturesAccount> accountResult = FuturesAccount{};
+    account::AccountRestResult<std::vector<Balance>> balanceResult = std::vector<Balance>{};
+    account::AccountRestResult<std::vector<Position>> positionsResult = std::vector<Position>{};
+    account::AccountRestResult<FuturesAccountConfig> accountConfigResult = FuturesAccountConfig{};
+    account::AccountRestResult<void> testOrderResult = account::AccountRestResult<void>{};
 
     int accountCalls{0};
     int balanceCalls{0};
@@ -29,29 +29,29 @@ public:
     std::optional<std::string> lastPositionFilter;
     std::optional<OrderRequest> lastTestOrderRequest;
 
-    boost::asio::awaitable<AccountRestResult<FuturesAccount>> account() override {
+    boost::asio::awaitable<account::AccountRestResult<FuturesAccount>> account() override {
         ++accountCalls;
         co_return accountResult;
     }
 
-    boost::asio::awaitable<AccountRestResult<std::vector<Balance>>> balance() override {
+    boost::asio::awaitable<account::AccountRestResult<std::vector<Balance>>> balance() override {
         ++balanceCalls;
         co_return balanceResult;
     }
 
-    boost::asio::awaitable<AccountRestResult<std::vector<Position>>> positions(
+    boost::asio::awaitable<account::AccountRestResult<std::vector<Position>>> positions(
         std::optional<std::string> symbol) override {
         ++positionsCalls;
         lastPositionFilter = std::move(symbol);
         co_return positionsResult;
     }
 
-    boost::asio::awaitable<AccountRestResult<FuturesAccountConfig>> accountConfig() override {
+    boost::asio::awaitable<account::AccountRestResult<FuturesAccountConfig>> accountConfig() override {
         ++accountConfigCalls;
         co_return accountConfigResult;
     }
 
-    boost::asio::awaitable<AccountRestResult<void>> testOrder(OrderRequest req) override {
+    boost::asio::awaitable<account::AccountRestResult<void>> testOrder(OrderRequest req) override {
         ++testOrderCalls;
         lastTestOrderRequest = std::move(req);
         co_return testOrderResult;
@@ -74,11 +74,21 @@ Quantity qty(std::string_view value) {
     return *parsed;
 }
 
+Price price(std::string_view value) {
+    auto parsed = Price::parse(value);
+    if (!parsed) {
+        throw std::runtime_error("invalid price");
+    }
+    return *parsed;
+}
+
 } // namespace
 
-TEST(AccountServiceTest, SnapshotIncludeAccountConfigLoadsModeFlags) {
+TEST(AccountServiceTest, SnapshotIncludeAccountConfigKeepsPartialCompletenessAndLoadsModeFlags) {
     StubAccountRestClient rest;
-    rest.accountResult = FuturesAccount{};
+    FuturesAccount account;
+    account.canTrade = true;
+    rest.accountResult = account;
     rest.accountConfigResult = FuturesAccountConfig{
         .canTrade = false,
         .dualSidePosition = true,
@@ -92,7 +102,7 @@ TEST(AccountServiceTest, SnapshotIncludeAccountConfigLoadsModeFlags) {
 
     auto result = runAwaitable(service.snapshot(request));
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->completeness, account::AccountSnapshotCompleteness::Full);
+    EXPECT_EQ(result->completeness, account::AccountSnapshotCompleteness::AccountOnly);
     ASSERT_TRUE(result->dualSidePosition.has_value());
     EXPECT_TRUE(*result->dualSidePosition);
     ASSERT_TRUE(result->multiAssetsMargin.has_value());
@@ -100,6 +110,50 @@ TEST(AccountServiceTest, SnapshotIncludeAccountConfigLoadsModeFlags) {
     EXPECT_FALSE(result->account.canTrade);
     EXPECT_EQ(rest.accountCalls, 1);
     EXPECT_EQ(rest.accountConfigCalls, 1);
+}
+
+TEST(AccountServiceTest, SnapshotFullCompletenessRequiresBalanceAndPositionsPlusConfig) {
+    StubAccountRestClient rest;
+    rest.accountResult = FuturesAccount{};
+    rest.balanceResult = std::vector<Balance>{Balance{.asset = "USDT"}};
+    rest.positionsResult = std::vector<Position>{Position{.symbol = "BTCUSDT"}};
+    rest.accountConfigResult = FuturesAccountConfig{
+        .canTrade = true,
+        .dualSidePosition = true,
+        .multiAssetsMargin = false,
+    };
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::AccountSnapshotRequest request;
+    request.includeBalanceEndpoint = true;
+    request.includePositions = true;
+    request.includeAccountConfig = true;
+
+    auto result = runAwaitable(service.snapshot(request));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::AccountSnapshotCompleteness::Full);
+}
+
+TEST(AccountServiceTest, SnapshotConfigCanTradeAndAccountCanTradeAreCombinedConservatively) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.canTrade = false;
+    rest.accountResult = account;
+    rest.accountConfigResult = FuturesAccountConfig{
+        .canTrade = true,
+        .dualSidePosition = false,
+        .multiAssetsMargin = false,
+    };
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::AccountSnapshotRequest request;
+    request.includeAccountConfig = true;
+
+    auto result = runAwaitable(service.snapshot(request));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->account.canTrade);
 }
 
 TEST(AccountServiceTest, SnapshotPropagatesAccountRestFailure) {
@@ -214,6 +268,58 @@ TEST(AccountServiceTest, CheckFreeMarginValidatesViaTestOrder) {
     EXPECT_EQ(rest.lastTestOrderRequest->type, OrderType::Market);
 }
 
+TEST(AccountServiceTest, CheckFreeMarginBothOptionsKeepsServerValidatedOnly) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.availableBalance = 1000.0;
+    Position position;
+    position.symbol = "BTCUSDT";
+    position.leverage = 10;
+    account.positions.push_back(position);
+    rest.accountResult = account;
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::MarginCheckDraft draft{
+        .symbol = "BTCUSDT",
+        .side = account::MarginCheckSide::Buy,
+        .quantity = qty("1"),
+        .assumedPrice = price("100"),
+        .useServerTestOrder = true,
+    };
+
+    auto result = runAwaitable(service.checkFreeMargin(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::MarginCheckCompleteness::ServerValidatedOnly);
+    EXPECT_TRUE(result->serverAccepted);
+    ASSERT_TRUE(result->estimatedRemainingFreeMargin.has_value());
+    EXPECT_EQ(*result->estimatedRemainingFreeMargin, "990.0");
+    EXPECT_EQ(rest.testOrderCalls, 1);
+    EXPECT_EQ(rest.accountCalls, 1);
+}
+
+TEST(AccountServiceTest, CheckFreeMarginRejectsEmptyOptionsWithUnsupportedError) {
+    StubAccountRestClient rest;
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::MarginCheckDraft draft{
+        .symbol = "BTCUSDT",
+        .side = account::MarginCheckSide::Buy,
+        .quantity = qty("1"),
+        .assumedPrice = std::nullopt,
+        .useServerTestOrder = false,
+    };
+
+    auto result = runAwaitable(service.checkFreeMargin(draft));
+    ASSERT_FALSE(result.has_value());
+    ASSERT_TRUE(std::holds_alternative<account::AccountMappingError>(result.error()));
+    EXPECT_EQ(std::get<account::AccountMappingError>(result.error()), account::AccountMappingError::Unsupported);
+    EXPECT_EQ(rest.testOrderCalls, 0);
+    EXPECT_EQ(rest.accountCalls, 0);
+}
+
 TEST(AccountServiceTest, LiquidationRiskReturnsPositionOnlyView) {
     StubAccountRestClient rest;
     Position position;
@@ -228,4 +334,35 @@ TEST(AccountServiceTest, LiquidationRiskReturnsPositionOnlyView) {
     ASSERT_EQ(result->positions.size(), 1u);
     EXPECT_EQ(result->positions.front().symbol, "BTCUSDT");
     EXPECT_EQ(rest.positionsCalls, 1);
+}
+
+TEST(AccountServiceTest, LiquidationRiskPropagatesRestFailure) {
+    StubAccountRestClient rest;
+    rest.positionsResult = std::unexpected(BinanceError::fromApiResponse(-2011, "position risk unavailable"));
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    auto result = runAwaitable(service.liquidationRisk("BTCUSDT"));
+    ASSERT_FALSE(result.has_value());
+    ASSERT_TRUE(std::holds_alternative<BinanceError>(result.error()));
+    const auto& error = std::get<BinanceError>(result.error());
+    EXPECT_EQ(error.code, -2011);
+    EXPECT_EQ(error.message, "position risk unavailable");
+}
+
+TEST(AccountServiceTest, LiquidationRiskEmptyRowsDifferByScope) {
+    StubAccountRestClient rest;
+    rest.positionsResult = std::vector<Position>{};
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    auto symbolScoped = runAwaitable(service.liquidationRisk("BTCUSDT"));
+    ASSERT_TRUE(symbolScoped.has_value());
+    ASSERT_TRUE(symbolScoped->note.has_value());
+    EXPECT_EQ(*symbolScoped->note, "No position risk rows found for requested symbol");
+
+    auto accountScoped = runAwaitable(service.liquidationRisk());
+    ASSERT_TRUE(accountScoped.has_value());
+    ASSERT_TRUE(accountScoped->note.has_value());
+    EXPECT_EQ(*accountScoped->note, "No position risk rows found for account scope");
 }

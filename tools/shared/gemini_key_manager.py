@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import random
+import re
+import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -16,6 +20,18 @@ T = TypeVar("T")
 
 _HTTP_TIMEOUT_MS = 30_000  # default; override via constructor
 _STATE_DIR_ENV = "GEMINI_KEY_MANAGER_STATE_DIR"
+_LOCK_TIMEOUT_SECONDS = 2.0
+_LOCK_STALE_SECONDS = 30.0
+_LOG = logging.getLogger(__name__)
+_KEY_ERROR_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b429\b"),
+    re.compile(r"\bresource[_\s-]?exhausted\b"),
+    re.compile(r"\btoo\s+many\s+requests\b"),
+    re.compile(r"\bquota(?:\s+exceeded)?\b"),
+    re.compile(r"\brate[\s_-]?limit(?:ed|ing)?\b"),
+    re.compile(r"\bapi[-\s]?key\b"),
+    re.compile(r"\bunauthori[sz]ed\b"),
+)
 
 
 @dataclass(frozen=True)
@@ -27,23 +43,13 @@ class GeminiKey:
 def _is_retryable_key_error(exc: Exception) -> bool:
     if isinstance(exc, errors.APIError):
         code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-        return code in {401, 429, 500, 502, 503, 504}
+        # Rotate keys only for key-scoped failures.
+        # 5xx/server outages are shared failure domains and should fail fast so
+        # callers can handle global backoff/sleep once instead of N-key fanout.
+        if code is not None:
+            return code in {401, 429}
     lowered = str(exc).lower()
-    return any(
-        token in lowered
-        for token in (
-            "quota",
-            "rate",
-            "429",
-            "resource_exhausted",
-            "api key",
-            "unavailable",
-            "timeout",
-            "timed out",
-            "deadline_exceeded",
-            "deadline exceeded",
-        )
-    )
+    return any(pattern.search(lowered) for pattern in _KEY_ERROR_PATTERNS)
 
 
 class GeminiKeyManager:
@@ -81,7 +87,16 @@ class GeminiKeyManager:
                 if not _is_retryable_key_error(exc):
                     raise
                 last_error = exc
-        raise RuntimeError(f"All {len(self._keys)} Gemini keys failed: {last_error}")
+            finally:
+                try:
+                    client.close()
+                except Exception as close_exc:
+                    _LOG.warning(
+                        "gemini_key_manager: failed to close genai.Client for key %s: %s",
+                        key.name,
+                        close_exc,
+                    )
+        raise RuntimeError(f"All {len(self._keys)} Gemini keys failed: {last_error}") from last_error
 
     def _claim_start_index(self) -> int:
         if len(self._keys) == 1:
@@ -99,8 +114,14 @@ class GeminiKeyManager:
                 state["updated_at"] = time.time()
                 _write_state(state_path, state)
                 return next_index
-        except Exception:
-            return 0
+        except (TimeoutError, OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            fallback = random.randrange(len(self._keys))
+            _LOG.warning(
+                "gemini_key_manager: failed to claim round-robin start index, fallback to random %d: %s",
+                fallback,
+                exc,
+            )
+            return fallback
 
 
 def _split_key_list(raw: str) -> list[str]:
@@ -134,37 +155,52 @@ def _collect_keys() -> list[GeminiKey]:
     packed_keys = os.getenv("GEMINI_API_KEYS")
     if packed_keys:
         for packed_index, value in enumerate(_split_key_list(packed_keys), start=1):
-            add(f"GEMINI_API_KEYS[{packed_index}]", value)
+            add(f"GEMINI_API_KEYS_{packed_index}", value)
 
     add("GEMINI_TEXT_API_KEY", os.getenv("GEMINI_TEXT_API_KEY"))
     return keys
 
 
 def _keyset_digest(keys: list[GeminiKey]) -> str:
-    material = "\n".join(f"{key.name}\0{key.value}" for key in keys)
+    # Hash values only so env-var renames do not reset rotation state.
+    material = "\n".join(key.value for key in keys)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _resolve_state_dir(state_dir: str | Path | None) -> Path:
     if state_dir is not None:
-        return Path(state_dir)
+        return Path(state_dir).expanduser().resolve(strict=False)
     configured = os.getenv(_STATE_DIR_ENV)
     if configured:
-        return Path(configured)
-    return Path("tmp") / "gemini_key_manager"
+        return Path(configured).expanduser().resolve(strict=False)
+    return (Path(tempfile.gettempdir()) / "gemini_key_manager").resolve(strict=False)
 
 
 @contextmanager
-def _file_lock(lock_path: Path, timeout_seconds: float = 2.0) -> Iterator[None]:
+def _file_lock(
+    lock_path: Path,
+    timeout_seconds: float = _LOCK_TIMEOUT_SECONDS,
+    stale_seconds: float = _LOCK_STALE_SECONDS,
+) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.time() + timeout_seconds
+    deadline = time.monotonic() + timeout_seconds
     while True:
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.close(fd)
             break
         except FileExistsError:
-            if time.time() >= deadline:
+            if stale_seconds > 0:
+                try:
+                    age_seconds = time.time() - lock_path.stat().st_mtime
+                    if age_seconds >= stale_seconds:
+                        lock_path.unlink(missing_ok=True)
+                        continue
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    pass
+            if time.monotonic() >= deadline:
                 raise TimeoutError(f"lock timeout: {lock_path}")
             time.sleep(0.02)
     try:
@@ -191,5 +227,11 @@ def _read_state(path: Path) -> dict[str, Any]:
 def _write_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(state, ensure_ascii=True), encoding="utf-8")
+    payload = json.dumps(state, ensure_ascii=True)
+    # Advisory state: atomic replace is used; fsync improves durability of file
+    # contents but we intentionally skip directory fsync for simplicity.
+    with temp.open("w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
     temp.replace(path)

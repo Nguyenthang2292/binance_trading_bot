@@ -1,3 +1,8 @@
+/**
+ * @file rest_backfilling_historical_window_provider.h
+ * @brief Historical window provider with cache-first then REST backfill behavior.
+ */
+
 #pragma once
 
 #include "backtest/backtest_gate.h"
@@ -12,14 +17,23 @@ class KlineCache;
 
 namespace backtest {
 
+/**
+ * @brief Decorator provider that backfills cache misses using REST.
+ */
 class RestBackfillingHistoricalWindowProvider final : public IHistoricalWindowProvider {
 public:
+    /**
+     * @brief Constructs provider with cache-only inner source and REST adapter.
+     */
     RestBackfillingHistoricalWindowProvider(
         std::unique_ptr<IHistoricalWindowProvider> innerProvider,
         std::unique_ptr<IKlineRestClient> restClient,
         scanner::KlineCache& cache,
         BacktestGateDataConfig config);
 
+    /**
+     * @brief Returns required closed bars, backfilling from REST when needed.
+     */
     WindowResult closedWindow(
         std::string_view symbol,
         std::string_view interval,

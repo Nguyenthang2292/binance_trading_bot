@@ -70,15 +70,15 @@ header span { font-size: 12px; color: var(--muted); }
 
 #canvas {
   position: relative;
-  width: 1150px;
-  height: 680px;
+  width: 1280px;
+  height: 760px;
 }
 
 #edge-svg {
   position: absolute;
   inset: 0;
-  width: 1150px;
-  height: 680px;
+  width: 1280px;
+  height: 760px;
   pointer-events: none;
 }
 
@@ -238,7 +238,7 @@ header span { font-size: 12px; color: var(--muted); }
 <header>
   <h1>⚡ Binance Trading Bot</h1>
   <span>Module Architecture &amp; Interaction Map</span>
-  <span class="hbadge">C++20 · Boost.Asio · 13 Modules</span>
+  <span class="hbadge">C++20 · Boost.Asio · 17 Modules</span>
 </header>
 
 <div id="layout">
@@ -291,16 +291,17 @@ header span { font-size: 12px; color: var(--muted); }
 const MODS = {
   main: {
     id:'main', label:'main.cpp', sub:'Entry Point', layer:'entry',
-    x:575, y:65,
-    desc:'Application entry point. Orchestrates the full startup sequence: parses config.json, initialises all subsystems in dependency order, wires ports via dependency injection, spawns the Boost.Asio io_context thread pool, and handles graceful shutdown on SIGINT/SIGTERM.',
+    x:640, y:70,
+    desc:'Application entry point. Parses config.json, initialises every subsystem in dependency order (context → catalog → scanner → orders → account → risk → backtest gate → qlib orchestration → engine), wires concrete port adapters via dependency injection, spawns the Boost.Asio io_context thread pool, and handles graceful shutdown on SIGINT/SIGTERM.',
     classes:[
-      {n:'main()', d:'Startup: config → catalog → context → scanner → orders → account → engine → run'}
+      {n:'main()', d:'Bootstrap: config → catalog → context → scanner → orders → account → risk → orchestration → engine → run'}
     ],
-    patterns:['Bootstrap','Composition Root'],
+    patterns:['Bootstrap','Composition Root','Dependency Injection'],
     features:[
       'Parses config.json for all subsystem configs',
       'CLI flag: --list-strategies prints catalog then exits',
       'Wires concrete port adapters into SignalEngine',
+      'Builds optional RiskController, BacktestGateController, Qlib orchestration',
       'Thread pool size configurable via config',
       'SIGINT/SIGTERM handler triggers graceful shutdown'
     ]
@@ -308,7 +309,7 @@ const MODS = {
 
   catalog: {
     id:'catalog', label:'Catalog', sub:'Plugin Management', layer:'orch',
-    x:230, y:195,
+    x:320, y:200,
     desc:'Dynamic strategy plugin management system. Scans the plugins/ directory at startup, loads .dll files via the Windows API, extracts C ABI function pointers, and registers IStrategy instances into StrategyRegistry. Strategies can be added without recompiling the bot.',
     classes:[
       {n:'StrategyCatalog',  d:'Main orchestrator: combines PluginLoader + StrategyRegistry'},
@@ -326,30 +327,59 @@ const MODS = {
     ]
   },
 
+  orchestration: {
+    id:'orchestration', label:'Orchestration', sub:'Qlib Lifecycle', layer:'orch',
+    x:640, y:200,
+    desc:'Qlib ML model lifecycle controller. Schedules nightly batch retraining and per-candle inference subprocesses (tools/qlib_bridge/*.py), parses their output, persists shadow-mode predictions into SQLite, evaluates promotion rules against live metrics, and exposes execution-mode state (Shadow / ShadowOnly / LiveCanary / Live) to the engine via IExecutionStatePort.',
+    classes:[
+      {n:'BatchSchedulerThread',  d:'Cron-style retraining trigger (weekday + hour + minute)'},
+      {n:'CandleSchedulerThread', d:'Post-candle inference scheduler with configurable delay'},
+      {n:'ProcessManager',        d:'Spawns Python subprocesses with retry / timeout / daemon mgmt'},
+      {n:'PromotionChecker',      d:'Decides Shadow → LiveCanary → Live based on metrics'},
+      {n:'QlibStateStore',        d:'SQLite-backed runtime state (model_id, run_id, exec mode)'},
+      {n:'ShadowMetricsRecorder', d:'Records would-have-executed signals + cost-adjusted PnL'}
+    ],
+    patterns:['Scheduler','Subprocess Supervisor','Outbox','Promotion Gate'],
+    features:[
+      'Process-level isolation between bot and Qlib Python toolchain',
+      'Daemon supervision via Win32 Job Objects / POSIX pid tracking',
+      'Promotion gated by min_candles / min_sharpe / min_hit_rate / min_mean_net_return_bps',
+      'Cost model: round-trip fee + slippage + funding bps',
+      'IExecutionStatePort + IShadowMetricsPort decouple engine from SQLite'
+    ]
+  },
+
   engine: {
     id:'engine', label:'Engine', sub:'Signal Processing', layer:'orch',
-    x:890, y:195,
-    desc:'Core async trading loop. Builds a cartesian product of (symbols × intervals × strategies) as a WorkQueue, evaluates each combination each scan cycle, opens positions on signals using ATR-based sizing, and runs a parallel timer loop for time-based position exits.',
+    x:960, y:200,
+    desc:'Core async trading loop. Builds a cartesian product of (symbols × intervals × strategies) as a WorkQueue, evaluates each combination each scan cycle, opens positions with ATR-based sizing, runs parallel timer loops for time-based and trailing-stop exits, and orchestrates pluggable gates: Gemini filter, BacktestGate, ExposureController, OrderCap, RiskController, LossManager.',
     classes:[
-      {n:'SignalEngine',    d:'Async coroutine loop: run() → runScanCycle() → processItem()'},
-      {n:'PositionTracker', d:'Thread-safe map of open TrackedPositions (symbol → position)'},
-      {n:'WorkQueue',       d:'Builds cartesian product: symbols × intervals × strategies'},
-      {n:'SizingPolicy',    d:'ATR-based size = balance × risk_pct / (atr × sl_multiplier)'}
+      {n:'SignalEngine',           d:'Async coroutine loop: run() → runScanCycle() → processItem()'},
+      {n:'PositionTracker',        d:'Thread-safe map of open TrackedPositions (symbol → position)'},
+      {n:'WorkQueue',              d:'Builds cartesian product: symbols × intervals × strategies'},
+      {n:'SizingPolicy',           d:'ATR-based size = balance × risk_pct / (atr × sl_multiplier)'},
+      {n:'GeminiFilterController', d:'Sentiment + vision LLM filter invoked per signal (Python subprocess)'},
+      {n:'LossManager',            d:'ROI-based break-even take-profit + DCA averaging'},
+      {n:'ExposureController',     d:'Net/gross beta exposure caps via BetaCalculator'},
+      {n:'TotalNotionalGuard',     d:'OrderCap port limiting total open notional vs margin'},
+      {n:'TrailingStopController', d:'Swing-low/high based trailing SL refresh on closed candles'},
+      {n:'QlibExecutionPlanner',   d:'Optional Qlib-driven execution planner (aggregate sizing)'}
     ],
-    patterns:['Orchestrator','Dependency Injection','Async/Await (C++20)','Observer'],
+    patterns:['Orchestrator','Dependency Injection','Async/Await (C++20)','Observer','Pipeline of Gates'],
     features:[
       'Boost.Asio C++20 coroutines (co_await / co_spawn)',
       'Sequential scan cycle prevents concurrent position write races',
-      'IScannerPort / IAccountPort / IOrdersPort port interfaces',
-      'Concrete adapters: ScannerPort, AccountPort, OrdersPort',
-      'Time-exit monitoring runs as a separate async coroutine',
-      'onUserDataEvent() callback updates PositionTracker on fills'
+      'Ports: IScannerPort / IAccountPort / IOrdersPort / IOrderCapPort / IExposurePort / IGeminiFilterPort / IRiskPort / IBacktestGatePort',
+      'DecisionArbiter resolves competing signals against per-cycle risk budget',
+      'Time-exit + trailing-stop monitors run as separate coroutines',
+      'onUserDataEvent() callback updates PositionTracker on fills',
+      'External-close cooldown prevents immediate re-entry after manual close'
     ]
   },
 
   scanner: {
     id:'scanner', label:'Scanner', sub:'Market Data', layer:'biz',
-    x:110, y:335,
+    x:185, y:345,
     desc:'Real-time OHLCV market data collector. On startup fetches exchange info to discover tradable USDT perpetual symbols, warms up the kline cache via REST, then subscribes to WebSocket kline streams for zero-poll data collection.',
     classes:[
       {n:'MarketScanner', d:'Orchestrates symbol discovery, REST warmup, WebSocket subscriptions'},
@@ -368,12 +398,12 @@ const MODS = {
 
   strategy: {
     id:'strategy', label:'Strategy', sub:'Interface & Registry', layer:'biz',
-    x:360, y:335,
+    x:365, y:345,
     desc:'Defines the plugin contract (IStrategy), unified per-strategy configuration (StrategyConfig), evaluation result type (Signal), and the runtime StrategyRegistry. Acts as the shared contract between the core engine and all dynamically loaded plugin implementations.',
     classes:[
       {n:'IStrategy',        d:'Pure virtual: config() → StrategyConfig, evaluate(symbol, interval, klines) → Signal'},
-      {n:'Signal',           d:'Evaluation result: direction (Long/Short/None), confidence, atr, reason'},
-      {n:'StrategyConfig',   d:'Unified config: intervals, risk_pct, sl/tp multipliers, atr_period'},
+      {n:'Signal',           d:'Direction (Long/Short/None), confidence, atr, reason, exitPolicy, shadowOnly'},
+      {n:'StrategyConfig',   d:'Unified config: intervals, risk_pct, sl/tp multipliers, atr_period, adapterId'},
       {n:'StrategyRegistry', d:'add() / addShared() / all() / forInterval() — holds shared_ptr<IStrategy>'},
       {n:'ATR',              d:'Average True Range indicator computed over Kline OHLC data'}
     ],
@@ -381,58 +411,106 @@ const MODS = {
     features:[
       'Pure virtual interface isolates core from plugin implementations',
       'Signal carries the ATR value used by SizingPolicy in engine',
-      'Registry supports filtering strategies by interval',
-      'StrategyConfig is the single source of truth for strategy params',
-      'Plugins only need to inherit IStrategy — no core changes required'
+      'ExitPolicy (Default / SwingTrailing) drives trailing-stop behaviour',
+      'shadowOnly flag for would-have-executed evaluation paths',
+      'Registry supports filtering strategies by interval'
     ]
   },
 
   orders: {
     id:'orders', label:'Orders', sub:'Order Execution', layer:'biz',
-    x:615, y:335,
-    desc:'Type-safe order execution facade for Binance Futures. Hides the complexity of NormalOrderService and AlgoOrderService behind a clean async interface. Validates inputs, converts types, logs to an audit journal, and handles decimal precision for quantity and price.',
+    x:550, y:345,
+    desc:'Type-safe order execution facade for Binance Futures. Hides the complexity of NormalOrderService and AlgoOrderService behind a clean async interface. Strict pre-flight validation, correlation-id journalling, decimal-string quantity/price, idempotent client IDs, MQL4 adapter for legacy callers.',
     classes:[
-      {n:'Orders',              d:'Async facade: market(), limit(), protection(), closeByMarket(), cancel()'},
-      {n:'NormalOrderService',  d:'Standard limit / market order placement, cancellation, amendment'},
-      {n:'AlgoOrderService',    d:'Advanced order types (TWAP, VWAP, etc.)'},
-      {n:'OrderValidator',      d:'Pre-flight validation of order drafts before submission'},
-      {n:'OrderJournal',        d:'Persistent audit trail logging for all placed orders'}
+      {n:'Orders',              d:'Async facade: market(), limit(), closeByMarket(), setLeverage(), amend, protection, cancel/query'},
+      {n:'NormalOrderService',  d:'Limit/market placement, amendment, batch (max 5), cancel/query, fill summary'},
+      {n:'AlgoOrderService',    d:'Stop-entry + SL/TP protection orders with separate journal/reconcile'},
+      {n:'OrderValidator',      d:'Pre-flight: blocked raw keys, hedge-mode reduceOnly, regex on raw params'},
+      {n:'OrderJournal',        d:'InMemory + DurableOrderJournal (append-only file) for intent/state'},
+      {n:'OrderIdGenerator',    d:'Namespace-prefixed clientOrderId + correlationId generation'},
+      {n:'Mql4Adapter',         d:'Maps MQL4 ops (Buy/Sell/*Limit/*Stop) to typed drafts + protection orders'}
     ],
-    patterns:['Facade','Service Layer','Type-safe Builders'],
+    patterns:['Facade','Service Layer','Type-safe Builders','Journal/Reconcile'],
     features:[
-      'Type-safe drafts: MarketOrderDraft, LimitOrderDraft, ProtectionOrderDraft',
-      'ProtectionOrderDraft places TP + SL simultaneously',
-      'Decimal precision handling to meet Binance step size rules',
-      'Centralised validation prevents invalid order submission',
-      'Audit journal for debugging and compliance',
-      'MQL4 compatibility adapter for legacy support'
+      'Type-safe drafts: Market/Limit/Close/Amend/StopEntry/Protection',
+      'setLeverage(symbol, leverage) for per-symbol leverage updates',
+      'Strict raw-param validator with 11 blocked keys + ^[A-Za-z]\\w{0,63}$ regex',
+      'PlacementState: Accepted / Rejected / UnknownPendingReconcile',
+      'Durable journal enforced when allowBestEffortJournal=false',
+      'OrderPoolSnapshot enriches metadata from the journal'
     ]
   },
 
   account: {
     id:'account', label:'Account', sub:'Account State', layer:'biz',
-    x:870, y:335,
-    desc:'Abstracts the Binance account REST API to provide consistent snapshots of wallet balance, open positions, and margin information. Used by SignalEngine to verify sufficient capital before opening a new position.',
+    x:730, y:345,
+    desc:'Abstracts the Binance account REST API to provide consistent snapshots of wallet balance, open positions, and margin information. Used by SignalEngine to verify sufficient capital before opening a new position, and by RiskController to sample equity over time.',
     classes:[
-      {n:'AccountService',  d:'Async: snapshot(), checkFreeMargin(), liquidationRisk()'},
-      {n:'AccountSnapshot', d:'Point-in-time state: totalWalletBalance, availableBalance, positions[]'}
+      {n:'AccountService',           d:'Async: snapshot(), checkFreeMargin(), liquidationRisk()'},
+      {n:'AccountSnapshot',          d:'totalWalletBalance, availableBalance, totalMarginBalance, positions[]'},
+      {n:'RestAccountClientAdapter', d:'Adapts RestClient via IRestAccountClient interface'},
+      {n:'Mql4AccountAdapter',       d:'MQL4-style accessors for legacy callers'}
     ],
-    patterns:['Service Layer','Snapshot Pattern'],
+    patterns:['Service Layer','Snapshot Pattern','Adapter'],
     features:[
       'Returns consistent point-in-time account snapshot',
       'Checks available margin before engine calls SizingPolicy',
       'Provides liquidation price and margin ratio',
-      'Adapts RestClient via IRestAccountClient interface',
+      'Equity samples feed RiskController + EquityCurve',
       'MQL4 compatibility adapter for legacy support'
+    ]
+  },
+
+  backtest: {
+    id:'backtest', label:'Backtest', sub:'Walk-Forward Gate', layer:'biz',
+    x:915, y:345,
+    desc:'In-memory walk-forward backtesting gate. Evaluates a candidate signal across folds of recent klines, runs grid search over per-strategy parameter spaces, applies plateau + majority-vote filters, and only forwards the signal to the engine if it passes. Optionally uses Gemini to propose parameter ranges. No RNG — deterministic for identical inputs.',
+    classes:[
+      {n:'BacktestEngine',                 d:'Deterministic per-fold simulator (next-bar fills, ATR SL/TP, fees, time-exit)'},
+      {n:'BacktestGateController',         d:'Implements IBacktestGatePort: orchestrates walk-forward + plateau vote'},
+      {n:'WalkForward',                    d:'Splits history into IS/OOS folds with signal-bar holdout'},
+      {n:'ParameterSpace',                 d:'Grid of param points with combo budget enforcement'},
+      {n:'PlateauFinder',                  d:'Stability-of-optimum check via neighborhood pass-fraction'},
+      {n:'GeminiRangeProposer',            d:'Calls tools/backtest_range_proposer Python for range hints'},
+      {n:'RestBackfillingHistoricalWindowProvider', d:'Cache-then-REST window assembly'},
+      {n:'IndicatorAdapters',              d:'Adapts indicator strategies (golden, donchian, gartley) to IOptimizableStrategy'}
+    ],
+    patterns:['Gate','Walk-Forward Validation','Grid Search','Adapter'],
+    features:[
+      'history_source: cache_only or cache_then_rest',
+      'Per-cycle evaluation cap + global combo budget',
+      'Shadow-only mode logs without blocking',
+      'Whitelist of eligible strategies (golden_crossover, donchian_5_20_crossover, gartley_day_crossover)',
+      'Result: PassResult (with optimized params + plateau vote) or DropDetail'
+    ]
+  },
+
+  risk: {
+    id:'risk', label:'Risk', sub:'Drawdown & Sortino Gate', layer:'biz',
+    x:1095, y:345,
+    desc:'Portfolio-level risk controller. Persists equity samples per scan cycle into SQLite, recomputes Sortino / Sharpe / Ulcer Index / Max Drawdown on a configurable cadence, and gates new position opens via SOFT_BREACH / HARD_BREACH thresholds. Decoupled from engine via IRiskPort.',
+    classes:[
+      {n:'RiskController', d:'Implements IRiskPort: canOpenPosition(), onScanCycle(), onPositionClosed()'},
+      {n:'RiskDb',         d:'SQLite store for equity samples (margin or wallet basis)'},
+      {n:'EquityCurve',    d:'In-memory rolling equity sampler with persistence flush'},
+      {n:'RiskMetrics',    d:'Sortino, Sharpe, Ulcer Index, UPI, MaxDrawdown over rolling window'}
+    ],
+    patterns:['Circuit Breaker','Rolling Window Metrics','Repository'],
+    features:[
+      'Configurable equity basis: margin (default) or wallet',
+      'soft/hard MaxDrawdown + soft/hard min UPI thresholds',
+      'failureMode Open/Closed + missingDataMode Open/Closed',
+      'Recompute cadence + min data points before metrics valid',
+      'NoOpRiskPort fallback when risk gating disabled'
     ]
   },
 
   rest: {
     id:'rest', label:'REST Client', sub:'HTTP Abstraction', layer:'infra',
-    x:275, y:465,
-    desc:'Async HTTP client wrapping the Binance REST API. Handles HMAC-SHA256 request signing, token-bucket rate limiting to stay within Binance weight limits (1200/min), and all endpoint mappings including klines, orders, and account data.',
+    x:320, y:485,
+    desc:'Async HTTP client wrapping the Binance REST API. Handles HMAC-SHA256 request signing, token-bucket rate limiting to stay within Binance weight limits (1200/min), and all endpoint mappings including klines, orders, account data, and leverage changes.',
     classes:[
-      {n:'RestClient',  d:'Main interface: ping(), serverTime(), exchangeInfo(), klines(), placeOrder()…'},
+      {n:'RestClient',  d:'Main interface: ping(), serverTime(), exchangeInfo(), klines(), placeOrder(), setLeverage()…'},
       {n:'Signer',      d:'HMAC-SHA256 request authentication with API key/secret'},
       {n:'RateLimiter', d:'Token bucket enforcing Binance 1200-weight-per-minute limit'}
     ],
@@ -448,7 +526,7 @@ const MODS = {
 
   ws: {
     id:'ws', label:'WebSocket', sub:'Real-time Streams', layer:'infra',
-    x:545, y:465,
+    x:640, y:485,
     desc:'Manages persistent WebSocket connections to Binance for real-time kline data and user account events via UserDataStream. Auto-reconnects on network interruption. Fires callbacks into the engine when order fills or position changes occur.',
     classes:[
       {n:'WsClient',       d:'WebSocket connection manager: subscribeKline() with auto-reconnect'},
@@ -466,7 +544,7 @@ const MODS = {
 
   context: {
     id:'context', label:'Context', sub:'API Initialisation', layer:'infra',
-    x:820, y:465,
+    x:960, y:485,
     desc:'Global Binance API setup and lifecycle manager. Creates and owns RestClient, WsClient, and UserDataStream instances. Manages the Boost.Asio io_context and SSL context. Acts as the composition root for all network infrastructure and API credentials.',
     classes:[
       {n:'BinanceContext', d:'Config: api_key, secret_key, testnet flag, thread_pool_size. Owns all clients.'}
@@ -483,14 +561,15 @@ const MODS = {
 
   types: {
     id:'types', label:'Types', sub:'Domain Data', layer:'found',
-    x:185, y:595,
-    desc:'Shared domain type definitions used across all modules. Defines Kline, ExchangeSymbol, Position, Balance, Order, Trade, Fill, UserDataEvent, and error handling wrappers. Zero external dependencies — imported by every module.',
+    x:256, y:625,
+    desc:'Shared domain type definitions used across all modules. Defines Kline, ExchangeSymbol, Position, Balance, Order, Trade, Fill, UserDataEvent, BinanceError, and the Result<T> wrapper. Zero external dependencies — imported by every module.',
     classes:[
       {n:'Kline',         d:'OHLCV candle: open, high, low, close, volume, open/close timestamps'},
       {n:'ExchangeSymbol',d:'Symbol metadata: tick size, step size, min notional, status'},
       {n:'Position',      d:'Open position: symbol, quantity, entry price, unrealized PnL'},
       {n:'UserDataEvent', d:'Fill / cancel / liquidation event received from UserDataStream'},
-      {n:'Result<T>',     d:'Explicit error-or-value wrapper for type-safe error propagation'}
+      {n:'Result<T>',     d:'Explicit error-or-value wrapper for type-safe error propagation'},
+      {n:'BinanceError',  d:'Structured error: code + message + endpoint + http status'}
     ],
     patterns:['Value Object','Result Type'],
     features:[
@@ -501,27 +580,44 @@ const MODS = {
     ]
   },
 
+  common: {
+    id:'common', label:'Common', sub:'Compat Shim', layer:'found',
+    x:512, y:625,
+    desc:'Minimal compatibility layer for standard-library features missing on the toolchains we support. Currently exposes expected_compat.h, providing std::expected<T,E> equivalents when the C++23 header is not available.',
+    classes:[
+      {n:'expected_compat', d:'std::expected<T,E> shim — used by Orders/Backtest/Risk for error-or-value APIs'}
+    ],
+    patterns:['Polyfill','Header-only'],
+    features:[
+      'Zero runtime dependencies — header-only',
+      'Switches transparently to std::expected on C++23 toolchains',
+      'Used by Orders, Backtest, Risk, and other Result-style APIs'
+    ]
+  },
+
   transport: {
     id:'transport', label:'Transport', sub:'Session Layer', layer:'found',
-    x:545, y:595,
-    desc:'Low-level HTTP and WebSocket session management. Provides HTTP connection pooling and WebSocket auto-reconnect logic. Parses Binance rate-limit response headers and feeds them to the rate limiter in RestClient.',
+    x:768, y:625,
+    desc:'Low-level HTTP and WebSocket session management. Provides HTTP connection pooling, WebSocket auto-reconnect logic, and optional SOCKS5 proxy support. Parses Binance rate-limit response headers and feeds them to the rate limiter in RestClient.',
     classes:[
       {n:'HttpSession',      d:'Async HTTP/1.1 with keep-alive and connection reuse'},
       {n:'WsSession',        d:'Persistent WebSocket connection with auto-reconnect on close'},
-      {n:'RateLimitHeaders', d:'Parses X-MBX-USED-WEIGHT-* headers from HTTP responses'}
+      {n:'RateLimitHeaders', d:'Parses X-MBX-USED-WEIGHT-* headers from HTTP responses'},
+      {n:'Socks5Proxy',      d:'Optional SOCKS5 tunnelling for HTTP + WebSocket sessions'}
     ],
     patterns:['Session Pool','Auto-reconnect','Decorator'],
     features:[
       'Boost.Asio + Boost.Beast protocol implementation',
       'HTTP connection pooling reduces TLS handshake overhead',
       'Rate limit header extraction feeds back into RateLimiter',
-      'WebSocket heartbeat and ping/pong frame handling'
+      'WebSocket heartbeat and ping/pong frame handling',
+      'Optional SOCKS5 proxy support for both HTTP and WS'
     ]
   },
 
   logger: {
     id:'logger', label:'Logger', sub:'Logging', layer:'found',
-    x:910, y:595,
+    x:1024, y:625,
     desc:'Centralised thread-safe logging utility used by all modules for diagnostics, audit trails, and runtime monitoring. Supports configurable log levels and writes to both stdout and a rotating log file.',
     classes:[
       {n:'Logger', d:'log(level, msg) — thread-safe write to console + log file'}
@@ -539,31 +635,46 @@ const MODS = {
 // ── Edge data ────────────────────────────────────────────────────────────────
 // [src, tgt, label, type]  type: 'dep' | 'cb' (callback/event)
 const EDGES = [
-  ['main','catalog',  'loads plugins',    'dep'],
-  ['main','engine',   'creates & runs',   'dep'],
-  ['main','context',  'initialises',      'dep'],
-  ['main','scanner',  'starts',           'dep'],
-  ['main','orders',   'creates',          'dep'],
-  ['main','account',  'creates',          'dep'],
-  ['catalog','strategy','fills registry', 'dep'],
-  ['engine','scanner', 'IScannerPort',    'dep'],
-  ['engine','strategy','evaluate()',      'dep'],
-  ['engine','orders',  'IOrdersPort',     'dep'],
-  ['engine','account', 'IAccountPort',    'dep'],
-  ['scanner','rest',   'REST warmup',     'dep'],
-  ['scanner','ws',     'subscribe klines','dep'],
-  ['scanner','types',  'Kline',           'dep'],
-  ['orders','rest',    'HTTP calls',      'dep'],
-  ['orders','types',   'OrderDraft',      'dep'],
-  ['account','rest',   'HTTP calls',      'dep'],
-  ['account','types',  'AccountSnapshot', 'dep'],
-  ['engine','types',   'Signal/Position', 'dep'],
-  ['strategy','types', 'Kline/Signal',    'dep'],
-  ['rest','transport', 'HttpSession',     'dep'],
-  ['ws','transport',   'WsSession',       'dep'],
-  ['context','rest',   'owns',            'dep'],
-  ['context','ws',     'owns',            'dep'],
-  ['ws','engine',      'UserDataEvent',   'cb'],
+  ['main','catalog',       'loads plugins',     'dep'],
+  ['main','orchestration', 'wires schedulers',  'dep'],
+  ['main','engine',        'creates & runs',    'dep'],
+  ['main','context',       'initialises',       'dep'],
+  ['main','scanner',       'starts',            'dep'],
+  ['main','orders',        'creates',           'dep'],
+  ['main','account',       'creates',           'dep'],
+  ['main','risk',          'wires RiskController','dep'],
+  ['main','backtest',      'wires gate',        'dep'],
+  ['catalog','strategy',   'fills registry',    'dep'],
+  ['engine','scanner',     'IScannerPort',      'dep'],
+  ['engine','strategy',    'evaluate()',        'dep'],
+  ['engine','orders',      'IOrdersPort',       'dep'],
+  ['engine','account',     'IAccountPort',      'dep'],
+  ['engine','risk',        'IRiskPort',         'dep'],
+  ['engine','backtest',    'IBacktestGatePort', 'dep'],
+  ['engine','orchestration','IExecutionStatePort','dep'],
+  ['scanner','rest',       'REST warmup',       'dep'],
+  ['scanner','ws',         'subscribe klines',  'dep'],
+  ['scanner','types',      'Kline',             'dep'],
+  ['orders','rest',        'HTTP calls',        'dep'],
+  ['orders','types',       'OrderDraft',        'dep'],
+  ['orders','common',      'expected<T,E>',     'dep'],
+  ['account','rest',       'HTTP calls',        'dep'],
+  ['account','types',      'AccountSnapshot',   'dep'],
+  ['backtest','strategy',  'StrategyConfig',    'dep'],
+  ['backtest','rest',      'history backfill',  'dep'],
+  ['backtest','types',     'Kline/Result',      'dep'],
+  ['backtest','common',    'expected<T,E>',     'dep'],
+  ['risk','account',       'AccountSnapshot',   'dep'],
+  ['risk','types',         'Result/error',      'dep'],
+  ['risk','common',        'expected<T,E>',     'dep'],
+  ['orchestration','strategy','Signal types',   'dep'],
+  ['engine','types',       'Signal/Position',   'dep'],
+  ['strategy','types',     'Kline/Signal',      'dep'],
+  ['rest','transport',     'HttpSession',       'dep'],
+  ['ws','transport',       'WsSession',         'dep'],
+  ['context','rest',       'owns',              'dep'],
+  ['context','ws',         'owns',              'dep'],
+  ['ws','engine',          'UserDataEvent',     'cb'],
 ];
 
 const LAYER_META = {
@@ -764,17 +875,17 @@ function renderDetail(m) {
 function renderBands() {
   const svg = document.getElementById('edge-svg');
   const bands = [
-    {y1:18,  y2:112, color:'#3fb950', label:'Entry'},
-    {y1:148, y2:247, color:'#58a6ff', label:'Orchestration'},
-    {y1:283, y2:392, color:'#ffa657', label:'Business Logic'},
-    {y1:416, y2:517, color:'#d2a8ff', label:'Infrastructure'},
-    {y1:546, y2:645, color:'#79c0ff', label:'Foundation'},
+    {y1:20,  y2:120, color:'#3fb950', label:'Entry'},
+    {y1:150, y2:250, color:'#58a6ff', label:'Orchestration'},
+    {y1:295, y2:395, color:'#ffa657', label:'Business Logic'},
+    {y1:435, y2:535, color:'#d2a8ff', label:'Infrastructure'},
+    {y1:575, y2:675, color:'#79c0ff', label:'Foundation'},
   ];
   bands.forEach(b => {
     const rect = mkSVG('rect');
     rect.setAttribute('x','0');
     rect.setAttribute('y', b.y1);
-    rect.setAttribute('width','1150');
+    rect.setAttribute('width','1280');
     rect.setAttribute('height', b.y2 - b.y1);
     rect.setAttribute('fill', b.color);
     rect.setAttribute('opacity','0.03');

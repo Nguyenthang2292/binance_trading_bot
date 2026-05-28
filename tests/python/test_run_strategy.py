@@ -170,3 +170,172 @@ def test_promotion_profile_is_recorded(temp_db):
     columns = {item[1] for item in db.execute("PRAGMA table_info(qlib_adapter_runtime_state)").fetchall()}
     assert "promotion_profile" in columns
     assert "last_decision_at_ms" in columns
+
+
+def test_topk_dropout_handles_large_previous_positions_edge_case(temp_db):
+    db_path, db = temp_db
+    run_strategy.configure_connection(db)
+    run_strategy.create_tables_if_needed(db)
+
+    db.execute(
+        """
+        INSERT INTO qlib_strategy_runs
+        (run_id, strategy_id, qlib_class, config_hash, model_id, model_run_id,
+         interval, universe_hash, started_at_ms, completed_at_ms, status, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'succeeded', NULL)
+        """,
+        (
+            "prev_run",
+            "strat_edge",
+            "qlib.contrib.strategy.TopkDropoutStrategy",
+            "h",
+            "model_1",
+            "",
+            "1h",
+            "abc",
+            1000,
+            2000,
+        ),
+    )
+    for symbol in ("OLD1", "OLD2", "OLD3", "OLD4", "OLD5"):
+        db.execute(
+            """
+            INSERT INTO qlib_strategy_targets
+            (strategy_id, run_id, symbol, interval, target_weight, generated_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("strat_edge", "prev_run", symbol, "1h", 0.2, 2000),
+        )
+    db.commit()
+
+    insert_prediction_batch(
+        db,
+        5000,
+        [
+            ("NEW1", 100.0, 100.0),
+            ("NEW2", 90.0, 90.0),
+            ("OLD1", 80.0, 80.0),
+            ("OLD2", 70.0, 70.0),
+            ("OLD3", 60.0, 60.0),
+            ("OLD4", 50.0, 50.0),
+            ("OLD5", 40.0, 40.0),
+        ],
+    )
+    run_adapter(db_path, "TopkDropoutStrategy", '{"topk": 2, "n_drop": 1}', strategy_id="strat_edge")
+
+    latest_run = db.execute(
+        "SELECT run_id FROM qlib_strategy_runs WHERE strategy_id = 'strat_edge' ORDER BY completed_at_ms DESC LIMIT 1"
+    ).fetchone()[0]
+    latest = {row[0] for row in db.execute("SELECT symbol FROM qlib_strategy_targets WHERE run_id = ?", (latest_run,))}
+    assert latest == {"NEW1", "OLD1"}
+
+
+def test_soft_topk_first_fill_normalizes_weight_sum(temp_db):
+    db_path, db = temp_db
+    run_strategy.configure_connection(db)
+    run_strategy.create_tables_if_needed(db)
+
+    db.execute(
+        """
+        INSERT INTO qlib_strategy_runs
+        (run_id, strategy_id, qlib_class, config_hash, model_id, model_run_id,
+         interval, universe_hash, started_at_ms, completed_at_ms, status, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'succeeded', NULL)
+        """,
+        (
+            "prev_soft",
+            "strat_soft_edge",
+            "qlib.contrib.strategy.SoftTopkStrategy",
+            "h",
+            "model_1",
+            "",
+            "1h",
+            "abc",
+            1000,
+            2000,
+        ),
+    )
+    # Intentionally non-normalized legacy state to verify hardening.
+    for symbol, weight in (("OLD1", 0.3), ("OLD2", 0.2), ("OLD3", 0.1)):
+        db.execute(
+            """
+            INSERT INTO qlib_strategy_targets
+            (strategy_id, run_id, symbol, interval, target_weight, generated_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("strat_soft_edge", "prev_soft", symbol, "1h", weight, 2000),
+        )
+    db.commit()
+
+    insert_prediction_batch(
+        db,
+        6000,
+        [
+            ("NEW1", 100.0, 100.0),
+            ("OLD1", 90.0, 90.0),
+            ("OLD2", 80.0, 80.0),
+            ("OLD3", 70.0, 70.0),
+        ],
+    )
+    run_adapter(db_path, "SoftTopkStrategy", '{"topk": 2, "buy_method": "first_fill", "trade_impact_limit": 0.2}', strategy_id="strat_soft_edge")
+
+    latest_run = db.execute(
+        "SELECT run_id FROM qlib_strategy_runs WHERE strategy_id = 'strat_soft_edge' ORDER BY completed_at_ms DESC LIMIT 1"
+    ).fetchone()[0]
+    weights = dict(
+        db.execute(
+            "SELECT symbol, target_weight FROM qlib_strategy_targets WHERE run_id = ?",
+            (latest_run,),
+        ).fetchall()
+    )
+    assert sum(weights.values()) == pytest.approx(1.0)
+    assert "NEW1" in weights
+
+
+def test_file_order_strategy_validates_order_shape(temp_db):
+    db_path, db = temp_db
+    args = argparse.Namespace(
+        qlib_class="FileOrderStrategy",
+        config_json='{"orders":[{"symbol":"BTCUSDT","target_weight":0.5}]}',
+        db_path=db_path,
+        strategy_id="file_order_bad",
+        model_id="model_1",
+        interval="1h",
+        universe_hash="abc",
+    )
+    assert run_strategy.main(args) == 1
+    row = db.execute(
+        "SELECT status, error FROM qlib_strategy_runs WHERE strategy_id = 'file_order_bad' ORDER BY started_at_ms DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "failed"
+    assert "asof_open_time_ms" in row[1]
+
+
+def test_file_order_strategy_sorts_none_score_last(temp_db):
+    db_path, db = temp_db
+    args = argparse.Namespace(
+        qlib_class="FileOrderStrategy",
+        config_json=(
+            '{"orders":['
+            '{"symbol":"AAA","asof_open_time_ms":1000,"target_weight":0.4,"score":null,"confidence":0.2},'
+            '{"symbol":"BBB","asof_open_time_ms":1000,"target_weight":0.6,"score":0.0,"confidence":0.9}'
+            "]}"),
+        db_path=db_path,
+        strategy_id="file_order_sort",
+        model_id="model_1",
+        interval="1h",
+        universe_hash="abc",
+    )
+    assert run_strategy.main(args) == 0
+    latest_run = db.execute(
+        "SELECT run_id FROM qlib_strategy_runs WHERE strategy_id = 'file_order_sort' ORDER BY started_at_ms DESC LIMIT 1"
+    ).fetchone()[0]
+    symbols = [
+        row[0]
+        for row in db.execute(
+            "SELECT symbol FROM qlib_strategy_decisions WHERE run_id = ? ORDER BY rowid ASC",
+            (latest_run,),
+        ).fetchall()
+    ]
+    assert symbols == ["BBB", "AAA"]

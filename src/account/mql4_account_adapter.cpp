@@ -1,28 +1,48 @@
 #include "account/mql4_account_adapter.h"
+#include "account/internal/string_utils.h"
 
 #include <boost/config.hpp>
 
-#include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <utility>
+
+/**
+ * @file mql4_account_adapter.cpp
+ * @brief Adapter implementation that maps AccountSnapshot data to MQL4-style
+ *        account queries and properties.
+ */
 
 namespace account::mql4 {
 
 namespace {
+/**
+ * @brief Small epsilon used when comparing margin values to zero.
+ *
+ * This avoids divide-by-near-zero instability when computing margin
+ * percentages.
+ */
 constexpr double kMinMarginEpsilon = 1e-8;
 
-std::string toUpper(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::toupper(ch));
-    });
-    return value;
-}
-
+/**
+ * @brief Determine whether the snapshot indicates multi-assets margin mode.
+ *
+ * @param snapshot The account snapshot to inspect.
+ * @return true if multi-assets margin is enabled; false otherwise.
+ */
 bool isMultiAssetsMarginEnabled(const AccountSnapshot& snapshot) {
     return snapshot.multiAssetsMargin.has_value() && *snapshot.multiAssetsMargin;
 }
 
+/**
+ * @brief Ensure the provided snapshot is using single-asset margin mode.
+ *
+ * Some MQL4 mappings assume a single account asset; when the platform uses
+ * multi-assets margin this adapter cannot provide a meaningful mapping.
+ *
+ * @param snapshot The account snapshot to validate.
+ * @return Empty success result on single-asset mode, or an unexpected
+ *         AccountMappingError::Unsupported when multi-assets margin is set.
+ */
 AccountMappingResult<void> requireSingleAssetMode(const AccountSnapshot& snapshot) {
     if (isMultiAssetsMarginEnabled(snapshot)) {
         return std::unexpected(AccountMappingError::Unsupported);
@@ -30,7 +50,21 @@ AccountMappingResult<void> requireSingleAssetMode(const AccountSnapshot& snapsho
     return {};
 }
 
-AccountMappingResult<const Balance*> displayAssetBalance(const AccountSnapshot& snapshot) {
+/**
+ * @brief Locate the Balance entry corresponding to the configured display
+ *        asset inside the provided snapshot.
+ *
+ * This function prefers explicit per-snapshot balances when present and
+ * otherwise searches the account-level asset list. Returned pointers are
+ * borrowed from snapshot-owned storage; callers MUST NOT outlive the
+ * snapshot.
+ *
+ * @param snapshot The account snapshot to search.
+ * @return Pointer to the requested Balance on success or an unexpected
+ *         AccountMappingError when configuration is missing or snapshot is
+ *         incomplete.
+ */
+[[nodiscard]] AccountMappingResult<const Balance*> displayAssetBalance(const AccountSnapshot& snapshot) {
     if (auto mode = requireSingleAssetMode(snapshot); !mode) {
         return std::unexpected(mode.error());
     }
@@ -39,17 +73,19 @@ AccountMappingResult<const Balance*> displayAssetBalance(const AccountSnapshot& 
         return std::unexpected(AccountMappingError::NotConfigured);
     }
 
-    const auto wantedAsset = toUpper(snapshot.compatibility.displayAsset);
+    const auto wantedAsset = internal::toUpper(snapshot.compatibility.displayAsset);
     if (snapshot.balances) {
         for (const auto& balance : *snapshot.balances) {
-            if (toUpper(balance.asset) == wantedAsset) {
+            if (internal::toUpper(balance.asset) == wantedAsset) {
+                // Borrowed pointer into snapshot-owned storage.
                 return &balance;
             }
         }
     }
 
     for (const auto& balance : snapshot.account.assets) {
-        if (toUpper(balance.asset) == wantedAsset) {
+        if (internal::toUpper(balance.asset) == wantedAsset) {
+            // Borrowed pointer into snapshot-owned storage.
             return &balance;
         }
     }
@@ -57,23 +93,15 @@ AccountMappingResult<const Balance*> displayAssetBalance(const AccountSnapshot& 
     return std::unexpected(AccountMappingError::SnapshotIncomplete);
 }
 
-const std::vector<Position>& positionsForMapping(const AccountSnapshot& snapshot) {
-    if (snapshot.positions) {
-        return *snapshot.positions;
-    }
-    return snapshot.account.positions;
-}
-
-double positionsInitialMargin(const std::vector<Position>& positions) {
-    double total = 0.0;
-    for (const auto& position : positions) {
-        total += position.initialMargin;
-    }
-    return total;
-}
-
+/**
+ * @brief Case-insensitive comparison for trading symbols.
+ *
+ * @param left Left-hand symbol string.
+ * @param right Right-hand symbol string.
+ * @return true when symbols match ignoring ASCII case; false otherwise.
+ */
 bool matchesSymbolInsensitive(const std::string& left, const std::string& right) {
-    return toUpper(left) == toUpper(right);
+    return internal::toUpper(left) == internal::toUpper(right);
 }
 
 } // namespace
@@ -123,6 +151,7 @@ AccountMappingResult<int64_t> Mql4AccountAdapter::accountInfoInteger(AccountInte
         case AccountIntegerProperty::TradeMode:
             return static_cast<int64_t>(m_snapshot.compatibility.tradeMode);
         case AccountIntegerProperty::Leverage:
+            // Symbol-scoped on Binance Futures; caller must use accountLeverage(symbol).
             return std::unexpected(AccountMappingError::AmbiguousSymbol);
         case AccountIntegerProperty::LimitOrders:
             return std::unexpected(AccountMappingError::Unsupported);
@@ -197,8 +226,7 @@ AccountMappingResult<double> Mql4AccountAdapter::accountFreeMargin() const {
         return std::unexpected(balance.error());
     }
 
-    // MQL4 FreeMargin maps to Equity - Margin (positions only).
-    // Binance availableBalance subtracts open-order initial margin, so avoid using it here.
+    // Keep source aligned with accountMargin() so Equity - Margin equals FreeMargin.
     return (*balance)->marginBalance - (*balance)->initialMargin;
 }
 
@@ -207,7 +235,7 @@ AccountMappingResult<int64_t> Mql4AccountAdapter::accountLeverage(std::string sy
         return std::unexpected(AccountMappingError::AmbiguousSymbol);
     }
 
-    const auto requested = toUpper(std::move(symbol));
+    const auto requested = internal::toUpper(std::move(symbol));
 
     if (m_snapshot.positions) {
         for (const auto& position : *m_snapshot.positions) {
@@ -234,10 +262,6 @@ AccountMappingResult<double> Mql4AccountAdapter::accountMargin() const {
         return std::unexpected(balance.error());
     }
 
-    const auto& positions = positionsForMapping(m_snapshot);
-    if (!positions.empty()) {
-        return positionsInitialMargin(positions);
-    }
     return (*balance)->initialMargin;
 }
 
@@ -268,6 +292,10 @@ AccountMappingResult<std::string> Mql4AccountAdapter::accountServer() const {
         return std::unexpected(AccountMappingError::NotConfigured);
     }
     return m_snapshot.compatibility.serverName;
+}
+
+std::chrono::system_clock::time_point Mql4AccountAdapter::capturedAt() const {
+    return m_snapshot.capturedAt;
 }
 
 } // namespace account::mql4

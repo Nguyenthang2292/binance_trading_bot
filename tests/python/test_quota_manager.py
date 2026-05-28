@@ -40,6 +40,22 @@ def test_rpm_exhaustion_rejects_second_request(tmp_path: Path) -> None:
     assert second.reason in {"rpm exhausted", "model cooldown"}
 
 
+def test_safety_factor_applies_floor_for_effective_limits(tmp_path: Path) -> None:
+    config = QuotaConfig(
+        enabled=True,
+        safety_factor=0.7,
+        cooldown_seconds_on_429=10,
+        default_rpm=8,
+        default_rpd=100,
+        model_limits={},
+    )
+    manager = QuotaManager(tmp_path, config, metrics_store=MetricsStore(tmp_path))
+    outcomes = [manager.reserve("model-a") for _ in range(6)]
+    assert all(result.ok for result in outcomes[:5])
+    assert not outcomes[5].ok
+    assert outcomes[5].reason == "rpm exhausted"
+
+
 def test_rpd_exhaustion_rejects_after_limit(tmp_path: Path) -> None:
     config = QuotaConfig(
         enabled=True,

@@ -1,3 +1,8 @@
+/**
+ * @file parameter_space.cpp
+ * @brief Parameter grid generation and combo-budget clamping logic.
+ */
+
 #include "backtest/parameter_space.h"
 #include <cmath>
 #include <algorithm>
@@ -8,6 +13,13 @@ namespace backtest {
 
 namespace {
 
+/**
+ * @brief Clamp a raw step count to a finite positive integer.
+ *
+ * @param rawSteps The raw number of candidate values.
+ * @param cap Upper bound applied before converting to an integer.
+ * @return A clamped step count, or 0 if the input is not usable.
+ */
 int clampStepCount(long double rawSteps, int cap = std::numeric_limits<int>::max()) {
     if (!std::isfinite(rawSteps) || rawSteps <= 0.0L) {
         return 0;
@@ -16,6 +28,16 @@ int clampStepCount(long double rawSteps, int cap = std::numeric_limits<int>::max
     return std::max(1, static_cast<int>(std::floor(capped + 1e-12L)));
 }
 
+/**
+ * @brief Count the number of discrete values in a range.
+ *
+ * Integer ranges are normalized to whole-number boundaries before counting.
+ * Floating-point ranges use the configured step size directly.
+ *
+ * @param range Parameter range to inspect.
+ * @param cap Upper bound applied to the result.
+ * @return Number of discrete values reachable from the range.
+ */
 int discreteStepCount(const ParamRange& range, int cap = std::numeric_limits<int>::max()) {
     if (range.step <= 0.0 || range.max < range.min) {
         return 0;
@@ -37,6 +59,13 @@ int discreteStepCount(const ParamRange& range, int cap = std::numeric_limits<int
     return clampStepCount(rawSteps, cap);
 }
 
+/**
+ * @brief Materialize the value at a specific step index.
+ *
+ * @param range Parameter range to sample.
+ * @param index Zero-based step index.
+ * @return The parameter value represented by the requested step.
+ */
 double valueForStep(const ParamRange& range, int index) {
     if (range.isInteger) {
         const long double start = std::ceil(static_cast<long double>(range.min) - 1e-9L);
@@ -54,6 +83,18 @@ double valueForStep(const ParamRange& range, int index) {
     return value;
 }
 
+/**
+ * @brief Recursively build the full parameter grid.
+ *
+ * The recursion assigns one parameter at a time and only keeps points that
+ * satisfy all constraints once every range has been assigned.
+ *
+ * @param ranges Parameter ranges to expand.
+ * @param constraints Constraint list that must hold for each point.
+ * @param currentIndex Index of the range currently being expanded.
+ * @param currentPoint Partially built parameter point.
+ * @param result Output collection for valid parameter combinations.
+ */
 void buildGridRecursive(
     const std::vector<ParamRange>& ranges,
     const std::vector<ParamConstraint>& constraints,
@@ -84,6 +125,16 @@ void buildGridRecursive(
     }
 }
 
+/**
+ * @brief Count valid grid combinations while respecting a hard cap.
+ *
+ * @param ranges Parameter ranges to count.
+ * @param constraints Constraint list applied to each candidate point.
+ * @param currentIndex Index of the range currently being expanded.
+ * @param currentPoint Partially built parameter point.
+ * @param cap Maximum number of combinations to count.
+ * @return Number of valid combinations, capped at @p cap.
+ */
 int countGridRecursiveCapped(
     const std::vector<ParamRange>& ranges,
     const std::vector<ParamConstraint>& constraints,
@@ -92,6 +143,13 @@ int countGridRecursiveCapped(
     int cap) {
 
     if (cap <= 0) {
+/**
+ * @brief Expand a set of parameter ranges into the full valid grid.
+ *
+ * @param ranges Parameter ranges to expand.
+ * @param constraints Constraint list that filters the generated points.
+ * @return All parameter points that satisfy the supplied constraints.
+ */
         return 0;
     }
 
@@ -136,6 +194,16 @@ std::vector<ParamPoint> ParameterSpace::grid(
     return result;
 }
 
+/**
+ * @brief Check whether a parameter point satisfies all constraints.
+ *
+ * Constraints are skipped until both referenced parameters are available in
+ * the point, which lets the recursive grid builder evaluate them incrementally.
+ *
+ * @param point Candidate parameter point.
+ * @param constraints Constraint list to evaluate.
+ * @return true when all fully-specified constraints pass.
+ */
 bool ParameterSpace::evaluateConstraints(
     const ParamPoint& point,
     const std::vector<ParamConstraint>& constraints) {
@@ -162,18 +230,18 @@ bool ParameterSpace::evaluateConstraints(
     return true;
 }
 
-int ParameterSpace::calculateTotalCombos(
-    const std::vector<ParamRange>& ranges,
-    const std::vector<ParamConstraint>& constraints) {
-    ParamPoint currentPoint;
-    return countGridRecursiveCapped(
-        ranges,
-        constraints,
-        0,
-        currentPoint,
-        std::numeric_limits<int>::max());
-}
-
+/**
+ * @brief Reduce the parameter grid until it fits a combination budget.
+ *
+ * The function widens the step size of the densest range until the estimated
+ * number of combinations is within the requested budget or no further reduction
+ * is possible.
+ *
+ * @param ranges Parameter ranges that may be modified in place.
+ * @param constraints Constraint list applied during counting.
+ * @param maxTotalCombos Maximum number of combinations allowed.
+ * @return true if the ranges fit within the requested budget after clamping.
+ */
 bool ParameterSpace::clampToBudget(
     std::vector<ParamRange>& ranges,
     const std::vector<ParamConstraint>& constraints,

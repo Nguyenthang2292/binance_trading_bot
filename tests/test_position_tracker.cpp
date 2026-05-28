@@ -33,6 +33,7 @@ TEST(PositionTrackerTest, LoadFromSnapshotKeepsNonZeroPositions) {
     a.symbol = "BTCUSDT";
     a.positionAmt = 0.01;
     a.entryPrice = 100.0;
+    a.leverage = 25;
     Position b;
     b.symbol = "ETHUSDT";
     b.positionAmt = 0.0;
@@ -43,6 +44,7 @@ TEST(PositionTrackerTest, LoadFromSnapshotKeepsNonZeroPositions) {
     const auto loaded = tracker.bySymbol("BTCUSDT");
     ASSERT_TRUE(loaded.has_value());
     EXPECT_TRUE(loaded->recoveredFromSnapshot);
+    EXPECT_EQ(loaded->activeLeverage, 25);
 }
 
 TEST(PositionTrackerTest, ReserveCommitAndPartialFillBehavior) {
@@ -95,6 +97,13 @@ TEST(PositionTrackerTest, UpdatesTakeProfitAndPositionView) {
     ASSERT_TRUE(updated.has_value());
     EXPECT_DOUBLE_EQ(updated->entryPrice, 101.5);
     EXPECT_DOUBLE_EQ(updated->quantity, 0.75);
+
+    EXPECT_TRUE(tracker.refreshFromSnapshot("BTCUSDT", 102.0, 0.5, 12));
+    updated = tracker.bySymbol("BTCUSDT");
+    ASSERT_TRUE(updated.has_value());
+    EXPECT_DOUBLE_EQ(updated->entryPrice, 102.0);
+    EXPECT_DOUBLE_EQ(updated->quantity, 0.5);
+    EXPECT_EQ(updated->activeLeverage, 12);
 
     EXPECT_TRUE(tracker.clearTakeProfit("BTCUSDT"));
     updated = tracker.bySymbol("BTCUSDT");

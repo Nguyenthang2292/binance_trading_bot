@@ -1,3 +1,8 @@
+/**
+ * @file backtest_engine.h
+ * @brief Deterministic in-memory fold backtester used by the backtest gate.
+ */
+
 #pragma once
 
 #include "backtest/optimizable_strategy.h"
@@ -12,13 +17,16 @@
 
 namespace backtest {
 
+/**
+ * @brief Summary statistics produced from one fold simulation.
+ */
 struct BacktestStats {
-    int    numTrades{0};
-    double sortino{0.0};        // non-annualized
-    double sharpe{0.0};         // non-annualized
-    double profitFactor{0.0};
-    double maxDrawdown{0.0};
-    double winRate{0.0};
+    int    numTrades{0};   ///< Number of completed trades.
+    double sortino{0.0};   ///< Non-annualized sortino ratio.
+    double sharpe{0.0};    ///< Non-annualized sharpe ratio.
+    double profitFactor{0.0};   ///< Gross profit / gross loss.
+    double maxDrawdown{0.0};    ///< Maximum equity drawdown over fold.
+    double winRate{0.0};        ///< Fraction of profitable trades.
 };
 
 // In-memory backtest mirroring the live execution semantics that matter for
@@ -30,15 +38,24 @@ struct BacktestStats {
 // No RNG. Identical inputs MUST produce identical outputs.
 class BacktestEngine {
 public:
+    /**
+     * @brief Runtime assumptions for fill and fee modeling.
+     */
     struct Config {
-        double takerFeeRate{0.0004};
-        double slippageBps{0.0};
-        bool   useFixedTakeProfit{false};   // when true, ignore tp_multiplier; use fixedTakeProfitPercent
-        double fixedTakeProfitPercent{0.0};
+        double takerFeeRate{0.0004};   ///< Per-side taker fee rate.
+        double slippageBps{0.0};       ///< Entry/exit slippage in basis points.
+        bool   useFixedTakeProfit{false};   ///< If true, ignore tp_multiplier in params.
+        double fixedTakeProfitPercent{0.0}; ///< Fixed TP percentage when override is enabled.
     };
 
     explicit BacktestEngine(Config cfg) : m_cfg(std::move(cfg)) {}
 
+    /**
+     * @brief Simulates one walk-forward fold for a single parameter point.
+     *
+     * Entry uses next-bar open after a valid signal, exits honor SL/TP/time,
+     * and results are fully deterministic for identical inputs.
+     */
     BacktestStats runFold(
         const IOptimizableStrategy& adapter,
         std::string_view symbol,

@@ -1,3 +1,8 @@
+/**
+ * @file indicator_adapters.cpp
+ * @brief Plugin-parity indicator adapter implementations for backtest sweeps.
+ */
+
 // Indicator adapters — these reimplement the parameterized signal formulas of
 // the corresponding plugins so the BacktestGate can sweep params without
 // changing the plugin ABI.
@@ -95,9 +100,7 @@ std::string fmtPrice(double v) {
 }
 
 std::string fmtPercent(double v) {
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(2) << v;
-    return oss.str();
+    return fmtPrice(v) + "%";
 }
 
 std::string formatValue(double value) {
@@ -219,7 +222,7 @@ strategy::Signal GoldenCrossoverAdapter::evaluateWith(
                           + "=" + fmtPrice(smaShort)
                           + " MA" + std::to_string(maLong)
                           + "=" + fmtPrice(smaLong)
-                          + " spread=" + fmtPercent(spread * 100.0) + "%",
+                          + " spread=" + fmtPercent(spread * 100.0),
         };
     }
     if (smaShort < smaLong) {
@@ -231,7 +234,7 @@ strategy::Signal GoldenCrossoverAdapter::evaluateWith(
                           + "=" + fmtPrice(smaShort)
                           + " MA" + std::to_string(maLong)
                           + "=" + fmtPrice(smaLong)
-                          + " spread=" + fmtPercent(spread * 100.0) + "%",
+                          + " spread=" + fmtPercent(spread * 100.0),
         };
     }
     return {};

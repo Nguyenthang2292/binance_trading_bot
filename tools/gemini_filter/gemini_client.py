@@ -23,6 +23,11 @@ SCORE_SCHEMA: dict[str, Any] = {
     "required": ["score", "analysis"],
 }
 
+_JSON_ONLY_INSTRUCTION = (
+    'Return strict JSON only with keys "score" and "analysis". '
+    "Do not include markdown fences or additional text."
+)
+
 
 def _extract_text(response: Any) -> str:
     text = getattr(response, "text", None)
@@ -35,7 +40,10 @@ def parse_score_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if "score" not in payload or "analysis" not in payload:
         raise RuntimeError("Missing score or analysis fields")
 
-    score = float(payload["score"])
+    try:
+        score = float(payload["score"])
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Score must be numeric") from exc
     if not math.isfinite(score) or score < 0.0 or score > 1.0:
         raise RuntimeError("Score must be finite and in [0,1]")
 
@@ -61,6 +69,10 @@ def generate_json_score(
     contents: Any,
     use_google_search: bool,
 ) -> dict[str, Any]:
+    request_contents = contents
+    if use_google_search and isinstance(contents, str):
+        request_contents = f"{contents.rstrip()}\n\n{_JSON_ONLY_INSTRUCTION}"
+
     if use_google_search:
         # Google Search grounding is incompatible with JSON schema output mode.
         # Request plain text with grounding; the model is still prompted to return JSON.
@@ -74,7 +86,7 @@ def generate_json_score(
         )
     response = client.models.generate_content(
         model=model,
-        contents=contents,
+        contents=request_contents,
         config=config,
     )
     return parse_score_text(_extract_text(response))

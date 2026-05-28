@@ -1,3 +1,8 @@
+/**
+ * @file gemini_range_proposer.cpp
+ * @brief Python subprocess-backed implementation for parameter range proposal.
+ */
+
 #include "backtest/gemini_range_proposer.h"
 #include "logger.h"
 #include "strategy/indicators/atr.h"
@@ -64,17 +69,46 @@ std::string makeEvalId() {
     return out.str();
 }
 
+/**
+ * @brief Generate a random evaluation identifier string.
+ *
+ * The identifier is formatted similarly to a UUID (hex with dashes)
+ * and is used to create per-evaluation runtime directories.
+ *
+ * @return A hexadecimal string serving as a unique eval id.
+ */
+
 std::string fmt6(double v) {
     std::ostringstream o;
     o << std::fixed << std::setprecision(6) << v;
     return o.str();
 }
 
+/**
+ * @brief Format a double with fixed six decimal places.
+ *
+ * Used when serializing numeric values into cache keys and logs
+ * where consistent decimal width improves comparability.
+ *
+ * @param v The value to format.
+ * @return The formatted string.
+ */
+
 std::string quoteStr(std::string_view v) {
     std::ostringstream o;
     o << std::quoted(std::string(v));
     return o.str();
 }
+
+/**
+ * @brief Quote a string for safe logging or command construction.
+ *
+ * Converts a string_view to a quoted std::string using
+ * std::quoted for consistent escaping behavior.
+ *
+ * @param v The input string view.
+ * @return A quoted std::string.
+ */
 
 void appendSortedCurrentValues(
     std::ostringstream& key,
@@ -89,6 +123,16 @@ void appendSortedCurrentValues(
     }
 }
 
+/**
+ * @brief Append the sorted `currentValues` map into a key stream.
+ *
+ * The map is sorted by key name to ensure deterministic key
+ * generation for caching. Each entry is formatted as `|cv:name=val`.
+ *
+ * @param key Output stream to which formatted entries are appended.
+ * @param currentValues Map of current parameter values.
+ */
+
 void logSubprocess(std::string_view diag, LogLevel level = LogLevel::Subprocess) {
     std::istringstream lines{std::string(diag)};
     std::string line;
@@ -99,6 +143,16 @@ void logSubprocess(std::string_view diag, LogLevel level = LogLevel::Subprocess)
     }
 }
 
+/**
+ * @brief Log subprocess output line-by-line.
+ *
+ * Splits multi-line diagnostics and forwards each non-empty line
+ * to the global Logger instance with the provided log level.
+ *
+ * @param diag Multi-line diagnostic text.
+ * @param level The log level to use when emitting lines.
+ */
+
 IRangeProposer::Failure failure(
     IRangeProposer::FailureReason reason,
     std::string message) {
@@ -107,6 +161,14 @@ IRangeProposer::Failure failure(
         .message = std::move(message),
     };
 }
+
+/**
+ * @brief Convenience helper to build a Failure result.
+ *
+ * @param reason The categorized failure reason.
+ * @param message A human-readable message describing the failure.
+ * @return An IRangeProposer::Failure instance.
+ */
 
 IRangeProposer::FailureReason failureReasonFromPythonError(std::string_view code) {
     if (code == "invalid_input" || code == "invalid_response") {
@@ -118,6 +180,17 @@ IRangeProposer::FailureReason failureReasonFromPythonError(std::string_view code
     return IRangeProposer::FailureReason::Unavailable;
 }
 
+/**
+ * @brief Map a Python-side error code to a FailureReason enum.
+ *
+ * Recognizes a small set of string error codes produced by the
+ * Python proposer module and maps them to internal failure kinds.
+ * Unknown codes map to `Unavailable`.
+ *
+ * @param code Error code string from Python output.
+ * @return Mapped FailureReason.
+ */
+
 #ifdef _WIN32
 std::string quoteWinArg(std::string_view v) {
     bool needs = v.empty();
@@ -127,6 +200,16 @@ std::string quoteWinArg(std::string_view v) {
     for (char c : v) { if (c == '"') out += "\\\""; else out.push_back(c); }
     out.push_back('"'); return out;
 }
+
+/**
+ * @brief Quote a Windows command-line argument when necessary.
+ *
+ * Adds surrounding quotes and escapes internal quotes when the
+ * argument contains whitespace or quote characters.
+ *
+ * @param v Input argument string view.
+ * @return Properly quoted string for CreateProcess usage.
+ */
 
 void readAvailable(HANDLE h, std::string& out) {
     for (;;) {
@@ -138,11 +221,27 @@ void readAvailable(HANDLE h, std::string& out) {
         out.append(buf, buf + got);
     }
 }
+
+/**
+ * @brief Read all currently-available data from a Windows pipe handle.
+ *
+ * Appends any available bytes to `out` without blocking.
+ *
+ * @param h The pipe HANDLE to read from.
+ * @param out String buffer to append read bytes into.
+ */
 #else
 bool setNB(int fd) {
     int f = fcntl(fd, F_GETFL, 0);
     return f >= 0 && fcntl(fd, F_SETFL, f | O_NONBLOCK) == 0;
 }
+/**
+ * @brief Set a POSIX file descriptor to non-blocking mode.
+ *
+ * @param fd File descriptor to modify.
+ * @return True on success, false otherwise.
+ */
+void drainFd(int fd, std::string& out, bool& open) {
 void drainFd(int fd, std::string& out, bool& open) {
     std::array<char, 4096> buf{};
     while (open) {
@@ -153,6 +252,18 @@ void drainFd(int fd, std::string& out, bool& open) {
         return;
     }
 }
+
+/**
+ * @brief Drain a non-blocking file descriptor into a string buffer.
+ *
+ * Reads repeatedly until the descriptor would block or is closed,
+ * appending data to `out`. If the descriptor reaches EOF it will be
+ * closed and `open` set to false.
+ *
+ * @param fd File descriptor to read from.
+ * @param out Output buffer to append read bytes.
+ * @param open In/out flag indicating whether the descriptor is still open.
+ */
 #endif
 
 }  // namespace
@@ -212,10 +323,29 @@ PromptContextAggregates computePromptAggregates(const std::vector<Kline>& ctx) {
     return agg;
 }
 
+/**
+ * @brief Compute lightweight aggregates from a Kline prompt context.
+ *
+ * This function extracts features used by the Gemini proposer such as
+ * ATR percentage, 30-day return, average volume (USD proxy), trend
+ * direction (up/down/flat), and realized volatility over the window.
+ * It is intentionally conservative and only uses the provided `ctx`.
+ *
+ * @param ctx Time-ordered vector of Kline objects (oldest first).
+ * @return A PromptContextAggregates structure populated with metrics.
+ */
+
 // ── GeminiRangeProposer ────────────────────────────────────────────────────
 
 GeminiRangeProposer::GeminiRangeProposer(BacktestGateGeminiConfig cfg, BacktestGateCacheConfig cacheCfg)
     : m_cfg(std::move(cfg)), m_cacheCfg(std::move(cacheCfg)) {}
+
+/**
+ * @brief Construct a GeminiRangeProposer instance.
+ *
+ * @param cfg Configuration controlling the Gemini/Python subprocess and timeouts.
+ * @param cacheCfg Caching policy for previously-computed proposals.
+ */
 
 // ── Cache helpers ──────────────────────────────────────────────────────────
 
@@ -240,6 +370,18 @@ std::string GeminiRangeProposer::buildCacheKey(
     return k.str();
 }
 
+/**
+ * @brief Build a deterministic cache key for a range proposal request.
+ *
+ * The key encodes symbol, strategy id, interval, prompt aggregates,
+ * base configuration and current parameter values (sorted) so equal
+ * semantic requests produce identical keys.
+ *
+ * @param req The original range proposal request.
+ * @param aggs Aggregates computed from the prompt context.
+ * @return A string suitable as a cache key.
+ */
+
 void GeminiRangeProposer::evictExpiredLocked() const {
     const auto now = std::chrono::steady_clock::now();
     for (auto it = m_cache.begin(); it != m_cache.end(); ) {
@@ -247,6 +389,13 @@ void GeminiRangeProposer::evictExpiredLocked() const {
         else ++it;
     }
 }
+
+/**
+ * @brief Remove expired entries from the in-memory cache.
+ *
+ * Must be called while holding the cache mutex; it safely erases
+ * entries whose expiration timestamp is in the past.
+ */
 
 std::optional<IRangeProposer::Output> GeminiRangeProposer::getCached(const std::string& key) const {
     std::lock_guard lock(m_cacheMutex);
@@ -257,6 +406,13 @@ std::optional<IRangeProposer::Output> GeminiRangeProposer::getCached(const std::
     }
     return it->second.result;
 }
+
+/**
+ * @brief Retrieve a cached proposal if available and not expired.
+ *
+ * @param key Cache key previously produced by `buildCacheKey`.
+ * @return Optional Output if present and valid, std::nullopt otherwise.
+ */
 
 void GeminiRangeProposer::putCached(const std::string& key, const Output& result) const {
     const auto ttl = std::chrono::seconds(std::max(1, m_cacheCfg.ttlSeconds));
@@ -287,6 +443,16 @@ void GeminiRangeProposer::putCached(const std::string& key, const Output& result
     m_cache.emplace(key, CachedResult{result, expiresAt});
 }
 
+/**
+ * @brief Store a proposal result in the in-memory cache.
+ *
+ * Observes `m_cacheCfg` for TTL and maximum entries. If the cache
+ * is full the oldest entry is evicted.
+ *
+ * @param key Cache key.
+ * @param result Proposal output to cache.
+ */
+
 // ── Stale cleanup ──────────────────────────────────────────────────────────
 
 void GeminiRangeProposer::cleanupStaleEvalDirsOnce() const {
@@ -311,6 +477,13 @@ void GeminiRangeProposer::cleanupStaleEvalDirsOnce() const {
         Logger::instance().log(LogLevel::Warning, std::string("backtest_proposer stale cleanup: ") + e.what());
     }
 }
+
+/**
+ * @brief Remove stale runtime evaluation directories once per process.
+ *
+ * The operation is guarded to run only once; it deletes directories
+ * named `eval-<id>` older than the configured TTL.
+ */
 
 // ── Input JSON builder ─────────────────────────────────────────────────────
 
@@ -384,6 +557,19 @@ std::string GeminiRangeProposer::buildInputJson(
 
     return j.dump();
 }
+
+/**
+ * @brief Build the JSON payload passed to the Python proposer.
+ *
+ * The JSON includes evaluation metadata, current parameter values,
+ * prompt context aggregates, default ranges, constraints, signal
+ * context, and a budget object describing time/combination limits.
+ *
+ * @param req The range proposal request describing tunables.
+ * @param aggs Aggregates computed from prompt context.
+ * @param evalId Unique evaluation identifier to embed in payload.
+ * @return Serialized JSON string.
+ */
 
 // ── Subprocess runner (mirrored from gemini_filter.cpp) ───────────────────
 
@@ -509,6 +695,20 @@ std::string GeminiRangeProposer::runPythonModule(
 #endif
 }
 
+/**
+ * @brief Run the configured Python module as a subprocess.
+ *
+ * Writes diagnostics to the Logger and returns the contents of the
+ * Python module's `outputPath` file. Throws on errors or timeouts.
+ * Platform-specific implementations handle process creation and
+ * non-blocking I/O semantics.
+ *
+ * @param inputPath Path to the JSON input file for the module.
+ * @param outputPath Path the module will write output to.
+ * @param timeoutSeconds Maximum allowed runtime for the subprocess.
+ * @return Contents of the output file as a string.
+ */
+
 // ── Output parser ──────────────────────────────────────────────────────────
 
 IRangeProposer::Result GeminiRangeProposer::parseOutput(
@@ -570,6 +770,18 @@ IRangeProposer::Result GeminiRangeProposer::parseOutput(
     }
 }
 
+/**
+ * @brief Parse the JSON output produced by the Python proposer.
+ *
+ * Validates the structure, converts entries to ParamRange values,
+ * and performs sanity checks (finite numbers, min<=max, step>0).
+ * On parse or validation failure a Failure result is returned.
+ *
+ * @param rawJson Raw JSON string produced by the Python process.
+ * @param tunableParams List of expected parameter names.
+ * @return Either an Output with ranges or a Failure describing the error.
+ */
+
 // ── Public interface ───────────────────────────────────────────────────────
 
 IRangeProposer::Result GeminiRangeProposer::propose(
@@ -582,6 +794,16 @@ IRangeProposer::Result GeminiRangeProposer::propose(
         : std::chrono::steady_clock::now() + std::chrono::seconds(m_cfg.timeoutSeconds + 2);
     return proposeWithPartitions(req, req.promptContext, deadline);
 }
+
+/**
+ * @brief High-level entry point to produce a parameter range proposal.
+ *
+ * This convenience wrapper forwards to `proposeWithPartitions`, using
+ * the request's deadline when present or a computed timeout otherwise.
+ *
+ * @param req Range proposal request.
+ * @return Result containing either `Output` or `Failure`.
+ */
 
 IRangeProposer::Result GeminiRangeProposer::proposeWithPartitions(
     const RangeProposalRequest& req,
@@ -663,6 +885,16 @@ IRangeProposer::Result GeminiRangeProposer::proposeWithPartitions(
             " num_ranges=" + std::to_string(out->ranges.size()) +
             " notes=" + quoteStr(out->notes.substr(0, 80)));
         putCached(cacheKey, *out);
+
+        std::error_code cleanupEc;
+        fs::remove_all(rtDir, cleanupEc);
+        if (cleanupEc) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "backtest_proposer eval-dir cleanup failed eval_id=" + evalId +
+                    " path=" + quoteStr(rtDir.string()) +
+                    " error=" + quoteStr(cleanupEc.message()));
+        }
     } else {
         const auto& f = std::get<IRangeProposer::Failure>(result);
         Logger::instance().log(LogLevel::Warning,
@@ -672,5 +904,21 @@ IRangeProposer::Result GeminiRangeProposer::proposeWithPartitions(
 
     return result;
 }
+
+/**
+ * @brief Full implementation of range proposal using provided prompt context.
+ *
+ * Steps:
+ *  - compute aggregates from `promptContext`
+ *  - check in-memory cache
+ *  - prepare eval directory and write input JSON
+ *  - run the Python module and parse its output
+ *  - cache successful outputs and clean up runtime directory.
+ *
+ * @param req The original proposal request.
+ * @param promptContext Slice of Kline used to compute prompt aggregates.
+ * @param deadline Absolute time point by which processing must finish.
+ * @return Either an Output with ranges or a Failure describing the issue.
+ */
 
 }  // namespace backtest

@@ -201,6 +201,23 @@ TEST_F(Mql4AccountAdapterTest, FreeMarginIgnoresAvailableBalanceReserveWhenNoPos
     EXPECT_DOUBLE_EQ(*freeMargin, 10500.0);
 }
 
+TEST_F(Mql4AccountAdapterTest, MarginIsConsistentWithFreeMarginWhenPendingOrdersExist) {
+    auto snapshot = createBasicSnapshot();
+    snapshot.account.assets[0].initialMargin = 150.0;   // Includes pending-order reserve.
+    snapshot.account.positions[0].initialMargin = 100.0;  // Position-only margin.
+
+    Mql4AccountAdapter adapter(std::move(snapshot));
+    auto equity = adapter.accountEquity();
+    auto margin = adapter.accountMargin();
+    auto freeMargin = adapter.accountFreeMargin();
+
+    ASSERT_TRUE(equity.has_value());
+    ASSERT_TRUE(margin.has_value());
+    ASSERT_TRUE(freeMargin.has_value());
+    EXPECT_DOUBLE_EQ(*margin, 150.0);
+    EXPECT_DOUBLE_EQ(*equity - *margin, *freeMargin);
+}
+
 TEST_F(Mql4AccountAdapterTest, MultiAssetMode) {
     FuturesAccount acc;
     acc.totalWalletBalance = 20000.0; // Total in USD aggregate
@@ -240,4 +257,13 @@ TEST_F(Mql4AccountAdapterTest, MultiAssetsMarginIsUnsupportedForSingleAssetMappi
     auto freeMargin = adapter.accountFreeMargin();
     EXPECT_FALSE(freeMargin.has_value());
     EXPECT_EQ(freeMargin.error(), AccountMappingError::Unsupported);
+}
+
+TEST_F(Mql4AccountAdapterTest, CapturedAtAccessorReturnsSnapshotTimestamp) {
+    auto snapshot = createBasicSnapshot();
+    const auto expectedCapturedAt = std::chrono::system_clock::now();
+    snapshot.capturedAt = expectedCapturedAt;
+
+    Mql4AccountAdapter adapter(std::move(snapshot));
+    EXPECT_EQ(adapter.capturedAt(), expectedCapturedAt);
 }

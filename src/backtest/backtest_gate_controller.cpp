@@ -1,3 +1,8 @@
+/**
+ * @file backtest_gate_controller.cpp
+ * @brief End-to-end backtest-gate orchestration implementation.
+ */
+
 #include "backtest/backtest_gate_controller.h"
 #include "backtest/plateau_finder.h"
 #include "backtest/walk_forward.h"

@@ -70,7 +70,13 @@ public:
 
 class OrdersStub final : public engine::IOrdersPort {
 public:
+    int openNormalOrdersCalls{0};
     int marketCalls{0};
+    boost::asio::awaitable<OrdersResult<std::vector<NormalOrderSnapshot>>>
+    openNormalOrders(std::optional<Symbol>) override {
+        ++openNormalOrdersCalls;
+        co_return std::vector<NormalOrderSnapshot>{};
+    }
     boost::asio::awaitable<OrdersResult<NormalPlacementResult>> market(MarketOrderDraft) override {
         ++marketCalls;
         NormalPlacementResult r;

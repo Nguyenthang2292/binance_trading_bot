@@ -50,6 +50,12 @@ public:
     expected(T&& value) : m_storage(std::move(value)) {}
     expected(const unexpected<E>& error) : m_storage(error.error()) {}
     expected(unexpected<E>&& error) : m_storage(std::move(error).error()) {}
+    template <typename G>
+    expected(const unexpected<G>& error) requires std::is_constructible_v<E, const G&>
+        : m_storage(E(error.error())) {}
+    template <typename G>
+    expected(unexpected<G>&& error) requires std::is_constructible_v<E, G&&>
+        : m_storage(E(std::move(error).error())) {}
 
     constexpr bool has_value() const noexcept { return std::holds_alternative<T>(m_storage); }
     constexpr explicit operator bool() const noexcept { return has_value(); }
@@ -93,6 +99,12 @@ public:
     expected() : m_storage(std::monostate{}) {}
     expected(const unexpected<E>& error) : m_storage(error.error()) {}
     expected(unexpected<E>&& error) : m_storage(std::move(error).error()) {}
+    template <typename G>
+    expected(const unexpected<G>& error) requires std::is_constructible_v<E, const G&>
+        : m_storage(E(error.error())) {}
+    template <typename G>
+    expected(unexpected<G>&& error) requires std::is_constructible_v<E, G&&>
+        : m_storage(E(std::move(error).error())) {}
 
     constexpr bool has_value() const noexcept { return std::holds_alternative<std::monostate>(m_storage); }
     constexpr explicit operator bool() const noexcept { return has_value(); }

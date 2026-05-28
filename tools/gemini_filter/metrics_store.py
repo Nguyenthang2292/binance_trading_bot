@@ -21,12 +21,10 @@ class MetricsStore:
         self._bucket_dir.mkdir(parents=True, exist_ok=True)
 
     def incr_cache(self, component: str, metric: str, delta: int = 1) -> None:
-        self._incr(("cache", component, metric), delta)
-        self._incr_bucket_counter(("cache", component, metric), delta)
+        self._incr_state_and_bucket(("cache", component, metric), delta)
 
     def incr_quota(self, model: str, metric: str, delta: int = 1) -> None:
-        self._incr(("quota", model, metric), delta)
-        self._incr_bucket_counter(("quota", model, metric), delta)
+        self._incr_state_and_bucket(("quota", model, metric), delta)
 
     def record_analyzer_latency(self, model: str, component: str, latency_ms: int) -> None:
         clamped_ms = max(0, int(latency_ms))
@@ -87,18 +85,16 @@ class MetricsStore:
         with file_lock(self._lock_path):
             return self._read_state()
 
-    def _incr(self, path: tuple[str, str, str], delta: int) -> None:
+    def _incr_state_and_bucket(self, path: tuple[str, str, str], delta: int) -> None:
         with file_lock(self._lock_path):
             state = self._read_state()
-            level = state
+            state_level = state
             for key in path[:-1]:
-                level = level.setdefault(key, {})
-            leaf = path[-1]
-            level[leaf] = int(level.get(leaf, 0)) + delta
+                state_level = state_level.setdefault(key, {})
+            state_leaf = path[-1]
+            state_level[state_leaf] = int(state_level.get(state_leaf, 0)) + delta
             self._write_state(state)
 
-    def _incr_bucket_counter(self, path: tuple[str, str, str], delta: int) -> None:
-        with file_lock(self._lock_path):
             bucket_path, bucket = self._load_bucket_locked()
             level = bucket
             for key in path[:-1]:

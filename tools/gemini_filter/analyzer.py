@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import copy
 from functools import partial
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -21,8 +22,10 @@ from .metrics_store import MetricsStore
 from .model_resolver import resolve_models
 from .model_router import RoutedModels, build_model_route
 from .quota_manager import QuotaConfig, QuotaManager
+from .time_utils import parse_utc_iso
 
 LOGGER = logging.getLogger("gemini_filter.analyzer")
+_PRO_TIER_MODEL_PATTERN = re.compile(r"^gemini-\d+(?:\.\d+)?-pro(?:-|$)")
 
 
 def _build_sentiment_prompt(symbol: str, base_asset: str, direction: str) -> str:
@@ -30,7 +33,9 @@ def _build_sentiment_prompt(symbol: str, base_asset: str, direction: str) -> str
         f"Analyze the latest crypto market sentiment for {base_asset} ({symbol}) futures. "
         f"Include macro context from BTC dominance and the Crypto Fear & Greed Index. "
         f"The trading direction under evaluation is {direction}. "
-        f"Score favorability for this direction from 0.0 to 1.0."
+        "Score favorability for this direction from 0.0 to 1.0. "
+        'Return strict JSON only with keys "score" and "analysis". '
+        "Do not include markdown fences or additional text."
     )
 
 
@@ -43,6 +48,10 @@ def _build_vision_prompt(symbol: str, direction: str, primary_tf: str, extra_tfs
         f"Assess trend, momentum, and support/resistance alignment. "
         f"Score the quality of this {direction} setup from 0.0 to 1.0."
     )
+
+
+def _is_pro_tier_model(model: str) -> bool:
+    return bool(_PRO_TIER_MODEL_PATTERN.match(model.strip()))
 
 
 def _generate_json_score_with_rotation(
@@ -204,7 +213,16 @@ def _analyze_sentiment(
     eval_id = str(data.get("eval_id", ""))
     runtime_base = Path(str(data.get("runtime_base_dir") or data.get("runtime_dir") or "."))
     ttl_seconds = max(0, int(data.get("sentiment_cache_ttl_seconds", 3600)))
-    max_stale_seconds = max(ttl_seconds, int(data.get("sentiment_cache_max_stale_seconds", 21600)))
+    requested_max_stale_seconds = int(data.get("sentiment_cache_max_stale_seconds", 21600))
+    if requested_max_stale_seconds < ttl_seconds:
+        LOGGER.warning(
+            "sentiment cache max_stale clamped eval_id=%s symbol=%s requested_max_stale_seconds=%d ttl_seconds=%d",
+            eval_id,
+            symbol,
+            requested_max_stale_seconds,
+            ttl_seconds,
+        )
+    max_stale_seconds = max(ttl_seconds, requested_max_stale_seconds)
     cache_key = _sentiment_cache_key(data, route)
     now = int(time.time())
 
@@ -304,10 +322,14 @@ def _analyze_vision(
     symbol = str(data["symbol"])
     direction = str(data["direction"])
     primary_tf = str(data["primary_tf"])
-    extra_tfs = list(data.get("extra_tfs", []))
+    extra_tfs_raw = data.get("extra_tfs", [])
+    extra_tfs = [str(tf).strip() for tf in extra_tfs_raw if str(tf).strip()] if isinstance(extra_tfs_raw, list) else []
     eval_id = str(data["eval_id"])
     runtime_dir = str(data["runtime_dir"])
-    klines = data["klines"]
+    klines_raw = data["klines"]
+    if not isinstance(klines_raw, dict):
+        raise RuntimeError("invalid_input: klines must be an object keyed by timeframe")
+    klines = cast(dict[str, Any], klines_raw)
 
     primary_klines = klines.get(primary_tf, [])
     if not isinstance(primary_klines, list) or not primary_klines:
@@ -343,7 +365,7 @@ def _analyze_vision(
         )
         score = float(result["score"])
         if route.vision_pro_escalation_enabled and route.vision_pro_escalation_min_score <= score <= route.vision_pro_escalation_max_score:
-            pro_candidates = [model for model in route.vision_candidates if "-pro" in model]
+            pro_candidates = [model for model in route.vision_candidates if _is_pro_tier_model(model)]
             if pro_candidates and used_model not in pro_candidates:
                 LOGGER.info("vision escalation to pro eval_id=%s score=%.4f", eval_id, score)
                 escalated, used_model = _run_json_score_with_routes(
@@ -408,21 +430,6 @@ def _build_metrics_store(data: dict[str, Any]) -> MetricsStore:
     return MetricsStore(runtime_base)
 
 
-def _parse_utc_iso(text: str) -> int | None:
-    value = text.strip()
-    if not value:
-        return None
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(value)
-    except Exception:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
-
-
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
@@ -437,6 +444,22 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(s)
     except Exception:
         return default
+
+
+def _filter_candidates_against_whitelist(
+    *,
+    static_candidates_raw: Any,
+    override_candidates_raw: Any,
+    pinned_model: str,
+) -> list[str]:
+    if not isinstance(static_candidates_raw, list) or not isinstance(override_candidates_raw, list):
+        return []
+    static_candidates = [str(x).strip() for x in static_candidates_raw if str(x).strip()]
+    allowed = set(static_candidates)
+    pinned = pinned_model.strip()
+    if pinned:
+        allowed.add(pinned)
+    return [str(x).strip() for x in override_candidates_raw if str(x).strip() in allowed]
 
 
 def _apply_autotune_override(data: dict[str, Any]) -> dict[str, Any]:
@@ -462,12 +485,12 @@ def _apply_autotune_override(data: dict[str, Any]) -> dict[str, Any]:
         return data
 
     expiry_at = str(override.get("expiry_at", "")).strip()
-    expiry_epoch = _parse_utc_iso(expiry_at)
+    expiry_epoch = parse_utc_iso(expiry_at)
     if expiry_epoch is None or expiry_epoch <= int(time.time()):
         LOGGER.info("autotune override ignored reason=expired expiry_at=%s", expiry_at)
         return data
 
-    updated = dict(data)
+    updated = copy.deepcopy(data)
 
     static_routing_raw = updated.get("model_routing", {})
     static_routing = static_routing_raw if isinstance(static_routing_raw, dict) else {}
@@ -484,18 +507,20 @@ def _apply_autotune_override(data: dict[str, Any]) -> dict[str, Any]:
     vision_override = override_routing.get("vision", {}) if isinstance(override_routing.get("vision"), dict) else {}
 
     if "candidates" in sentiment_override and isinstance(sentiment_override.get("candidates"), list):
-        static_candidates_raw = static_sentiment.get("candidates", [])
-        static_candidates = [str(x) for x in static_candidates_raw if str(x).strip()] if isinstance(static_candidates_raw, list) else []
-        allowed = set(static_candidates + [str(updated.get("sentiment_model", ""))])
-        filtered = [str(x).strip() for x in sentiment_override.get("candidates", []) if str(x).strip() in allowed]
+        filtered = _filter_candidates_against_whitelist(
+            static_candidates_raw=static_sentiment.get("candidates", []),
+            override_candidates_raw=sentiment_override.get("candidates", []),
+            pinned_model=str(updated.get("sentiment_model", "")),
+        )
         if filtered:
             merged_sentiment["candidates"] = filtered
 
     if "candidates" in vision_override and isinstance(vision_override.get("candidates"), list):
-        static_candidates_raw = static_vision.get("candidates", [])
-        static_candidates = [str(x) for x in static_candidates_raw if str(x).strip()] if isinstance(static_candidates_raw, list) else []
-        allowed = set(static_candidates + [str(updated.get("vision_model", ""))])
-        filtered = [str(x).strip() for x in vision_override.get("candidates", []) if str(x).strip() in allowed]
+        filtered = _filter_candidates_against_whitelist(
+            static_candidates_raw=static_vision.get("candidates", []),
+            override_candidates_raw=vision_override.get("candidates", []),
+            pinned_model=str(updated.get("vision_model", "")),
+        )
         if filtered:
             merged_vision["candidates"] = filtered
     if "pro_escalation_enabled" in vision_override:
@@ -652,14 +677,20 @@ def analyze(data: dict[str, Any], key_manager: Any) -> dict[str, Any]:
             with lock:
                 errors.append(f"vision_api_error:{exc}")
 
-    t1 = threading.Thread(target=run_sentiment, daemon=True)
-    t2 = threading.Thread(target=run_vision, daemon=True)
+    t1 = threading.Thread(target=run_sentiment, daemon=True, name=f"analyzer-sentiment-{eval_id or 'unknown'}")
+    t2 = threading.Thread(target=run_vision, daemon=True, name=f"analyzer-vision-{eval_id or 'unknown'}")
     t1.start()
     t2.start()
-    _deadline = time.monotonic() + 120.0
-    t1.join(timeout=max(0.0, _deadline - time.monotonic()))
-    t2.join(timeout=max(0.0, _deadline - time.monotonic()))
+    deadline = time.monotonic() + 120.0
+    t1.join(timeout=max(0.0, deadline - time.monotonic()))
+    t2.join(timeout=max(0.0, deadline - time.monotonic()))
     if t1.is_alive() or t2.is_alive():
+        alive_threads = ",".join(thread.name for thread in (t1, t2) if thread.is_alive())
+        LOGGER.warning(
+            "analysis timeout eval_id=%s timeout_seconds=120 alive_threads=%s",
+            eval_id,
+            alive_threads,
+        )
         with lock:
             errors.append("component_timeout:analysis threads did not finish within 120s")
 

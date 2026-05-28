@@ -1,3 +1,8 @@
+/**
+ * @file walk_forward.h
+ * @brief Partitioning and walk-forward fold construction utilities.
+ */
+
 #pragma once
 
 #include "types/market.h"
@@ -6,6 +11,9 @@
 
 namespace backtest {
 
+/**
+ * @brief Prompt/calibration/signal partition of a closed-kline window.
+ */
 struct Partitions {
     std::vector<Kline> promptContext;
     std::vector<Kline> calibrationWindow;
@@ -13,6 +21,9 @@ struct Partitions {
     bool valid{false};  // false if input size insufficient for both partitions
 };
 
+/**
+ * @brief One walk-forward fold with IS and OOS segments.
+ */
 struct WalkForwardFold {
     std::vector<Kline> inSample;
     std::vector<Kline> outOfSample;
@@ -24,6 +35,9 @@ struct WalkForwardFold {
 // last bar in closedKlines is the signal bar T.
 class PartitionBuilder {
 public:
+    /**
+     * @brief Splits closed bars into prompt context, calibration, and signal bar.
+     */
     static Partitions build(
         const std::vector<Kline>& closedKlines,
         double promptContextFraction);
@@ -41,6 +55,9 @@ public:
 // The first fold's IS starts at the beginning; later folds' IS grows by oosSize.
 class WalkForwardSplitter {
 public:
+    /**
+     * @brief Builds anchored-expanding walk-forward folds on calibration window.
+     */
     static std::vector<WalkForwardFold> split(
         const std::vector<Kline>& calibrationWindow,
         int numFolds,

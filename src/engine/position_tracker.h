@@ -4,6 +4,7 @@
 #include "types/account.h"
 
 #include <chrono>
+#include <cmath>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -12,6 +13,12 @@
 #include <vector>
 
 namespace engine {
+
+inline constexpr double kFlatPositionQtyEpsilon = 1e-10;
+
+inline bool isFlatPositionQuantity(double quantity) {
+    return std::abs(quantity) <= kFlatPositionQtyEpsilon;
+}
 
 struct TrackedPosition {
     std::string symbol;
@@ -50,6 +57,7 @@ public:
     bool reserve(std::string symbol);
     bool commitReserved(std::string_view symbol, TrackedPosition pos);
     bool add(TrackedPosition pos);
+    bool addRecovered(TrackedPosition pos);
     void remove(std::string_view symbol);
     bool removeIfOpenedAt(std::string_view symbol, std::chrono::system_clock::time_point openedAt);
     bool has(std::string_view symbol) const;
@@ -74,7 +82,11 @@ public:
         std::string_view symbol,
         double entryPrice,
         double quantity);
-    bool markRecoveredFromSnapshot(std::string_view symbol);
+    bool refreshFromSnapshot(
+        std::string_view symbol,
+        double entryPrice,
+        double quantity,
+        int leverage);
 
 private:
     mutable std::mutex m_mutex;

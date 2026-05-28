@@ -1,3 +1,14 @@
+"""Build the feature set used by the qlib bridge training and inference jobs.
+
+The feature engineering pipeline works on symbol-partitioned OHLCV data and
+adds the rolling returns, moving-average distances, breakout levels, volume
+anomalies, and ATR-style volatility signals consumed by the downstream model
+training and scoring scripts.
+
+The exported ``FEATURE_COLS`` list defines the canonical feature order so the
+rest of the qlib bridge can train, validate, and score against a stable schema.
+"""
+
 from __future__ import annotations
 
 import numpy as np
@@ -27,8 +38,8 @@ def add_features(frame: pd.DataFrame) -> pd.DataFrame:
 
     ma_8 = grp["close"].transform(lambda s: s.rolling(8, min_periods=8).mean())
     ma_24 = grp["close"].transform(lambda s: s.rolling(24, min_periods=24).mean())
-    frame["ma_dist_8"] = (frame["close"] / ma_8) - 1.0
-    frame["ma_dist_24"] = (frame["close"] / ma_24) - 1.0
+    frame["ma_dist_8"] = (frame["close"] / ma_8.replace(0.0, np.nan)) - 1.0
+    frame["ma_dist_24"] = (frame["close"] / ma_24.replace(0.0, np.nan)) - 1.0
 
     frame["vol_24"] = grp["ret_1"].transform(lambda s: s.rolling(24, min_periods=24).std())
     high_24 = grp["high"].transform(lambda s: s.rolling(24, min_periods=24).max())

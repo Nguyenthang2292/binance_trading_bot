@@ -1,3 +1,8 @@
+/**
+ * @file walk_forward.cpp
+ * @brief Prompt/calibration partitioning and anchored walk-forward splitting.
+ */
+
 #include "backtest/walk_forward.h"
 #include "logger.h"
 

@@ -1,5 +1,10 @@
 #pragma once
 
+/**
+ * @file mql4_account_adapter.h
+ * @brief MQL4-style account property mapping over AccountSnapshot data.
+ */
+
 #include "account/account_snapshot.h"
 #include "types/error.h"
 
@@ -7,6 +12,7 @@
 
 namespace account::mql4 {
 
+/// MQL4-compatible account double properties.
 enum class AccountDoubleProperty {
     Balance,
     Credit,
@@ -19,6 +25,7 @@ enum class AccountDoubleProperty {
     MarginStopoutStop
 };
 
+/// MQL4-compatible account integer properties.
 enum class AccountIntegerProperty {
     Login,
     TradeMode,
@@ -29,6 +36,7 @@ enum class AccountIntegerProperty {
     TradeExpert
 };
 
+/// MQL4-compatible account string properties.
 enum class AccountStringProperty {
     Name,
     Server,
@@ -36,29 +44,36 @@ enum class AccountStringProperty {
     Company
 };
 
+/**
+ * @brief Translate AccountSnapshot values to the MQL4 account property model.
+ *
+ * Methods return `AccountMappingResult<T>` to preserve explicit error states
+ * when a value is unsupported, ambiguous, or missing from the snapshot.
+ */
 class Mql4AccountAdapter {
 public:
-    explicit Mql4AccountAdapter(AccountSnapshot snapshot);
+    explicit Mql4AccountAdapter(::account::AccountSnapshot snapshot);
 
-    AccountMappingResult<double> accountInfoDouble(AccountDoubleProperty property) const;
-    AccountMappingResult<int64_t> accountInfoInteger(AccountIntegerProperty property) const;
-    AccountMappingResult<std::string> accountInfoString(AccountStringProperty property) const;
+    ::account::AccountMappingResult<double> accountInfoDouble(AccountDoubleProperty property) const;
+    ::account::AccountMappingResult<int64_t> accountInfoInteger(AccountIntegerProperty property) const;
+    ::account::AccountMappingResult<std::string> accountInfoString(AccountStringProperty property) const;
 
-    AccountMappingResult<double> accountBalance() const;
-    AccountMappingResult<double> accountCredit() const;
-    AccountMappingResult<std::string> accountCompany() const;
-    AccountMappingResult<std::string> accountCurrency() const;
-    AccountMappingResult<double> accountEquity() const;
-    AccountMappingResult<double> accountFreeMargin() const;
-    AccountMappingResult<int64_t> accountLeverage(std::string symbol) const;
-    AccountMappingResult<double> accountMargin() const;
-    AccountMappingResult<std::string> accountName() const;
-    AccountMappingResult<int64_t> accountNumber() const;
-    AccountMappingResult<double> accountProfit() const;
-    AccountMappingResult<std::string> accountServer() const;
+    ::account::AccountMappingResult<double> accountBalance() const;
+    ::account::AccountMappingResult<double> accountCredit() const;
+    ::account::AccountMappingResult<std::string> accountCompany() const;
+    ::account::AccountMappingResult<std::string> accountCurrency() const;
+    ::account::AccountMappingResult<double> accountEquity() const;
+    ::account::AccountMappingResult<double> accountFreeMargin() const;
+    ::account::AccountMappingResult<int64_t> accountLeverage(std::string symbol) const;
+    ::account::AccountMappingResult<double> accountMargin() const;
+    ::account::AccountMappingResult<std::string> accountName() const;
+    ::account::AccountMappingResult<int64_t> accountNumber() const;
+    ::account::AccountMappingResult<double> accountProfit() const;
+    ::account::AccountMappingResult<std::string> accountServer() const;
+    std::chrono::system_clock::time_point capturedAt() const;
 
 private:
-    AccountSnapshot m_snapshot;
+    ::account::AccountSnapshot m_snapshot;
 };
 
 } // namespace account::mql4

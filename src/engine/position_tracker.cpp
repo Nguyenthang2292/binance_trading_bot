@@ -22,6 +22,7 @@ void PositionTracker::loadFromSnapshot(
                                                         : strategy::Signal::Direction::Short;
         tracked.entryPrice = position.entryPrice;
         tracked.quantity = absQty;
+        tracked.activeLeverage = position.leverage;
         tracked.openedAt = std::chrono::system_clock::now();
         tracked.maxHoldDuration = defaultMaxHoldDuration;
         tracked.openingInFlight = false;
@@ -64,6 +65,23 @@ bool PositionTracker::add(TrackedPosition pos) {
         return false;
     }
     pos.openingInFlight = false;
+    m_positions[pos.symbol] = std::move(pos);
+    return true;
+}
+
+bool PositionTracker::addRecovered(TrackedPosition pos) {
+    std::lock_guard lock(m_mutex);
+    if (pos.symbol.empty()) {
+        return false;
+    }
+    if (m_positions.find(pos.symbol) != m_positions.end()) {
+        return false;
+    }
+    pos.openingInFlight = false;
+    pos.recoveredFromSnapshot = true;
+    if (pos.openedAt.time_since_epoch().count() == 0) {
+        pos.openedAt = std::chrono::system_clock::now();
+    }
     m_positions[pos.symbol] = std::move(pos);
     return true;
 }
@@ -240,7 +258,11 @@ bool PositionTracker::refreshPositionView(
     return true;
 }
 
-bool PositionTracker::markRecoveredFromSnapshot(std::string_view symbol) {
+bool PositionTracker::refreshFromSnapshot(
+    std::string_view symbol,
+    double entryPrice,
+    double quantity,
+    int leverage) {
     std::lock_guard lock(m_mutex);
     const auto it = m_positions.find(std::string(symbol));
     if (it == m_positions.end()) {
@@ -249,7 +271,9 @@ bool PositionTracker::markRecoveredFromSnapshot(std::string_view symbol) {
     if (it->second.openingInFlight) {
         return false;
     }
-    it->second.recoveredFromSnapshot = true;
+    it->second.entryPrice = entryPrice;
+    it->second.quantity = std::max(0.0, quantity);
+    it->second.activeLeverage = leverage;
     return true;
 }
 

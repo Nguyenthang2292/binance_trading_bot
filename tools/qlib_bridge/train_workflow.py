@@ -1,7 +1,20 @@
+"""Train the qlib bridge baseline model with walk-forward validation.
+
+This workflow loads the prepared dataset, augments it with feature engineering,
+builds time-based train/test folds, trains a LightGBM baseline, and writes both
+the serialized model artifact and a training report with fold-level metrics.
+
+The module is designed to be the canonical training entry point for the bridge
+so that feature generation, evaluation, and artifact export stay consistent
+across runs.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +46,8 @@ class FoldResult:
     test_rows: int
     ic: float
     rank_ic: float
+    pooled_ic: float
+    pooled_rank_ic: float
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,6 +118,31 @@ def _pearson_corr(x: np.ndarray, y: np.ndarray) -> float:
     if xstd == 0.0 or ystd == 0.0:
         return float("nan")
     return float(np.corrcoef(x, y)[0, 1])
+
+
+def _daily_mean_corr(frame: pd.DataFrame, x_col: str, y_col: str, corr_fn: Any) -> float:
+    values: list[float] = []
+    for _, part in frame.groupby("datetime", sort=False):
+        corr = corr_fn(part[x_col].to_numpy(), part[y_col].to_numpy())
+        if not np.isnan(corr):
+            values.append(float(corr))
+    if not values:
+        return float("nan")
+    return float(np.mean(values))
+
+
+def write_feature_manifest(model_path: Path, feature_cols: list[str], interval: str, horizon_bars: int) -> Path:
+    manifest_path = model_path.with_suffix(model_path.suffix + ".features.json")
+    payload = {
+        "feature_columns": feature_cols,
+        "interval": interval,
+        "horizon_bars": int(horizon_bars),
+        "generated_at_ms": int(time.time() * 1000),
+    }
+    tmp_path = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp_path, manifest_path)
+    return manifest_path
 
 
 def walk_forward_splits(
@@ -214,8 +254,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any]:
         test_out["score_percentile"] = test_out.groupby("datetime")["score"].transform(compute_percentiles)
         oos_parts.append(test_out)
 
-        ic = _pearson_corr(test_out["score"].to_numpy(), test_out["label"].to_numpy())
-        rank_ic = _spearman_corr(test_out["score"].to_numpy(), test_out["label"].to_numpy())
+        pooled_ic = _pearson_corr(test_out["score"].to_numpy(), test_out["label"].to_numpy())
+        pooled_rank_ic = _spearman_corr(test_out["score"].to_numpy(), test_out["label"].to_numpy())
+        ic = _daily_mean_corr(test_out, "score", "label", _pearson_corr)
+        rank_ic = _daily_mean_corr(test_out, "score", "label", _spearman_corr)
         fold_results.append(
             FoldResult(
                 train_start=str(train_start),
@@ -226,6 +268,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any]:
                 test_rows=int(len(test_df)),
                 ic=ic,
                 rank_ic=rank_ic,
+                pooled_ic=pooled_ic,
+                pooled_rank_ic=pooled_rank_ic,
             )
         )
 
@@ -251,10 +295,13 @@ def run_training(args: argparse.Namespace) -> dict[str, Any]:
     model_out = Path(args.model_out)
     model_out.parent.mkdir(parents=True, exist_ok=True)
     final_model.save_model(str(model_out))
+    manifest_out = write_feature_manifest(model_out, feature_cols, args.interval, args.horizon_bars)
 
     oos_frame = pd.concat(oos_parts, ignore_index=True) if oos_parts else pd.DataFrame()
-    oos_ic = _pearson_corr(oos_frame["score"].to_numpy(), oos_frame["label"].to_numpy()) if not oos_frame.empty else float("nan")
-    oos_rank_ic = _spearman_corr(oos_frame["score"].to_numpy(), oos_frame["label"].to_numpy()) if not oos_frame.empty else float("nan")
+    oos_pooled_ic = _pearson_corr(oos_frame["score"].to_numpy(), oos_frame["label"].to_numpy()) if not oos_frame.empty else float("nan")
+    oos_pooled_rank_ic = _spearman_corr(oos_frame["score"].to_numpy(), oos_frame["label"].to_numpy()) if not oos_frame.empty else float("nan")
+    oos_ic = _daily_mean_corr(oos_frame, "score", "label", _pearson_corr) if not oos_frame.empty else float("nan")
+    oos_rank_ic = _daily_mean_corr(oos_frame, "score", "label", _spearman_corr) if not oos_frame.empty else float("nan")
     pct_mean = float(oos_frame["score_percentile"].mean()) if not oos_frame.empty else float("nan")
     pct_std = float(oos_frame["score_percentile"].std(ddof=0)) if not oos_frame.empty else float("nan")
 
@@ -268,10 +315,13 @@ def run_training(args: argparse.Namespace) -> dict[str, Any]:
         "purging": True,
         "feature_columns": feature_cols,
         "model_path": str(model_out),
+        "feature_manifest_path": str(manifest_out),
         "folds": [f.__dict__ for f in fold_results],
         "oos_metrics": {
             "ic": oos_ic,
             "rank_ic": oos_rank_ic,
+            "pooled_ic": oos_pooled_ic,
+            "pooled_rank_ic": oos_pooled_rank_ic,
             "score_percentile_mean": pct_mean,
             "score_percentile_std": pct_std,
             "oos_rows": int(len(oos_frame)),
