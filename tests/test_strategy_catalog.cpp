@@ -99,3 +99,71 @@ TEST(StrategyCatalogTest, MissingPluginTypeReturnsError) {
     ASSERT_FALSE(summary.errors.empty());
 }
 
+TEST(StrategyCatalogTest, InitializeTwiceClearsRegistryBeforeReload) {
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins"},
+        [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"rsi.dll"}; },
+        [](const std::filesystem::path& path) {
+            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path,
+                &createCatalogStrategy,
+                &destroyCatalogStrategy,
+                &catalogTypeFn,
+                &catalogVersionFn,
+                "rsi_reversal",
+                "1.2.3"));
+        });
+
+    strategy::StrategyRegistry registry;
+    catalog::StrategyCatalog catalog({.pluginsDir = "plugins"}, registry, std::move(loader));
+
+    const std::vector<nlohmann::json> firstCfg{
+        nlohmann::json{
+            {"name", "first"},
+            {"type", "rsi_reversal"},
+            {"intervals", nlohmann::json::array({"15m"})},
+        }};
+    const auto first = catalog.initialize(firstCfg);
+    EXPECT_EQ(first.strategiesRegistered, 1);
+    ASSERT_EQ(registry.all().size(), 1u);
+
+    const std::vector<nlohmann::json> secondCfg{
+        nlohmann::json{
+            {"name", "second"},
+            {"type", "rsi_reversal"},
+            {"intervals", nlohmann::json::array({"1h"})},
+        }};
+    const auto second = catalog.initialize(secondCfg);
+    EXPECT_EQ(second.strategiesRegistered, 1);
+    EXPECT_TRUE(second.errors.empty());
+    ASSERT_EQ(registry.all().size(), 1u);
+
+    const auto info = catalog.listStrategies();
+    ASSERT_EQ(info.size(), 1u);
+    EXPECT_EQ(info[0].name, "second");
+    EXPECT_EQ(info[0].type, "rsi_reversal");
+}
+
+TEST(StrategyCatalogTest, NonStringTypeIsReportedAsValidationError) {
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins"},
+        [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{}; },
+        [](const std::filesystem::path&) {
+            return std::expected<catalog::PluginHandle, std::string>(
+                std::unexpected(std::string("not used")));
+        });
+
+    strategy::StrategyRegistry registry;
+    catalog::StrategyCatalog catalog({.pluginsDir = "plugins"}, registry, std::move(loader));
+    const std::vector<nlohmann::json> cfg{
+        nlohmann::json{
+            {"name", "bad_type"},
+            {"type", 123},
+        }};
+
+    const auto summary = catalog.initialize(cfg);
+    EXPECT_EQ(summary.strategiesRegistered, 0);
+    ASSERT_EQ(summary.errors.size(), 1u);
+    EXPECT_EQ(summary.errors[0], "strategy config 'type' must be a string");
+}
+

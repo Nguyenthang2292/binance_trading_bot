@@ -63,7 +63,7 @@ std::expected<PluginHandle, std::string> PluginHandle::load(const std::filesyste
     }
 
     PluginHandle out(rawHandle);
-    out.path = dllPath;
+    out.m_path = dllPath;
     out.m_createFn = reinterpret_cast<CreateFn>(loadSymbol(rawHandle, "createStrategy"));
     out.m_destroyFn = reinterpret_cast<DestroyFn>(loadSymbol(rawHandle, "destroyStrategy"));
     out.m_typeFn = reinterpret_cast<TypeFn>(loadSymbol(rawHandle, "strategyType"));
@@ -79,8 +79,8 @@ std::expected<PluginHandle, std::string> PluginHandle::load(const std::filesyste
         unloadHandle(rawHandle);
         return std::unexpected("invalid plugin metadata");
     }
-    out.type = type;
-    out.version = version;
+    out.m_type = type;
+    out.m_version = version;
     return out;
 }
 
@@ -93,24 +93,24 @@ PluginHandle PluginHandle::fromExports(
     std::string typeValue,
     std::string versionValue) {
     PluginHandle out;
-    out.path = std::move(path);
+    out.m_path = std::move(path);
+    out.m_type = std::move(typeValue);
+    out.m_version = std::move(versionValue);
     out.m_createFn = createFnValue;
     out.m_destroyFn = destroyFnValue;
     out.m_typeFn = typeFnValue;
     out.m_versionFn = versionFnValue;
-    out.type = std::move(typeValue);
-    out.version = std::move(versionValue);
     return out;
 }
 
 PluginHandle::PluginHandle(PluginHandle&& other) noexcept
-    : m_createFn(other.m_createFn),
+    : m_path(std::move(other.m_path)),
+      m_type(std::move(other.m_type)),
+      m_version(std::move(other.m_version)),
+      m_createFn(other.m_createFn),
       m_destroyFn(other.m_destroyFn),
       m_typeFn(other.m_typeFn),
       m_versionFn(other.m_versionFn),
-      path(std::move(other.path)),
-      type(std::move(other.type)),
-      version(std::move(other.version)),
       m_handle(other.m_handle) {
     other.m_handle = nullptr;
     other.m_createFn = nullptr;
@@ -128,9 +128,9 @@ PluginHandle& PluginHandle::operator=(PluginHandle&& other) noexcept {
     m_destroyFn = other.m_destroyFn;
     m_typeFn = other.m_typeFn;
     m_versionFn = other.m_versionFn;
-    path = std::move(other.path);
-    type = std::move(other.type);
-    version = std::move(other.version);
+    m_path = std::move(other.m_path);
+    m_type = std::move(other.m_type);
+    m_version = std::move(other.m_version);
     m_handle = other.m_handle;
     other.m_handle = nullptr;
     other.m_createFn = nullptr;
@@ -142,6 +142,18 @@ PluginHandle& PluginHandle::operator=(PluginHandle&& other) noexcept {
 
 PluginHandle::~PluginHandle() {
     unloadHandle(m_handle);
+}
+
+const std::filesystem::path& PluginHandle::path() const noexcept {
+    return m_path;
+}
+
+std::string_view PluginHandle::type() const noexcept {
+    return m_type;
+}
+
+std::string_view PluginHandle::version() const noexcept {
+    return m_version;
 }
 
 bool PluginHandle::hasFactory() const {

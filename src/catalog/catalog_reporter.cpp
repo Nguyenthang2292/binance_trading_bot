@@ -63,12 +63,12 @@ void CatalogReporter::logStartupSummary(
 
 void CatalogReporter::logRuntimeStatus(
     const std::vector<StrategyCatalog::StrategyInfo>& strategies,
-    int activeSymbols,
+    int queueItems,
     int openPositions) {
     Logger::instance().log(
         LogLevel::Info,
         "strategy status: active=" + std::to_string(strategies.size()) +
-            " queue=" + std::to_string(activeSymbols) +
+            " queue=" + std::to_string(queueItems) +
             " open_positions=" + std::to_string(openPositions));
 
     for (const auto& strategy : strategies) {

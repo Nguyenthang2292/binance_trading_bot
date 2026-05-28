@@ -25,6 +25,7 @@ public:
     struct Config {
         std::filesystem::path pluginsDir{"plugins"};
         bool enforceSha256Allowlist{false};
+        // Integrity check hashes the on-disk file before dynamic loading. Keep plugin directory ACLs strict.
         std::filesystem::path sha256AllowlistFile{};
     };
 
@@ -33,6 +34,7 @@ public:
 
     explicit PluginLoader(Config config, EnumerateFn enumerateFn = {}, LoadFn loadFn = {});
 
+    // Reloads plugin handles and invalidates strategy instances created from prior loads.
     std::vector<PluginLoadResult> loadAll();
     std::unique_ptr<strategy::IStrategy, void (*)(strategy::IStrategy*)> createStrategy(
         std::string_view strategyType,

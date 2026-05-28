@@ -34,7 +34,15 @@ StrategyCatalog::LoadSummary StrategyCatalog::initialize(const std::vector<nlohm
             summary.errors.push_back("strategy config must be an object");
             continue;
         }
-        const std::string type = item.value("type", "");
+        if (!item.contains("type")) {
+            summary.errors.push_back("strategy config missing type");
+            continue;
+        }
+        if (!item.at("type").is_string()) {
+            summary.errors.push_back("strategy config 'type' must be a string");
+            continue;
+        }
+        const std::string type = item.at("type").get<std::string>();
         if (type.empty()) {
             summary.errors.push_back("strategy config missing type");
             continue;

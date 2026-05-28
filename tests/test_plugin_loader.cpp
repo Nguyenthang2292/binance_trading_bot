@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <fstream>
+#include <stdexcept>
 
 namespace {
 
@@ -25,6 +26,8 @@ strategy::IStrategy* createOk(const char*) {
     return new DummyStrategy(cfg);
 }
 strategy::IStrategy* createNull(const char*) { return nullptr; }
+strategy::IStrategy* createThrowsStd(const char*) { throw std::runtime_error("factory failed"); }
+strategy::IStrategy* createThrowsUnknown(const char*) { throw 42; }
 void destroyOk(strategy::IStrategy* ptr) { delete ptr; }
 const char* typeFn() { return "dummy"; }
 const char* verFn() { return "1.0.0"; }
@@ -160,5 +163,280 @@ TEST(PluginLoaderTest, EnforcedSha256AllowlistLoadsAllowlistedPlugin) {
     ASSERT_EQ(results.size(), 1u);
     EXPECT_TRUE(results[0].success);
     EXPECT_EQ(loadCalls, 1);
+}
+
+TEST(PluginLoaderTest, CreateReturnsNullWhenFactoryThrowsStdException) {
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins"},
+        [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"throw_std.dll"}; },
+        [](const std::filesystem::path& path) {
+            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createThrowsStd, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
+        });
+
+    (void)loader.loadAll();
+    auto instance = loader.createStrategy("dummy", "{}");
+    EXPECT_FALSE(instance);
+}
+
+TEST(PluginLoaderTest, CreateReturnsNullWhenFactoryThrowsUnknownException) {
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins"},
+        [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"throw_unknown.dll"}; },
+        [](const std::filesystem::path& path) {
+            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createThrowsUnknown, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
+        });
+
+    (void)loader.loadAll();
+    auto instance = loader.createStrategy("dummy", "{}");
+    EXPECT_FALSE(instance);
+}
+
+TEST(PluginLoaderTest, EnforcedSha256AllowlistWithEmptyPathFailsClosed) {
+    const auto tmpDir = makeTempDir();
+    ASSERT_FALSE(tmpDir.empty());
+    TempDirGuard cleanup{tmpDir};
+    const auto pluginPath = tmpDir / "plugin.dll";
+    writeTextFile(pluginPath, "abc");
+
+    int loadCalls = 0;
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins", .enforceSha256Allowlist = true},
+        [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
+        [&loadCalls](const std::filesystem::path& path) {
+            ++loadCalls;
+            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
+        });
+
+    const auto results = loader.loadAll();
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_FALSE(results[0].success);
+    EXPECT_NE(results[0].error.find("allowlist file path is empty"), std::string::npos);
+    EXPECT_EQ(loadCalls, 0);
+}
+
+TEST(PluginLoaderTest, EnforcedSha256AllowlistMissingFileFailsClosed) {
+    const auto tmpDir = makeTempDir();
+    ASSERT_FALSE(tmpDir.empty());
+    TempDirGuard cleanup{tmpDir};
+    const auto pluginPath = tmpDir / "plugin.dll";
+    const auto allowlistPath = tmpDir / "missing_allowlist.txt";
+    writeTextFile(pluginPath, "abc");
+
+    int loadCalls = 0;
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins", .enforceSha256Allowlist = true, .sha256AllowlistFile = allowlistPath},
+        [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
+        [&loadCalls](const std::filesystem::path& path) {
+            ++loadCalls;
+            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
+        });
+
+    const auto results = loader.loadAll();
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_FALSE(results[0].success);
+    EXPECT_NE(results[0].error.find("failed to open sha256 allowlist file"), std::string::npos);
+    EXPECT_EQ(loadCalls, 0);
+}
+
+TEST(PluginLoaderTest, EnforcedSha256AllowlistRejectsEmptyAllowlistFile) {
+    const auto tmpDir = makeTempDir();
+    ASSERT_FALSE(tmpDir.empty());
+    TempDirGuard cleanup{tmpDir};
+    const auto pluginPath = tmpDir / "plugin.dll";
+    const auto allowlistPath = tmpDir / "allowlist.txt";
+    writeTextFile(pluginPath, "abc");
+    writeTextFile(allowlistPath, "");
+
+    int loadCalls = 0;
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins", .enforceSha256Allowlist = true, .sha256AllowlistFile = allowlistPath},
+        [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
+        [&loadCalls](const std::filesystem::path& path) {
+            ++loadCalls;
+            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
+        });
+
+    const auto results = loader.loadAll();
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_FALSE(results[0].success);
+    EXPECT_NE(results[0].error.find("allowlist file is empty"), std::string::npos);
+    EXPECT_EQ(loadCalls, 0);
+}
+
+TEST(PluginLoaderTest, EnforcedSha256AllowlistRejectsInvalidHexEntry) {
+    const auto tmpDir = makeTempDir();
+    ASSERT_FALSE(tmpDir.empty());
+    TempDirGuard cleanup{tmpDir};
+    const auto pluginPath = tmpDir / "plugin.dll";
+    const auto allowlistPath = tmpDir / "allowlist.txt";
+    writeTextFile(pluginPath, "abc");
+    writeTextFile(allowlistPath, "not-a-valid-sha\n");
+
+    int loadCalls = 0;
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins", .enforceSha256Allowlist = true, .sha256AllowlistFile = allowlistPath},
+        [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
+        [&loadCalls](const std::filesystem::path& path) {
+            ++loadCalls;
+            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
+        });
+
+    const auto results = loader.loadAll();
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_FALSE(results[0].success);
+    EXPECT_NE(results[0].error.find("invalid sha256 allowlist entry"), std::string::npos);
+    EXPECT_EQ(loadCalls, 0);
+}
+
+// T6 — normalizePluginsDir: a relative pluginsDir is resolved to an absolute path
+// (anchored to the executable directory) before enumeration runs.
+TEST(PluginLoaderTest, NormalizesRelativePluginsDirToAbsolute) {
+    std::filesystem::path received;
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins"},
+        [&received](const std::filesystem::path& dir) {
+            received = dir;
+            return std::vector<std::filesystem::path>{};
+        },
+        [](const std::filesystem::path&) {
+            return std::expected<catalog::PluginHandle, std::string>(
+                std::unexpected(std::string("unused")));
+        });
+
+    (void)loader.loadAll();
+    EXPECT_TRUE(received.is_absolute());
+    EXPECT_EQ(received.filename(), std::filesystem::path("plugins"));
+}
+
+// T6 — normalizePluginsDir: an absolute pluginsDir is preserved (canonicalized), not relocated.
+TEST(PluginLoaderTest, PreservesAbsolutePluginsDir) {
+    const auto tmpDir = makeTempDir();
+    ASSERT_FALSE(tmpDir.empty());
+    TempDirGuard cleanup{tmpDir};
+
+    std::filesystem::path received;
+    catalog::PluginLoader loader(
+        {.pluginsDir = tmpDir},
+        [&received](const std::filesystem::path& dir) {
+            received = dir;
+            return std::vector<std::filesystem::path>{};
+        },
+        [](const std::filesystem::path&) {
+            return std::expected<catalog::PluginHandle, std::string>(
+                std::unexpected(std::string("unused")));
+        });
+
+    (void)loader.loadAll();
+
+    std::error_code ec;
+    const auto expected = std::filesystem::weakly_canonical(tmpDir, ec);
+    ASSERT_FALSE(ec);
+    EXPECT_TRUE(received.is_absolute());
+    EXPECT_EQ(received, expected);
+}
+
+// T5 — defaultEnumerate path confinement: a symlink inside the plugins directory that
+// resolves to a file OUTSIDE the directory must be rejected (isWithinDirectory check).
+TEST(PluginLoaderTest, DefaultEnumerateRejectsSymlinkEscapingPluginsDir) {
+    const auto tmpRoot = makeTempDir();
+    ASSERT_FALSE(tmpRoot.empty());
+    TempDirGuard cleanup{tmpRoot};
+
+    const auto pluginsDir = tmpRoot / "plugins";
+    const auto outsideDir = tmpRoot / "outside";
+    std::error_code ec;
+    std::filesystem::create_directories(pluginsDir, ec);
+    ASSERT_FALSE(ec);
+    std::filesystem::create_directories(outsideDir, ec);
+    ASSERT_FALSE(ec);
+
+#if defined(_WIN32)
+    const std::string ext = ".dll";
+#else
+    const std::string ext = ".so";
+#endif
+
+    const auto legit = pluginsDir / ("legit" + ext);
+    const auto outsideTarget = outsideDir / ("target" + ext);
+    writeTextFile(legit, "legit-bytes");
+    writeTextFile(outsideTarget, "evil-bytes");
+
+    // Symlink in plugins/ pointing outside the directory. Requires privileges on Windows.
+    const auto escapeLink = pluginsDir / ("escape" + ext);
+    std::filesystem::create_symlink(outsideTarget, escapeLink, ec);
+    if (ec) {
+        GTEST_SKIP() << "symlink creation unavailable (privileges/dev-mode?): " << ec.message();
+    }
+
+    catalog::PluginLoader loader(
+        {.pluginsDir = pluginsDir},
+        {}, // use the real defaultEnumerate so path confinement is exercised
+        [](const std::filesystem::path& path) {
+            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
+        });
+
+    const auto results = loader.loadAll();
+
+    // Only the in-directory plugin survives; the escaping symlink is filtered out.
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].path.filename(), legit.filename());
+
+    const auto canonicalPlugins = std::filesystem::weakly_canonical(pluginsDir, ec);
+    ASSERT_FALSE(ec);
+    EXPECT_EQ(results[0].path.parent_path(), canonicalPlugins);
+    for (const auto& result : results) {
+        EXPECT_NE(result.path.filename(), outsideTarget.filename());
+    }
+}
+
+// T5 — defaultEnumerate (no privileges required): returns only plugin-extension files,
+// canonicalized, sorted, and confined to the plugins directory. Exercises the positive
+// branch of isWithinDirectory plus the extension filter on every platform.
+TEST(PluginLoaderTest, DefaultEnumerateReturnsSortedConfinedPluginFiles) {
+    const auto tmpRoot = makeTempDir();
+    ASSERT_FALSE(tmpRoot.empty());
+    TempDirGuard cleanup{tmpRoot};
+
+    const auto pluginsDir = tmpRoot / "plugins";
+    std::error_code ec;
+    std::filesystem::create_directories(pluginsDir, ec);
+    ASSERT_FALSE(ec);
+
+#if defined(_WIN32)
+    const std::string ext = ".dll";
+#else
+    const std::string ext = ".so";
+#endif
+
+    // Two plugin files (deliberately out of order) plus a non-plugin file that must be ignored.
+    writeTextFile(pluginsDir / ("bravo" + ext), "b");
+    writeTextFile(pluginsDir / ("alpha" + ext), "a");
+    writeTextFile(pluginsDir / "notes.txt", "ignore me");
+
+    catalog::PluginLoader loader(
+        {.pluginsDir = pluginsDir},
+        {}, // real defaultEnumerate
+        [](const std::filesystem::path& path) {
+            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
+        });
+
+    const auto results = loader.loadAll();
+    ASSERT_EQ(results.size(), 2u);
+
+    const auto canonicalPlugins = std::filesystem::weakly_canonical(pluginsDir, ec);
+    ASSERT_FALSE(ec);
+    EXPECT_EQ(results[0].path.filename(), std::filesystem::path("alpha" + ext));
+    EXPECT_EQ(results[1].path.filename(), std::filesystem::path("bravo" + ext));
+    for (const auto& result : results) {
+        EXPECT_EQ(result.path.parent_path(), canonicalPlugins);
+    }
 }
 

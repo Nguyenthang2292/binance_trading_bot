@@ -17,7 +17,7 @@ public:
         const std::vector<StrategyCatalog::StrategyInfo>& strategies);
     static void logRuntimeStatus(
         const std::vector<StrategyCatalog::StrategyInfo>& strategies,
-        int activeSymbols,
+        int queueItems,
         int openPositions);
 };
 

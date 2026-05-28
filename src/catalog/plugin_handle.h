@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace catalog {
 
@@ -33,15 +34,18 @@ public:
     PluginHandle& operator=(const PluginHandle&) = delete;
     ~PluginHandle();
 
-    std::filesystem::path path;
-    std::string type;
-    std::string version;
+    [[nodiscard]] const std::filesystem::path& path() const noexcept;
+    [[nodiscard]] std::string_view type() const noexcept;
+    [[nodiscard]] std::string_view version() const noexcept;
     [[nodiscard]] bool hasFactory() const;
     [[nodiscard]] strategy::IStrategy* create(const char* configJson) const;
     [[nodiscard]] DestroyFn destroyFunction() const;
 
 private:
     explicit PluginHandle(void* handle) : m_handle(handle) {}
+    std::filesystem::path m_path;
+    std::string m_type;
+    std::string m_version;
     CreateFn m_createFn{nullptr};
     DestroyFn m_destroyFn{nullptr};
     TypeFn m_typeFn{nullptr};

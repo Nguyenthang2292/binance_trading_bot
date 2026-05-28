@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cwctype>
 #include <exception>
 #include <fstream>
 #include <iomanip>
@@ -84,10 +85,28 @@ std::filesystem::path normalizeOptionalPath(
 }
 
 bool isWithinDirectory(const std::filesystem::path& root, const std::filesystem::path& candidate) {
+    const auto componentEquals = [](const std::filesystem::path& lhs, const std::filesystem::path& rhs) {
+#if defined(_WIN32)
+        const auto lhsNative = lhs.native();
+        const auto rhsNative = rhs.native();
+        if (lhsNative.size() != rhsNative.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < lhsNative.size(); ++i) {
+            if (std::towlower(lhsNative[i]) != std::towlower(rhsNative[i])) {
+                return false;
+            }
+        }
+        return true;
+#else
+        return lhs == rhs;
+#endif
+    };
+
     auto rootIt = root.begin();
     auto candidateIt = candidate.begin();
     for (; rootIt != root.end(); ++rootIt, ++candidateIt) {
-        if (candidateIt == candidate.end() || *rootIt != *candidateIt) {
+        if (candidateIt == candidate.end() || !componentEquals(*rootIt, *candidateIt)) {
             return false;
         }
     }
@@ -160,6 +179,9 @@ PluginLoader::PluginLoader(Config config, EnumerateFn enumerateFn, LoadFn loadFn
         return;
     }
     m_sha256Allowlist = std::move(*loadedAllowlist);
+    Logger::instance().log(
+        LogLevel::Warning,
+        "catalog integrity note: SHA-256 allowlist checks bytes before load; keep plugins directory write-restricted");
 }
 
 std::vector<PluginLoadResult> PluginLoader::loadAll() {
@@ -185,8 +207,8 @@ std::vector<PluginLoadResult> PluginLoader::loadAll() {
         }
 
         result.success = true;
-        result.type = loaded->type;
-        result.version = loaded->version;
+        result.type = std::string(loaded->type());
+        result.version = std::string(loaded->version());
         m_handles.push_back(std::move(*loaded));
         m_results.push_back(std::move(result));
     }
@@ -197,7 +219,7 @@ std::unique_ptr<strategy::IStrategy, void (*)(strategy::IStrategy*)> PluginLoade
     std::string_view strategyType,
     const char* configJson) {
     const auto it = std::find_if(m_handles.begin(), m_handles.end(), [strategyType](const PluginHandle& handle) {
-        return handle.type == strategyType;
+        return handle.type() == strategyType;
     });
     if (it == m_handles.end() || !it->hasFactory()) {
         return {nullptr, &noopDestroy};
