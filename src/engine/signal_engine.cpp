@@ -1788,6 +1788,13 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
         co_return false;
     };
 
+    // CR-9 (by design): when a protective TP/SL leg fails and the best-effort
+    // emergency close cannot be confirmed flat, we deliberately KEEP the position
+    // tracked (rather than dropping it) and surface the unresolved close at
+    // Warning level. Escalation beyond a warning is intentionally NOT done here:
+    // the position remains under the normal monitoring/trailing/time-exit loop,
+    // which keeps attempting protection on subsequent cycles. This is a reviewed,
+    // intentional design choice — keep the warning-only contract.
     auto commitEmergencyTracked = [&](std::string_view stage) {
         const double trackedQty = resolvedPositionQty > 0.0 ? resolvedPositionQty : size.quantity;
         TrackedPosition emergency;
