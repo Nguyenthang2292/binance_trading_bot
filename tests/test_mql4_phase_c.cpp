@@ -68,6 +68,7 @@ TEST(Mql4PhaseCTest, StopEntryMapsCorrectParams) {
 
     OrdersConfig cfg;
     cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
     Orders orders(rest, cfg);
 
     StopEntryDraft draft{
@@ -99,6 +100,7 @@ TEST(Mql4PhaseCTest, ProtectionMapsCorrectParams) {
 
     OrdersConfig cfg;
     cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
     Orders orders(rest, cfg);
 
     ProtectionOrderDraft draft{
@@ -130,6 +132,7 @@ TEST(Mql4PhaseCTest, StopEntryMapsAmbiguousTransportErrorToUnknownPendingReconci
 
     OrdersConfig cfg;
     cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
     Orders orders(rest, cfg);
 
     StopEntryDraft draft{

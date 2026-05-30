@@ -4,6 +4,7 @@
 
 #include <simdjson.h>
 
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -50,7 +51,15 @@ inline double doubleField(simdjson::dom::element object, std::string_view field,
     return toDouble(value, fallback);
 }
 
-inline OrderSide parseSide(std::string_view value) { return value == "SELL" ? OrderSide::Sell : OrderSide::Buy; }
+inline OrderSide parseSide(std::string_view value) {
+    if (value == "SELL") {
+        return OrderSide::Sell;
+    }
+    if (value == "BUY") {
+        return OrderSide::Buy;
+    }
+    throw std::invalid_argument("unknown order side in websocket payload");
+}
 
 inline OrderType parseOrderType(std::string_view value) {
     if (value == "LIMIT") return OrderType::Limit;

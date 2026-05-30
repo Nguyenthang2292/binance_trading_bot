@@ -49,16 +49,17 @@ StrategyCatalog::LoadSummary StrategyCatalog::initialize(const std::vector<nlohm
         }
 
         const std::string jsonConfig = item.dump();
-        auto created = m_loader.createStrategy(type, jsonConfig.c_str());
-        if (!created) {
+        auto shared = m_loader.createStrategy(type, jsonConfig.c_str());
+        if (!shared) {
             summary.errors.push_back("failed creating strategy type=" + type);
             continue;
         }
-
-        const auto deleter = created.get_deleter();
-        strategy::IStrategy* raw = created.release();
-        auto shared = std::shared_ptr<strategy::IStrategy>(raw, deleter);
         const auto& cfg = shared->config();
+        if (auto validation = strategy::validateStrategyConfig(cfg); !validation) {
+            summary.errors.push_back(
+                "invalid strategy config type=" + type + " reason=" + validation.error());
+            continue;
+        }
 
         StrategyInfo info;
         info.name = cfg.name;

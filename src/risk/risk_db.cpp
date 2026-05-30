@@ -143,7 +143,8 @@ std::vector<EquityPoint> RiskDb::getByYear(int year) const {
         "WHERE year = ? ORDER BY timestamp_ms ASC, id ASC;";
     auto stmt = prepareStatement(m_db, sql, "getByYear");
     sqlite3_bind_int(stmt.get(), 1, year);
-    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    int rc = SQLITE_ROW;
+    while ((rc = sqlite3_step(stmt.get())) == SQLITE_ROW) {
         EquityPoint p;
         p.id = sqlite3_column_int64(stmt.get(), 0);
         p.timestampMs = sqlite3_column_int64(stmt.get(), 1);
@@ -152,6 +153,9 @@ std::vector<EquityPoint> RiskDb::getByYear(int year) const {
         p.source = columnTextOrEmpty(stmt.get(), 4);
         p.basis = columnTextOrEmpty(stmt.get(), 5);
         out.push_back(std::move(p));
+    }
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error("RiskDb step getByYear failed");
     }
     return out;
 }
@@ -167,7 +171,8 @@ std::vector<EquityPoint> RiskDb::getByTimeRange(std::string_view basis, int64_t 
     bindText(stmt.get(), 1, basis);
     sqlite3_bind_int64(stmt.get(), 2, startMs);
     sqlite3_bind_int64(stmt.get(), 3, endMs);
-    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    int rc = SQLITE_ROW;
+    while ((rc = sqlite3_step(stmt.get())) == SQLITE_ROW) {
         EquityPoint p;
         p.id = sqlite3_column_int64(stmt.get(), 0);
         p.timestampMs = sqlite3_column_int64(stmt.get(), 1);
@@ -176,6 +181,9 @@ std::vector<EquityPoint> RiskDb::getByTimeRange(std::string_view basis, int64_t 
         p.source = columnTextOrEmpty(stmt.get(), 4);
         p.basis = columnTextOrEmpty(stmt.get(), 5);
         out.push_back(std::move(p));
+    }
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error("RiskDb step getByTimeRange failed");
     }
     return out;
 }
@@ -222,8 +230,11 @@ std::optional<RiskMetricsResult> RiskDb::getLatestMetrics(std::string_view windo
     bindText(stmt.get(), 1, windowKind);
     bindText(stmt.get(), 2, basis);
     const int rc = sqlite3_step(stmt.get());
-    if (rc != SQLITE_ROW) {
+    if (rc == SQLITE_DONE) {
         return std::nullopt;
+    }
+    if (rc != SQLITE_ROW) {
+        throw std::runtime_error("RiskDb step getLatestMetrics failed");
     }
     RiskMetricsResult m;
     m.computedAtMs = sqlite3_column_int64(stmt.get(), 0);

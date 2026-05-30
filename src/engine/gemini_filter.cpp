@@ -724,6 +724,9 @@ void GeminiFilterController::maybeTriggerAutotune() const {
     const auto now = std::chrono::steady_clock::now();
     {
         std::lock_guard lock(m_autotuneMutex);
+        if (m_autotuneThread.joinable() && !m_autotuneRunning) {
+            m_autotuneThread.join();
+        }
         if (m_autotuneRunning) {
             return;
         }
@@ -734,8 +737,8 @@ void GeminiFilterController::maybeTriggerAutotune() const {
         const int intervalSeconds = std::max(30, m_config.autotuneIntervalSeconds);
         m_nextAutotuneAt = now + std::chrono::seconds(intervalSeconds);
     }
-    std::thread(
-        [this]() {
+    m_autotuneThread = std::jthread(
+        [this](std::stop_token) {
             try {
                 runAutotuneController();
             } catch (const std::exception& e) {
@@ -749,8 +752,7 @@ void GeminiFilterController::maybeTriggerAutotune() const {
             }
             std::lock_guard lock(m_autotuneMutex);
             m_autotuneRunning = false;
-        })
-        .detach();
+        });
 }
 
 void GeminiFilterController::runAutotuneController() const {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/expected_compat.h"
+
 #include <chrono>
 #include <optional>
 #include <string>
@@ -37,6 +39,9 @@ struct StrategyConfig {
     std::optional<int> maxConcurrentPositions;
     std::optional<double> maxTotalRiskPct;
 };
+
+// Validates strategy configuration invariants before runtime registration.
+std::expected<void, std::string> validateStrategyConfig(const StrategyConfig& cfg);
 
 } // namespace strategy
 

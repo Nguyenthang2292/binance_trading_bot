@@ -54,10 +54,11 @@ AccountMappingResult<void> requireSingleAssetMode(const AccountSnapshot& snapsho
  * @brief Locate the Balance entry corresponding to the configured display
  *        asset inside the provided snapshot.
  *
- * This function prefers explicit per-snapshot balances when present and
- * otherwise searches the account-level asset list. Returned pointers are
- * borrowed from snapshot-owned storage; callers MUST NOT outlive the
- * snapshot.
+ * This function prioritizes account-level asset rows because they carry the
+ * wallet/margin/equity semantics used by MQL4 projections. The optional
+ * `/fapi/v2/balance` snapshot is used only as a fallback when account assets
+ * are unavailable. Returned pointers are borrowed from snapshot-owned storage;
+ * callers MUST NOT outlive the snapshot.
  *
  * @param snapshot The account snapshot to search.
  * @return Pointer to the requested Balance on success or an unexpected
@@ -74,19 +75,19 @@ AccountMappingResult<void> requireSingleAssetMode(const AccountSnapshot& snapsho
     }
 
     const auto wantedAsset = internal::toUpper(snapshot.compatibility.displayAsset);
+    for (const auto& balance : snapshot.account.assets) {
+        if (internal::toUpper(balance.asset) == wantedAsset) {
+            // Borrowed pointer into snapshot-owned storage.
+            return &balance;
+        }
+    }
+
     if (snapshot.balances) {
         for (const auto& balance : *snapshot.balances) {
             if (internal::toUpper(balance.asset) == wantedAsset) {
                 // Borrowed pointer into snapshot-owned storage.
                 return &balance;
             }
-        }
-    }
-
-    for (const auto& balance : snapshot.account.assets) {
-        if (internal::toUpper(balance.asset) == wantedAsset) {
-            // Borrowed pointer into snapshot-owned storage.
-            return &balance;
         }
     }
 

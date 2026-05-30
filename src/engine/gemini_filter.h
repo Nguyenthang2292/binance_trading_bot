@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -165,6 +166,7 @@ private:
     mutable std::mutex m_autotuneMutex;
     mutable bool m_autotuneRunning{false};
     mutable std::chrono::steady_clock::time_point m_nextAutotuneAt{};
+    mutable std::jthread m_autotuneThread;
 };
 
 } // namespace engine

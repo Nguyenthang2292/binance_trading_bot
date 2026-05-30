@@ -113,6 +113,22 @@ double scalarDouble(const std::string& dbPath, const char* sql) {
     return sqlite3_column_double(stmt.get(), 0);
 }
 
+int64_t scalarInt64(const std::string& dbPath, const char* sql) {
+    sqlite3* rawDb = nullptr;
+    EXPECT_EQ(sqlite3_open(dbPath.c_str(), &rawDb), SQLITE_OK);
+    EXPECT_NE(rawDb, nullptr);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(rawDb, sqlite3_close);
+
+    sqlite3_stmt* rawStmt = nullptr;
+    EXPECT_EQ(sqlite3_prepare_v2(db.get(), sql, -1, &rawStmt, nullptr), SQLITE_OK);
+    EXPECT_NE(rawStmt, nullptr);
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
+    if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+        return 0;
+    }
+    return sqlite3_column_int64(stmt.get(), 0);
+}
+
 } // namespace
 
 TEST(ShadowMetricsRecorderTest, InitializeSchemaCreatesIntervalIndexes) {
@@ -171,4 +187,43 @@ TEST(ShadowMetricsRecorderTest, RecordsSignalAndMaturesOutcome) {
         scalarDouble(dbPath, "SELECT raw_return FROM qlib_actual_returns LIMIT 1;"),
         0.05,
         1e-9);
+}
+
+TEST(ShadowMetricsRecorderTest, RepeatedSignalForSameAsofUpdatesSingleShadowRow) {
+    const auto tmp = makeTempDir();
+    TempDirGuard guard{tmp};
+    const std::string dbPath = (tmp / "predictions.db").string();
+
+    orchestration::ShadowMetricsConfig cfg;
+    cfg.dbPath = dbPath;
+    cfg.modelId = "lightgbm_1h_v1";
+    cfg.interval = "1h";
+    cfg.horizonBars = 1;
+    orchestration::ShadowMetricsRecorder recorder(cfg);
+    recorder.initializeSchema();
+
+    const int64_t asofMs = 1'700'000'000'000LL;
+    insertPrediction(dbPath, asofMs);
+
+    orchestration::ShadowSignalRecord record;
+    record.modelId = "lightgbm_1h_v1";
+    record.adapterId = "adapter-a";
+    record.symbol = "BTCUSDT";
+    record.interval = "1h";
+    record.asofOpenTimeMs = asofMs;
+    record.capturedAtMs = asofMs + 1000;
+    record.direction = strategy::Signal::Direction::Long;
+    record.confidence = 0.9;
+    record.executionMode = orchestration::ExecutionMode::Shadow;
+    record.wouldPlaceOrder = true;
+    recorder.recordShadowSignal(record);
+
+    record.capturedAtMs = asofMs + 5000;
+    record.confidence = 0.6;
+    recorder.recordShadowSignal(record);
+
+    EXPECT_EQ(scalarInt64(dbPath, "SELECT COUNT(*) FROM qlib_shadow_signals;"), 1);
+    EXPECT_EQ(
+        scalarInt64(dbPath, "SELECT captured_at_ms FROM qlib_shadow_signals LIMIT 1;"),
+        asofMs + 5000);
 }

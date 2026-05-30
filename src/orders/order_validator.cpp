@@ -227,6 +227,20 @@ ValidationReport OrderValidator::validateProtection(const ProtectionOrderDraft& 
         addIssue(report, ValidationIssue::Severity::Error, "trigger_price_positive", "triggerPrice must be > 0");
     }
 
+    if (draft.positionSide == PositionSide::Long && draft.closeSide != OrderSide::Sell) {
+        addIssue(
+            report,
+            ValidationIssue::Severity::Error,
+            "protection_close_side_mismatch_long",
+            "Long position protection must close with SELL side");
+    } else if (draft.positionSide == PositionSide::Short && draft.closeSide != OrderSide::Buy) {
+        addIssue(
+            report,
+            ValidationIssue::Severity::Error,
+            "protection_close_side_mismatch_short",
+            "Short position protection must close with BUY side");
+    }
+
     return report;
 }
 

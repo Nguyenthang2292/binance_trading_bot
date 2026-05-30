@@ -127,7 +127,7 @@ std::string firstPendingRequest(sqlite3* db) {
     return orchestration::sqlite_helpers::columnText(stmt, 0);
 }
 
-boost::asio::awaitable<void> insertPlanWhenRequestAppears(std::string dbPath, int sliceCount) {
+boost::asio::awaitable<void> insertPlanWhenRequestAppears(std::string dbPath, int sliceCount, std::string sliceSide = "BUY") {
     sqlite3* raw = nullptr;
     sqlite3_open_v2(dbPath.c_str(), &raw, SQLITE_OPEN_READWRITE, nullptr);
     std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(raw, sqlite3_close);
@@ -158,12 +158,13 @@ boost::asio::awaitable<void> insertPlanWhenRequestAppears(std::string dbPath, in
         sqlite3_stmt* slice = nullptr;
         sqlite3_prepare_v2(db.get(),
             "INSERT INTO qlib_execution_slices(slice_id, plan_id, slice_index, due_at_ms, side, quantity, status, revoked_at_ms, revoke_reason) "
-            "VALUES(?, 'plan-1', ?, ?, 'BUY', '0.01', 'pending', NULL, NULL);",
+            "VALUES(?, 'plan-1', ?, ?, ?, '0.01', 'pending', NULL, NULL);",
             -1, &slice, nullptr);
         const std::string sliceId = "slice-" + std::to_string(i);
         orchestration::sqlite_helpers::bindText(slice, 1, sliceId);
         sqlite3_bind_int(slice, 2, i);
         sqlite3_bind_int64(slice, 3, now);
+        orchestration::sqlite_helpers::bindText(slice, 4, sliceSide);
         sqlite3_step(slice);
         sqlite3_finalize(slice);
     }
@@ -242,6 +243,49 @@ TEST(QlibExecutionPlannerTest, RevokesPendingSlicesWhenLatestDecisionContradicts
     std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(raw, sqlite3_close);
     sqlite3_stmt* stmt = nullptr;
     ASSERT_EQ(sqlite3_prepare_v2(db.get(), "SELECT COUNT(*) FROM qlib_execution_slices WHERE status='revoked' AND revoke_reason LIKE 'direction_reversed%';", -1, &stmt, nullptr), SQLITE_OK);
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> guard(stmt, sqlite3_finalize);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(stmt, 0), 2);
+    std::error_code ec;
+    fs::remove(dbPath, ec);
+}
+
+TEST(QlibExecutionPlannerTest, RevokesSellSlicesWhenLatestDecisionFlipsLong) {
+    const auto dbPath = uniqueDbPath("revoke_short");
+    initializeDb(dbPath);
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open_v2(dbPath.string().c_str(), &raw, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> setupDb(raw, sqlite3_close);
+    exec(setupDb.get(), "INSERT INTO qlib_strategy_runs(run_id, strategy_id, qlib_class, config_hash, model_id, model_run_id, interval, universe_hash, started_at_ms, completed_at_ms, status, error) VALUES('run-1','adapter-1','TopkDropoutStrategy','h','m','mr','1h','u',1,2,'succeeded',NULL);");
+    exec(setupDb.get(), "INSERT INTO qlib_strategy_decisions(strategy_id, run_id, model_id, model_run_id, symbol, interval, asof_open_time_ms, generated_at_ms, action, direction, target_weight, score, score_percentile, confidence, reason) VALUES('adapter-1','run-1','m','mr','BTCUSDT','1h',1,2,'buy','long',NULL,0,0,0,'flipped');");
+    setupDb.reset();
+
+    RecordingPlanner fallback;
+    engine::QlibExecutionPlanner planner(dbPath.string(), fallback);
+    boost::asio::io_context ioc;
+    boost::asio::co_spawn(ioc, insertPlanWhenRequestAppears(dbPath.string(), 2, "SELL"), boost::asio::detached);
+    auto qty = DecimalString::parse("0.02");
+    ASSERT_TRUE(qty.has_value());
+    auto result = runAwaitable(ioc, planner.executeMarket(MarketOrderDraft{
+        .symbol = "BTCUSDT",
+        .side = OrderSide::Sell,
+        .quantity = *qty,
+        .metadata = OrderMetadata{.timeframe = std::string("1h"), .strategyTag = std::string("adapter-1")},
+    }));
+    EXPECT_FALSE(result.has_value());
+    EXPECT_TRUE(fallback.quantities.empty());
+
+    ASSERT_EQ(sqlite3_open_v2(dbPath.string().c_str(), &raw, SQLITE_OPEN_READONLY, nullptr), SQLITE_OK);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(raw, sqlite3_close);
+    sqlite3_stmt* stmt = nullptr;
+    ASSERT_EQ(
+        sqlite3_prepare_v2(
+            db.get(),
+            "SELECT COUNT(*) FROM qlib_execution_slices WHERE status='revoked' AND revoke_reason LIKE 'direction_reversed%';",
+            -1,
+            &stmt,
+            nullptr),
+        SQLITE_OK);
     std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> guard(stmt, sqlite3_finalize);
     ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
     EXPECT_EQ(sqlite3_column_int(stmt, 0), 2);

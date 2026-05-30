@@ -40,6 +40,23 @@ std::vector<unsigned char> hexToBytes(std::string_view hex) {
     return bytes;
 }
 
+std::string toBase64(const unsigned char* data, size_t len) {
+    if (len == 0) {
+        return {};
+    }
+    const auto outLen = static_cast<size_t>(4 * ((len + 2) / 3));
+    std::string out(outLen, '\0');
+    const int encodedLen = EVP_EncodeBlock(
+        reinterpret_cast<unsigned char*>(out.data()),
+        data,
+        static_cast<int>(len));
+    if (encodedLen < 0) {
+        throw std::runtime_error("failed to base64 encode Ed25519 signature");
+    }
+    out.resize(static_cast<size_t>(encodedLen));
+    return out;
+}
+
 bool hasQueryParam(std::string_view params, std::string_view key) {
     size_t pos = 0;
     while (pos <= params.size()) {
@@ -59,6 +76,29 @@ bool hasQueryParam(std::string_view params, std::string_view key) {
     return false;
 }
 
+void removeQueryParam(std::string& params, std::string_view key) {
+    std::string out;
+    size_t pos = 0;
+    while (pos <= params.size()) {
+        const auto next = params.find('&', pos);
+        const auto end = next == std::string::npos ? params.size() : next;
+        const auto token = std::string_view(params).substr(pos, end - pos);
+        const auto eq = token.find('=');
+        const auto tokenKey = eq == std::string_view::npos ? token : token.substr(0, eq);
+        if (tokenKey != key) {
+            if (!out.empty()) {
+                out.push_back('&');
+            }
+            out.append(token.data(), token.size());
+        }
+        if (next == std::string::npos) {
+            break;
+        }
+        pos = next + 1;
+    }
+    params = std::move(out);
+}
+
 } // namespace
 
 Signer::Signer(std::string secretKey, SigningMethod method)
@@ -73,10 +113,7 @@ std::string Signer::sign(std::string_view payload) const {
 
 std::string Signer::addSignature(std::string_view params) const {
     std::string signedParams(params);
-
-    if (hasQueryParam(signedParams, "signature")) {
-        return signedParams;
-    }
+    removeQueryParam(signedParams, "signature");
 
     if (!hasQueryParam(signedParams, "timestamp")) {
         if (!signedParams.empty()) {
@@ -144,5 +181,5 @@ std::string Signer::signEd25519(std::string_view payload) const {
 
     EVP_MD_CTX_free(ctx);
     EVP_PKEY_free(pkey);
-    return toHex(sig.data(), sigLen);
+    return toBase64(sig.data(), sigLen);
 }

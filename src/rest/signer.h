@@ -8,9 +8,12 @@ enum class SigningMethod { HMAC_SHA256, Ed25519 };
 
 class Signer {
 public:
+    /** Creates a signer for Binance signed endpoints (HMAC-SHA256 or Ed25519). */
     explicit Signer(std::string secretKey, SigningMethod method = SigningMethod::HMAC_SHA256);
 
+    /** Returns the signature for a canonical request payload string. */
     std::string sign(std::string_view payload) const;
+    /** Ensures timestamp presence and appends a recomputed signature parameter. */
     std::string addSignature(std::string_view params) const;
 
     SigningMethod method() const { return m_method; }

@@ -167,3 +167,34 @@ TEST(StrategyCatalogTest, NonStringTypeIsReportedAsValidationError) {
     EXPECT_EQ(summary.errors[0], "strategy config 'type' must be a string");
 }
 
+TEST(StrategyCatalogTest, InvalidStrategyConfigIsRejectedBeforeRegistryInsert) {
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins"},
+        [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"rsi.dll"}; },
+        [](const std::filesystem::path& path) {
+            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path,
+                &createCatalogStrategy,
+                &destroyCatalogStrategy,
+                &catalogTypeFn,
+                &catalogVersionFn,
+                "rsi_reversal",
+                "1.2.3"));
+        });
+
+    strategy::StrategyRegistry registry;
+    catalog::StrategyCatalog catalog({.pluginsDir = "plugins"}, registry, std::move(loader));
+    const std::vector<nlohmann::json> cfg{
+        nlohmann::json{
+            {"name", "bad_intervals"},
+            {"type", "rsi_reversal"},
+            {"intervals", nlohmann::json::array()},
+        }};
+
+    const auto summary = catalog.initialize(cfg);
+    EXPECT_EQ(summary.strategiesRegistered, 0);
+    ASSERT_FALSE(summary.errors.empty());
+    EXPECT_NE(summary.errors[0].find("invalid strategy config"), std::string::npos);
+    EXPECT_TRUE(registry.all().empty());
+}
+

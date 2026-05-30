@@ -188,6 +188,23 @@ TEST_F(Mql4AccountAdapterTest, UsesDisplayAssetValueInsteadOfAccountTotals) {
     EXPECT_DOUBLE_EQ(*adapter.accountProfit(), 500.0);
 }
 
+TEST_F(Mql4AccountAdapterTest, PrefersAccountAssetsOverBalanceSnapshotForMarginFields) {
+    auto snapshot = createBasicSnapshot();
+    Balance staleBalanceRow = snapshot.account.assets.front();
+    staleBalanceRow.marginBalance = 1.0;
+    staleBalanceRow.initialMargin = 1.0;
+    staleBalanceRow.unrealizedProfit = 1.0;
+    staleBalanceRow.walletBalance = 1.0;
+    snapshot.balances = std::vector<Balance>{staleBalanceRow};
+
+    Mql4AccountAdapter adapter(std::move(snapshot));
+    EXPECT_DOUBLE_EQ(*adapter.accountBalance(), 10000.0);
+    EXPECT_DOUBLE_EQ(*adapter.accountEquity(), 10500.0);
+    EXPECT_DOUBLE_EQ(*adapter.accountMargin(), 1000.0);
+    EXPECT_DOUBLE_EQ(*adapter.accountFreeMargin(), 9500.0);
+    EXPECT_DOUBLE_EQ(*adapter.accountProfit(), 500.0);
+}
+
 TEST_F(Mql4AccountAdapterTest, FreeMarginIgnoresAvailableBalanceReserveWhenNoPositions) {
     auto snapshot = createBasicSnapshot();
     snapshot.account.positions.clear();

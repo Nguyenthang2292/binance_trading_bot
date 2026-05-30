@@ -21,6 +21,9 @@ public:
     BinanceAPI(const std::string& apiKey, const std::string& secretKey);
     ~BinanceAPI();
 
+    // Legacy wrapper is restricted to durable journaling + RESULT response semantics.
+    static OrdersConfig makeLegacyOrdersConfig();
+
     std::optional<double> getPrice(const std::string& symbol);
     std::vector<Kline> getKlines(const std::string& symbol, const std::string& interval, int limit = 100);
     std::vector<Ticker> get24hrTickers();

@@ -31,6 +31,33 @@ ValidationIssue makeProtectionWarning(std::string code, std::string message) {
     };
 }
 
+bool isMarketEntryOperation(TradeOperation operation) {
+    return operation == TradeOperation::Buy || operation == TradeOperation::Sell;
+}
+
+boost::asio::awaitable<std::optional<Quantity>> confirmedProtectionQuantity(
+    Orders& orders,
+    const MappedOrderSendDraft& sourceDraft,
+    const NormalPlacementResult& placement) {
+    if (!isMarketEntryOperation(sourceDraft.operation)) {
+        co_return sourceDraft.quantity;
+    }
+    if (!placement.orderId.has_value()) {
+        co_return std::nullopt;
+    }
+
+    auto queried = co_await orders.queryNormalByOrderId(sourceDraft.symbol, *placement.orderId);
+    if (!queried) {
+        co_return std::nullopt;
+    }
+
+    auto parsedQty = DecimalString::parse(queried->executedQty);
+    if (!parsedQty || parsedQty->toDouble() <= 0.0) {
+        co_return std::nullopt;
+    }
+    co_return *parsedQty;
+}
+
 boost::asio::awaitable<void> attachProtectionIfPresent(
     Orders& orders,
     const MappedOrderSendDraft& sourceDraft,
@@ -42,8 +69,16 @@ boost::asio::awaitable<void> attachProtectionIfPresent(
         co_return;
     }
 
+    const auto protectionQty = co_await confirmedProtectionQuantity(orders, sourceDraft, placement);
+    if (!protectionQty) {
+        placement.validation.issues.push_back(makeProtectionWarning(
+            "mql4_protection_qty_unconfirmed",
+            "skipped SL/TP attach because executed quantity is not confirmed"));
+        co_return;
+    }
+
     const auto shape = protectionShapeFor(sourceDraft.operation);
-    const auto closeQuantity = std::variant<Quantity, CloseEntirePosition>{sourceDraft.quantity};
+    const auto closeQuantity = std::variant<Quantity, CloseEntirePosition>{*protectionQty};
 
     if (sourceDraft.stopLoss) {
         ProtectionOrderDraft stopLossDraft{

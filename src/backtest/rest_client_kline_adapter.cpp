@@ -235,6 +235,13 @@ IKlineRestClient::FetchResult RestClientKlineAdapter::fetchClosedKlines(
                                           int pageLimit,
                                           long long endTimeMs,
                                           std::chrono::milliseconds wallLeft) -> detail::PageOutcome {
+        if (m_ioc.get_executor().running_in_this_thread()) {
+            detail::PageOutcome outcome;
+            outcome.ok = false;
+            outcome.error = "io_thread_blocking_forbidden";
+            return outcome;
+        }
+
         auto future = asio::co_spawn(
             m_ioc,
             klinesWithTimeout(m_restClient,

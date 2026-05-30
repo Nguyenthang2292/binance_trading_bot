@@ -260,6 +260,86 @@ TEST(OrdersTest, ProtectionUsesAlgoRestEndpoint) {
     EXPECT_EQ(rest.lastNewAlgoOrderRequest->newClientOrderId.value_or(""), "cid-sl-1");
 }
 
+TEST(OrdersTest, ProtectionRejectsWhenJournalIsMissingAndBestEffortDisabled) {
+    StubRestClient rest;
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = false;
+    cfg.journalIsDurable = false;
+    Orders orders(rest, cfg);
+
+    ProtectionOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .positionSide = PositionSide::Both,
+        .closeSide = OrderSide::Sell,
+        .kind = ProtectionKind::StopLoss,
+        .triggerPrice = trigger("100.0"),
+        .closeQuantity = qty("0.01"),
+        .clientAlgoId = std::string("cid-sl-required-1"),
+    };
+
+    auto result = runAwaitable(orders.protection(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->state, PlacementState::Rejected);
+    ASSERT_TRUE(result->errorCategory.has_value());
+    EXPECT_EQ(*result->errorCategory, OrderErrorCategory::Journal);
+    EXPECT_EQ(rest.newAlgoOrderCalls, 0);
+}
+
+TEST(OrdersTest, ProtectionRejectsInvalidCloseSideForLongPosition) {
+    StubRestClient rest;
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
+    Orders orders(rest, cfg);
+
+    ProtectionOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .positionSide = PositionSide::Long,
+        .closeSide = OrderSide::Buy,
+        .kind = ProtectionKind::StopLoss,
+        .triggerPrice = trigger("100.0"),
+        .closeQuantity = qty("0.01"),
+    };
+
+    auto result = runAwaitable(orders.protection(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->state, PlacementState::Rejected);
+    ASSERT_TRUE(result->errorCategory.has_value());
+    EXPECT_EQ(*result->errorCategory, OrderErrorCategory::Validation);
+    EXPECT_EQ(rest.newAlgoOrderCalls, 0);
+}
+
+TEST(OrdersTest, ProtectionInOneWayQuantityModeForcesReduceOnly) {
+    StubRestClient rest;
+    Order placed;
+    placed.symbol = "BTCUSDT";
+    placed.orderId = 1234;
+    placed.status = "NEW";
+    rest.newAlgoOrderResult = placed;
+
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
+    Orders orders(rest, cfg);
+
+    ProtectionOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .positionSide = PositionSide::Both,
+        .closeSide = OrderSide::Sell,
+        .kind = ProtectionKind::StopLoss,
+        .triggerPrice = trigger("100.0"),
+        .closeQuantity = qty("0.01"),
+    };
+
+    auto result = runAwaitable(orders.protection(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->state, PlacementState::Accepted);
+    ASSERT_TRUE(rest.lastNewAlgoOrderRequest.has_value());
+    ASSERT_TRUE(rest.lastNewAlgoOrderRequest->reduceOnly.has_value());
+    EXPECT_TRUE(*rest.lastNewAlgoOrderRequest->reduceOnly);
+}
+
 TEST(OrdersTest, QuerySnapshotPreservesDecimalStrings) {
     StubRestClient rest;
     Order order;

@@ -17,8 +17,10 @@
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -100,16 +102,48 @@ void seedGoodOutcomes(const std::string& dbPath, int count) {
     }
 }
 
+void execSql(sqlite3* db, const char* sql) {
+    char* err = nullptr;
+    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    ASSERT_EQ(rc, SQLITE_OK) << (err ? err : "sqlite error");
+    if (err) {
+        sqlite3_free(err);
+    }
+}
+
 struct TestContext {
     std::filesystem::path tempDir;
     TempDirGuard guard;
     std::string dbPath;
+    std::filesystem::path dataDir;
+    std::filesystem::path modelDir;
+    std::filesystem::path readyDir;
+    std::filesystem::path publishedModelPath;
+    std::string activeRunId{"run_active_1"};
     std::shared_ptr<orchestration::QlibStateStore> stateStore;
 
     TestContext()
         : tempDir(makeTempDir()),
           guard{tempDir},
-          dbPath((tempDir / "predictions.db").string()) {
+          dbPath((tempDir / "predictions.db").string()),
+          dataDir(tempDir / "data"),
+          modelDir(tempDir / "models"),
+          readyDir(tempDir / "ready"),
+          publishedModelPath((tempDir / "models" / "published" / "lightgbm_1h_run_active_1.txt")) {
+        std::filesystem::create_directories(dataDir);
+        std::filesystem::create_directories(publishedModelPath.parent_path());
+        std::filesystem::create_directories(readyDir);
+        {
+            std::ofstream modelOut(publishedModelPath, std::ios::binary);
+            modelOut << "model-bytes";
+        }
+        {
+            std::ofstream datasetOut(dataDir / "klines_1h.csv", std::ios::binary);
+            datasetOut << "open_time_ms,open,high,low,close,volume\n";
+            datasetOut << "1700000000000,100,101,99,100,1\n";
+            datasetOut << "1700000003600,100,101,99,100,1\n";
+        }
+
         orchestration::QlibStateStoreConfig stateCfg;
         stateCfg.dbPath = dbPath;
         stateCfg.modelId = "lightgbm_1h_v1";
@@ -124,6 +158,42 @@ struct TestContext {
         shadowCfg.interval = "1h";
         orchestration::ShadowMetricsRecorder shadowRecorder(shadowCfg);
         shadowRecorder.initializeSchema();
+
+        sqlite3* rawDb = nullptr;
+        if (sqlite3_open(dbPath.c_str(), &rawDb) != SQLITE_OK || rawDb == nullptr) {
+            throw std::runtime_error("failed to open sqlite db for test context");
+        }
+        std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(rawDb, sqlite3_close);
+        const std::string insertRun =
+            "INSERT OR REPLACE INTO qlib_model_runs("
+            "run_id, model_id, interval, horizon_bars, model_path, manifest_path, report_path, "
+            "feature_schema_hash, dataset_fingerprint, trained_at_ms, published_at_ms, status"
+            ") VALUES("
+            "'" + activeRunId + "',"
+            "'lightgbm_1h_v1',"
+            "'1h',"
+            "1,"
+            "'" + publishedModelPath.string() + "',"
+            "'manifest.json',"
+            "'report.json',"
+            "'schema_hash',"
+            "'dataset_fingerprint',"
+            "1700000000000,"
+            "1700000001000,"
+            "'active'"
+            ");";
+        execSql(db.get(), insertRun.c_str());
+        const std::string updateRuntime =
+            "UPDATE qlib_runtime_state "
+            "SET active_run_id='" + activeRunId + "', execution_mode='shadow' "
+            "WHERE model_id='lightgbm_1h_v1' AND interval='1h';";
+        execSql(db.get(), updateRuntime.c_str());
+        stateStore->initializeRuntimeStateIfMissing();
+    }
+
+    void appendDatasetOpenTime(int64_t asofMs) const {
+        std::ofstream datasetOut(dataDir / "klines_1h.csv", std::ios::app | std::ios::binary);
+        datasetOut << asofMs << ",100,101,99,100,1\n";
     }
 };
 
@@ -307,4 +377,29 @@ TEST(CandleSchedulerThreadTest, Phase4CheckSkippedAfterPhase3Failure) {
     worker.join();
 
     EXPECT_EQ(ctx.stateStore->snapshot().mode, orchestration::ExecutionMode::Shadow);
+}
+
+TEST(CandleSchedulerThreadTest, MissingDatasetAsofSkipsPhase3AndDoesNotAdvanceCursor) {
+    TestContext ctx;
+    orchestration::PromotionChecker promoter({.minCandles = 1000});
+    FakeProcessRunner runner({.exitCode = 0, .timedOut = false, .succeeded = true, .logPath = "p3.log"});
+
+    orchestration::CandleSchedulerThread scheduler(
+        makeCandleConfig(ctx.tempDir, ctx.dbPath),
+        runner,
+        *ctx.stateStore,
+        promoter);
+
+    std::jthread worker([&](std::stop_token st) { scheduler.run(st); });
+    scheduler.notifyCandleClose(1'800'000'000'000LL, "BTCUSDT"); // not in seeded dataset
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(runner.callCount(), 0u);
+
+    ctx.appendDatasetOpenTime(1'800'000'000'000LL);
+    scheduler.notifyCandleClose(1'800'000'000'000LL, "BTCUSDT");
+    ASSERT_TRUE(runner.waitForCallCount(1, std::chrono::milliseconds(2500)));
+
+    worker.request_stop();
+    worker.join();
+    EXPECT_EQ(runner.callCount(), 1u);
 }

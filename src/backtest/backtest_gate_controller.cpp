@@ -73,6 +73,7 @@ std::string dropReasonStr(DropReason r) {
         case DropReason::ComboBudgetExhausted:  return "ComboBudgetExhausted";
         case DropReason::NoComboPassedFilter:   return "NoComboPassedFilter";
         case DropReason::NoPlateauFound:        return "NoPlateauFound";
+        case DropReason::SignalMismatch:        return "SignalMismatch";
         case DropReason::MajorityVoteFailed:    return "MajorityVoteFailed";
         case DropReason::DeadlineExceeded:      return "DeadlineExceeded";
         case DropReason::InternalError:         return "InternalError";
@@ -226,6 +227,12 @@ struct VoteOutcome {
     int total{0};
 };
 
+bool passesVoteCriteria(const strategy::Signal& signal, const BacktestGateRequest& req) {
+    return signal.direction == req.originalDirection &&
+        signal.confidence >= req.baseConfig.minConfidence &&
+        signal.atr > 0.0;
+}
+
 VoteOutcome runVote(
     const IOptimizableStrategy& adapter,
     const std::vector<ParamPoint>& votePoints,
@@ -235,9 +242,7 @@ VoteOutcome runVote(
     VoteOutcome out;
     for (const auto& point : votePoints) {
         const auto& voteSig = evaluateCached(adapter, point, req, evalKlines, cache);
-        if (voteSig.direction == req.originalDirection &&
-            voteSig.confidence >= req.baseConfig.minConfidence &&
-            voteSig.atr > 0.0) {
+        if (passesVoteCriteria(voteSig, req)) {
             out.matching++;
         }
         out.total++;
@@ -529,6 +534,14 @@ BacktestGateResult BacktestGateController::evaluate(const BacktestGateRequest& r
 
     const auto& evalKlines = window.closedKlines;  // ends at bar T
     std::unordered_map<std::string, strategy::Signal> evalCache;
+    const auto& centerVoteSignal = evaluateCached(adapter, plateau.center, req, evalKlines, evalCache);
+    if (!passesVoteCriteria(centerVoteSignal, req)) {
+        return emitDrop(
+            DropReason::SignalMismatch,
+            "plateau center does not support requested signal direction/confidence",
+            combosEvaluated);
+    }
+
     const auto vote = runVote(adapter, votePoints, evalKlines, req, evalCache);
 
     const double voteRatio = vote.total > 0

@@ -9,7 +9,21 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/use_future.hpp>
 
+#include <chrono>
 #include <future>
+
+OrdersConfig BinanceAPI::makeLegacyOrdersConfig() {
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "legacy";
+    cfg.allowBestEffortJournal = false;
+    cfg.defaultResponseType = ResponseType::RESULT;
+    cfg.recvWindow = std::chrono::milliseconds{5000};
+    cfg.allowRawTimestampOverride = false;
+    cfg.positionMode = PositionMode::OneWay;
+    cfg.journalIsDurable = true;
+    cfg.journalPath = "data/legacy_orders_journal.log";
+    return cfg;
+}
 
 BinanceAPI::BinanceAPI(const std::string& apiKey, const std::string& secretKey)
     : m_context(std::make_unique<BinanceContext>(ContextConfig{
@@ -20,15 +34,7 @@ BinanceAPI::BinanceAPI(const std::string& apiKey, const std::string& secretKey)
       })),
       m_rest(std::make_unique<RestClient>(m_context->ioc(), m_context->sslContext(), m_context->config())),
       m_ordersAdapter(std::make_unique<RestClientAdapter>(*m_rest)) {
-    OrdersConfig ordersConfig;
-    ordersConfig.clientIdNamespace = "legacy";
-    ordersConfig.allowBestEffortJournal = true;
-    ordersConfig.defaultResponseType = ResponseType::ACK;
-    ordersConfig.recvWindow = std::chrono::milliseconds{5000};
-    ordersConfig.allowRawTimestampOverride = false;
-    ordersConfig.positionMode = PositionMode::OneWay;
-    ordersConfig.journal = std::make_shared<InMemoryOrderJournal>();
-    ordersConfig.journalIsDurable = false;
+    OrdersConfig ordersConfig = makeLegacyOrdersConfig();
     m_orders = std::make_unique<Orders>(*m_ordersAdapter, std::move(ordersConfig));
 
     Logger::instance().log(LogLevel::Info, "Binance Futures API initialized");

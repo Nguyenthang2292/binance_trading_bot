@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <string>
 
 namespace {
@@ -32,6 +33,8 @@ TEST(EquityCurveTest, RecordsSourceBasisAndRejectsNonPositiveEquity) {
         const int64_t ts = utcMidnightMs(2026, 1, 2);
         curve.recordPeriodic(-1.0, ts, "margin");
         curve.recordTradeClose(0.0, ts, "margin");
+        curve.recordPeriodic(std::numeric_limits<double>::quiet_NaN(), ts, "margin");
+        curve.recordPeriodic(std::numeric_limits<double>::infinity(), ts, "margin");
         curve.recordPeriodic(100.0, ts, "margin");
         curve.recordTradeClose(101.0, ts + 1000, "wallet");
 

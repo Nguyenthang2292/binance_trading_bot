@@ -24,12 +24,15 @@ using sqlite_helpers::execOrThrow;
 
 std::string makeShadowId(
     std::string_view modelId,
+    std::string_view adapterId,
     std::string_view symbol,
     std::string_view interval,
     int64_t asofOpenMs,
-    int64_t capturedAtMs) {
+    int horizonBars,
+    std::string_view direction) {
     std::ostringstream out;
-    out << modelId << "|" << symbol << "|" << interval << "|" << asofOpenMs << "|" << capturedAtMs;
+    out << modelId << "|" << adapterId << "|" << symbol << "|" << interval << "|" << asofOpenMs << "|" << horizonBars
+        << "|" << direction;
     return out.str();
 }
 
@@ -248,12 +251,15 @@ void ShadowMetricsRecorder::recordShadowSignal(const ShadowSignalRecord& record)
         horizonBars = m_config.horizonBars;
     }
 
+    const std::string directionText = directionToDb(record.direction);
     const std::string shadowId = makeShadowId(
         record.modelId.empty() ? m_config.modelId : record.modelId,
+        record.adapterId,
         record.symbol,
         record.interval,
         asofOpenMs,
-        record.capturedAtMs);
+        horizonBars,
+        directionText);
 
     sqlite3_stmt* insertStmt = insertShadowSignalStmtLocked();
     sqlite3_reset(insertStmt);
@@ -277,7 +283,7 @@ void ShadowMetricsRecorder::recordShadowSignal(const ShadowSignalRecord& record)
     } else {
         sqlite3_bind_null(insertStmt, 11);
     }
-    bindText(insertStmt, 12, directionToDb(record.direction));
+    bindText(insertStmt, 12, directionText);
     sqlite3_bind_double(insertStmt, 13, record.confidence);
     bindText(insertStmt, 14, modeToDb(record.executionMode));
     if (record.blockedStage.empty()) {

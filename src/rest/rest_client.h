@@ -17,7 +17,6 @@
 
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -93,9 +92,28 @@ public:
     boost::asio::awaitable<Result<void>> keepAliveListenKey(std::string listenKey);
     boost::asio::awaitable<Result<void>> deleteListenKey(std::string listenKey);
 
-    using RawParseResult = std::expected<
-        std::pair<simdjson::ondemand::document, std::string_view>,
-        BinanceError>;
+    struct RawParseStorage {
+        simdjson::padded_string buffer;
+        simdjson::ondemand::parser parser;
+    };
+
+    struct RawParsedDocument {
+        std::shared_ptr<RawParseStorage> storage;
+        simdjson::ondemand::document document;
+        std::string_view body;
+
+        RawParsedDocument(
+            std::shared_ptr<RawParseStorage> owned,
+            simdjson::ondemand::document&& doc,
+            std::string_view bodyView)
+            : storage(std::move(owned)), document(std::move(doc)), body(bodyView) {}
+        RawParsedDocument(RawParsedDocument&&) noexcept = default;
+        RawParsedDocument& operator=(RawParsedDocument&&) noexcept = default;
+        RawParsedDocument(const RawParsedDocument&) = delete;
+        RawParsedDocument& operator=(const RawParsedDocument&) = delete;
+    };
+
+    using RawParseResult = std::expected<RawParsedDocument, BinanceError>;
 
     template <typename T>
     Result<T> parseResponse(std::string_view body,
@@ -129,10 +147,6 @@ private:
         std::string params,
         RateLimiter::Cost cost = {});
 
-    // Buffer+parser used by rawParse(). Access serialized via m_rawParseMutex.
-    std::mutex m_rawParseMutex;
-    simdjson::ondemand::parser m_rawParser;
-    simdjson::padded_string m_rawBuffer;
 };
 
 template <typename T>
@@ -143,7 +157,7 @@ Result<T> RestClient::parseResponse(std::string_view body,
         return std::unexpected(parsed.error());
     }
     try {
-        return parser(parsed->first);
+        return parser(parsed->document);
     } catch (const std::exception& e) {
         return std::unexpected(BinanceError::fromParse(e.what()));
     }

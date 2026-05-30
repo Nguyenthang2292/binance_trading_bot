@@ -399,13 +399,21 @@ Order parseAlgoOrder(simdjson::ondemand::object& doc) {
 Balance parseBalance(simdjson::ondemand::object& doc) {
     Balance b;
     b.asset = stringField(doc, "asset");
+    b.walletBalanceRaw = decimalField(doc, "walletBalance");
     b.walletBalance = doubleField(doc, "walletBalance");
+    b.crossWalletBalanceRaw = decimalField(doc, "crossWalletBalance");
     b.crossWalletBalance = doubleField(doc, "crossWalletBalance");
+    b.unrealizedProfitRaw = decimalField(doc, "unrealizedProfit");
     b.unrealizedProfit = doubleField(doc, "unrealizedProfit");
+    b.marginBalanceRaw = decimalField(doc, "marginBalance");
     b.marginBalance = doubleField(doc, "marginBalance");
+    b.maintMarginRaw = decimalField(doc, "maintMargin");
     b.maintMargin = doubleField(doc, "maintMargin");
+    b.initialMarginRaw = decimalField(doc, "initialMargin");
     b.initialMargin = doubleField(doc, "initialMargin");
+    b.availableBalanceRaw = decimalField(doc, "availableBalance");
     b.availableBalance = doubleField(doc, "availableBalance");
+    b.maxWithdrawAmountRaw = decimalField(doc, "maxWithdrawAmount");
     b.maxWithdrawAmount = doubleField(doc, "maxWithdrawAmount");
     return b;
 }
@@ -414,17 +422,27 @@ Position parsePosition(simdjson::ondemand::object& doc) {
     Position p;
     p.symbol = stringField(doc, "symbol");
     p.positionSide = parsePositionSide(stringField(doc, "positionSide"));
+    p.positionAmtRaw = decimalField(doc, "positionAmt");
     p.positionAmt = doubleField(doc, "positionAmt");
+    p.entryPriceRaw = decimalField(doc, "entryPrice");
     p.entryPrice = doubleField(doc, "entryPrice");
+    p.breakEvenPriceRaw = decimalField(doc, "breakEvenPrice");
     p.breakEvenPrice = doubleField(doc, "breakEvenPrice");
+    p.markPriceRaw = decimalField(doc, "markPrice");
     p.markPrice = doubleField(doc, "markPrice");
+    p.unrealizedProfitRaw = decimalField(doc, "unrealizedProfit");
     p.unrealizedProfit = doubleField(doc, "unrealizedProfit");
+    p.liquidationPriceRaw = decimalField(doc, "liquidationPrice");
     p.liquidationPrice = doubleField(doc, "liquidationPrice");
     p.leverage = static_cast<int>(intField(doc, "leverage"));
     p.marginType = stringField(doc, "marginType");
+    p.isolatedMarginRaw = decimalField(doc, "isolatedMargin");
     p.isolatedMargin = doubleField(doc, "isolatedMargin");
+    p.initialMarginRaw = decimalField(doc, "initialMargin");
     p.initialMargin = doubleField(doc, "initialMargin");
+    p.maintMarginRaw = decimalField(doc, "maintMargin");
     p.maintMargin = doubleField(doc, "maintMargin");
+    p.notionalRaw = decimalField(doc, "notional");
     p.notional = doubleField(doc, "notional");
     return p;
 }
@@ -445,9 +463,9 @@ RestClient::RestClient(
       m_cfg(std::move(cfg)) {}
 
 RestClient::RawParseResult RestClient::rawParse(std::string_view body) {
-    std::scoped_lock lock(m_rawParseMutex);
-    m_rawBuffer = simdjson::padded_string(body);
-    auto docResult = m_rawParser.iterate(m_rawBuffer);
+    auto storage = std::make_shared<RawParseStorage>();
+    storage->buffer = simdjson::padded_string(body);
+    auto docResult = storage->parser.iterate(storage->buffer);
     if (docResult.error()) {
         return std::unexpected(BinanceError::fromParse(simdjson::error_message(docResult.error())));
     }
@@ -456,9 +474,8 @@ RestClient::RawParseResult RestClient::rawParse(std::string_view body) {
     if (type.error()) {
         return std::unexpected(BinanceError::fromParse(simdjson::error_message(type.error())));
     }
-    return std::pair<simdjson::ondemand::document, std::string_view>{
-        std::move(doc),
-        std::string_view(m_rawBuffer.data(), m_rawBuffer.length())};
+    const auto bodyView = std::string_view(storage->buffer.data(), storage->buffer.length());
+    return RawParsedDocument{std::move(storage), std::move(doc), bodyView};
 }
 
 asio::awaitable<HttpSession::Result> RestClient::publicGet(
@@ -504,6 +521,11 @@ asio::awaitable<HttpSession::Result> RestClient::signedGet(
         m_session->lastUsedWeight(),
         m_session->lastUsedOrders(),
         m_session->lastUsedOrders10s());
+    if (!result &&
+        result.error().category == ErrorCategory::RateLimit &&
+        (result.error().code == 429 || result.error().code == 418)) {
+        m_rateLimiter->penalize(std::chrono::seconds(1));
+    }
     co_return result;
 }
 
@@ -517,6 +539,11 @@ asio::awaitable<HttpSession::Result> RestClient::signedPost(
         m_session->lastUsedWeight(),
         m_session->lastUsedOrders(),
         m_session->lastUsedOrders10s());
+    if (!result &&
+        result.error().category == ErrorCategory::RateLimit &&
+        (result.error().code == 429 || result.error().code == 418)) {
+        m_rateLimiter->penalize(std::chrono::seconds(1));
+    }
     co_return result;
 }
 
@@ -530,6 +557,11 @@ asio::awaitable<HttpSession::Result> RestClient::signedPut(
         m_session->lastUsedWeight(),
         m_session->lastUsedOrders(),
         m_session->lastUsedOrders10s());
+    if (!result &&
+        result.error().category == ErrorCategory::RateLimit &&
+        (result.error().code == 429 || result.error().code == 418)) {
+        m_rateLimiter->penalize(std::chrono::seconds(1));
+    }
     co_return result;
 }
 
@@ -543,6 +575,11 @@ asio::awaitable<HttpSession::Result> RestClient::signedDelete(
         m_session->lastUsedWeight(),
         m_session->lastUsedOrders(),
         m_session->lastUsedOrders10s());
+    if (!result &&
+        result.error().category == ErrorCategory::RateLimit &&
+        (result.error().code == 429 || result.error().code == 418)) {
+        m_rateLimiter->penalize(std::chrono::seconds(1));
+    }
     co_return result;
 }
 
@@ -751,12 +788,19 @@ asio::awaitable<Result<FuturesAccount>> RestClient::account() {
         a.canTrade = boolField(object, "canTrade");
         a.canDeposit = boolField(object, "canDeposit");
         a.canWithdraw = boolField(object, "canWithdraw");
+        a.totalWalletBalanceRaw = decimalField(object, "totalWalletBalance");
         a.totalWalletBalance = doubleField(object, "totalWalletBalance");
+        a.totalUnrealizedProfitRaw = decimalField(object, "totalUnrealizedProfit");
         a.totalUnrealizedProfit = doubleField(object, "totalUnrealizedProfit");
+        a.totalMarginBalanceRaw = decimalField(object, "totalMarginBalance");
         a.totalMarginBalance = doubleField(object, "totalMarginBalance");
+        a.totalInitialMarginRaw = decimalField(object, "totalInitialMargin");
         a.totalInitialMargin = doubleField(object, "totalInitialMargin");
+        a.totalMaintMarginRaw = decimalField(object, "totalMaintMargin");
         a.totalMaintMargin = doubleField(object, "totalMaintMargin");
+        a.availableBalanceRaw = decimalField(object, "availableBalance");
         a.availableBalance = doubleField(object, "availableBalance");
+        a.maxWithdrawAmountRaw = decimalField(object, "maxWithdrawAmount");
         a.maxWithdrawAmount = doubleField(object, "maxWithdrawAmount");
         auto assets = object.find_field_unordered("assets").get_array().value();
         for (auto itemValue : assets) {
@@ -936,7 +980,10 @@ asio::awaitable<Result<Order>> RestClient::newOrder(OrderRequest req) {
     for (const auto& [k, v] : req.extraParams) {
         appendParam(params, k, v);
     }
-    auto body = co_await signedPost("/fapi/v1/order", params);
+    auto body = co_await signedPost(
+        "/fapi/v1/order",
+        params,
+        RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
     if (!body) co_return std::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
@@ -966,7 +1013,10 @@ asio::awaitable<Result<Order>> RestClient::newAlgoOrder(OrderRequest req) {
     for (const auto& [k, v] : req.extraParams) {
         appendParam(params, k, v);
     }
-    auto body = co_await signedPost("/fapi/v1/algoOrder", params);
+    auto body = co_await signedPost(
+        "/fapi/v1/algoOrder",
+        params,
+        RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
     if (!body) co_return std::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
@@ -990,7 +1040,10 @@ asio::awaitable<Result<Order>> RestClient::modifyOrder(OrderRequest req) {
     for (const auto& [k, v] : req.extraParams) {
         appendParam(params, k, v);
     }
-    auto body = co_await signedPut("/fapi/v1/order", params);
+    auto body = co_await signedPut(
+        "/fapi/v1/order",
+        params,
+        RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
     if (!body) co_return std::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
@@ -999,7 +1052,10 @@ asio::awaitable<Result<Order>> RestClient::modifyOrder(OrderRequest req) {
 }
 
 asio::awaitable<Result<Order>> RestClient::cancelOrder(std::string symbol, int64_t orderId) {
-    auto body = co_await signedDelete("/fapi/v1/order", query({{"symbol", upper(symbol)}, {"orderId", std::to_string(orderId)}}));
+    auto body = co_await signedDelete(
+        "/fapi/v1/order",
+        query({{"symbol", upper(symbol)}, {"orderId", std::to_string(orderId)}}),
+        RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
     if (!body) co_return std::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
@@ -1010,7 +1066,8 @@ asio::awaitable<Result<Order>> RestClient::cancelOrder(std::string symbol, int64
 asio::awaitable<Result<Order>> RestClient::cancelAlgoOrder(std::string symbol, int64_t algoId) {
     auto body = co_await signedDelete(
         "/fapi/v1/algoOrder",
-        query({{"symbol", upper(symbol)}, {"algoId", std::to_string(algoId)}}));
+        query({{"symbol", upper(symbol)}, {"algoId", std::to_string(algoId)}}),
+        RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
     if (!body) co_return std::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
@@ -1021,7 +1078,8 @@ asio::awaitable<Result<Order>> RestClient::cancelAlgoOrder(std::string symbol, i
 asio::awaitable<Result<Order>> RestClient::cancelOrderByClientOrderId(std::string symbol, std::string clientOrderId) {
     auto body = co_await signedDelete(
         "/fapi/v1/order",
-        query({{"symbol", upper(symbol)}, {"origClientOrderId", clientOrderId}}));
+        query({{"symbol", upper(symbol)}, {"origClientOrderId", clientOrderId}}),
+        RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
     if (!body) co_return std::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
@@ -1034,7 +1092,8 @@ asio::awaitable<Result<Order>> RestClient::cancelAlgoOrderByClientAlgoId(
     std::string clientAlgoId) {
     auto body = co_await signedDelete(
         "/fapi/v1/algoOrder",
-        query({{"symbol", upper(symbol)}, {"clientAlgoId", clientAlgoId}}));
+        query({{"symbol", upper(symbol)}, {"clientAlgoId", clientAlgoId}}),
+        RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
     if (!body) co_return std::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
@@ -1043,7 +1102,10 @@ asio::awaitable<Result<Order>> RestClient::cancelAlgoOrderByClientAlgoId(
 }
 
 asio::awaitable<Result<void>> RestClient::cancelAllOrders(std::string symbol) {
-    auto body = co_await signedDelete("/fapi/v1/allOpenOrders", query({{"symbol", upper(symbol)}}));
+    auto body = co_await signedDelete(
+        "/fapi/v1/allOpenOrders",
+        query({{"symbol", upper(symbol)}}),
+        RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
     if (!body) co_return std::unexpected(body.error());
     co_return Result<void>{};
 }
@@ -1171,12 +1233,13 @@ asio::awaitable<Result<std::vector<UserTrade>>> RestClient::userTrades(std::stri
 }
 
 asio::awaitable<Result<BatchOrderResult>> RestClient::batchOrders(std::vector<OrderRequest> reqs) {
-    std::vector<OrderRequest> limited;
-    const size_t maxBatch = std::min<size_t>(5, reqs.size());
-    limited.reserve(maxBatch);
-    for (size_t i = 0; i < maxBatch; ++i) {
-        limited.push_back(std::move(reqs[i]));
+    if (reqs.size() > 5) {
+        co_return std::unexpected(BinanceError::fromApiResponse(
+            -91003,
+            "batchOrders supports at most 5 orders per request"));
     }
+    std::vector<OrderRequest> limited = std::move(reqs);
+    const size_t maxBatch = limited.size();
 
     std::ostringstream json;
     json << "[";
@@ -1189,16 +1252,23 @@ asio::awaitable<Result<BatchOrderResult>> RestClient::batchOrders(std::vector<Or
         }
         if (i > 0) json << ",";
         json << "{";
-        json << "\"symbol\":\"" << jsonEscape(upper(req.symbol)) << "\",";
-        json << "\"side\":\"" << sideToString(req.side) << "\",";
-        json << "\"type\":\"" << typeToString(req.type) << "\",";
-        json << "\"positionSide\":\"" << positionSideToString(req.positionSide) << "\",";
-        json << "\"quantity\":\"" << jsonEscape(req.quantity) << "\"";
+        json << "\"symbol\":\"" << jsonEscape(upper(req.symbol)) << "\"";
+        appendJsonStringField(json, "side", sideToString(req.side));
+        appendJsonStringField(json, "type", typeToString(req.type));
+        appendJsonStringField(json, "positionSide", positionSideToString(req.positionSide));
+        const bool allowQuantity = !(req.closePosition && *req.closePosition);
+        if (allowQuantity) {
+            appendJsonStringField(json, "quantity", req.quantity);
+        }
         if (req.price) appendJsonStringField(json, "price", *req.price);
         if (req.stopPrice) appendJsonStringField(json, "stopPrice", *req.stopPrice);
         if (req.activationPrice) appendJsonStringField(json, "activationPrice", *req.activationPrice);
         if (req.callbackRate) appendJsonStringField(json, "callbackRate", *req.callbackRate);
-        if (req.timeInForce) appendJsonStringField(json, "timeInForce", tifToString(*req.timeInForce));
+        if (req.timeInForce) {
+            appendJsonStringField(json, "timeInForce", tifToString(*req.timeInForce));
+        } else if (req.type == OrderType::Limit) {
+            appendJsonStringField(json, "timeInForce", "GTC");
+        }
         if (req.reduceOnly) appendJsonStringField(json, "reduceOnly", boolParam(*req.reduceOnly));
         if (req.closePosition) appendJsonStringField(json, "closePosition", boolParam(*req.closePosition));
         if (req.workingType) appendJsonStringField(json, "workingType", workingTypeToString(*req.workingType));
@@ -1232,7 +1302,13 @@ asio::awaitable<Result<BatchOrderResult>> RestClient::batchOrders(std::vector<Or
     for (const auto& [k, v] : outerParams) {
         appendParam(params, k, v);
     }
-    auto body = co_await signedPost("/fapi/v1/batchOrders", params);
+    auto body = co_await signedPost(
+        "/fapi/v1/batchOrders",
+        params,
+        RateLimiter::Cost{
+            .requestWeight = 5,
+            .orders1m = static_cast<int>(maxBatch),
+            .orders10s = static_cast<int>(maxBatch)});
     if (!body) co_return std::unexpected(body.error());
     co_return parseResponse<BatchOrderResult>(*body, [](simdjson::ondemand::document& doc) {
         BatchOrderResult result;

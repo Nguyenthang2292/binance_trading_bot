@@ -127,7 +127,7 @@ OrdersResult<ClientOrderId> AlgoOrderService::resolveClientOrderId(const std::op
 
 std::expected<void, BinanceError> AlgoOrderService::recordIntent(const PreparedPlacement& placement) {
     if (!m_journal) {
-        return {};
+        return std::unexpected(BinanceError::fromApiResponse(-90006, "No journal configured"));
     }
     const bool durableConfigured = m_cfg.journalIsDurable
         || dynamic_cast<DurableOrderJournal*>(m_journal.get()) != nullptr;
