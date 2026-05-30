@@ -134,7 +134,14 @@ WsClient::WsClient(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl,
     : m_ioc(ioc), m_ssl(ssl), m_cfg(std::move(cfg)) {}
 
 WsClient::~WsClient() {
-    m_aliveToken->store(false);
+    // Block new callbacks and wait for any in-flight callback to finish before
+    // member state is destroyed (see CallbackGuard docs). Holding the lock here
+    // is safe because WsClient is destroyed off the io_context threads that run
+    // the callbacks, so there is no reentrancy/deadlock.
+    {
+        std::lock_guard<std::mutex> lock(m_callbackGuard->mutex);
+        m_callbackGuard->alive = false;
+    }
     disconnect();
 }
 
@@ -254,22 +261,24 @@ void WsClient::connect() {
     if (!session) {
         return;
     }
-    auto aliveToken = m_aliveToken;
+    auto guard = m_callbackGuard;
     session->start(
         path,
-        [this, aliveToken](auto ec, auto raw) {
-            if (!aliveToken->load()) {
+        [this, guard](auto ec, auto raw) {
+            std::lock_guard<std::mutex> lock(guard->mutex);
+            if (!guard->alive) {
                 return;
             }
             onRawMessage(ec, raw);
         },
-        [this, aliveToken] {
-            if (!aliveToken->load()) {
+        [this, guard] {
+            std::lock_guard<std::mutex> lock(guard->mutex);
+            if (!guard->alive) {
                 return;
             }
             std::function<void()> onDisconnect;
             {
-                std::lock_guard lock(m_stateMutex);
+                std::lock_guard stateLock(m_stateMutex);
                 onDisconnect = m_onDisconnect;
             }
             if (onDisconnect) {
