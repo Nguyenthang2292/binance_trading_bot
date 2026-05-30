@@ -183,6 +183,7 @@ private:
 class MockAccountPort final : public engine::IAccountPort {
 public:
     account::AccountServiceResult<account::AccountSnapshot> nextSnapshot = account::AccountSnapshot{};
+    std::optional<account::AccountSnapshot> livePositionSnapshotOverride;
     int calls{0};
     account::AccountSnapshotRequest lastRequest{};
 
@@ -190,6 +191,9 @@ public:
         account::AccountSnapshotRequest request) override {
         ++calls;
         lastRequest = request;
+        if (request.includePositions && request.positionFilter.has_value() && livePositionSnapshotOverride.has_value()) {
+            co_return *livePositionSnapshotOverride;
+        }
         co_return nextSnapshot;
     }
 };
@@ -1235,6 +1239,91 @@ TEST(SignalEngineTest, SignalPlanUsesCustomInitialStopWhenStopLossEnabled) {
     EXPECT_EQ(orders.lastProtectionDraft->triggerPrice.value(), "89.99");
 }
 
+TEST(SignalEngineTest, InvalidCustomInitialStopBlocksOrderPlacement) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 2580 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+        .initialStopPrice = 120.0,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    EXPECT_EQ(orders.marketCalls, 0);
+    EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
+TEST(SignalEngineTest, NonFiniteConfidenceBlocksOrderPlacement) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 2590 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = std::numeric_limits<double>::quiet_NaN(),
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    EXPECT_EQ(orders.marketCalls, 0);
+    EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
 TEST(SignalEngineTest, TakeProfitPriceIsRoundedToSymbolTickSize) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
@@ -1585,6 +1674,86 @@ TEST(SignalEngineTest, MarketQuantityUsesSymbolMinNotional) {
     ASSERT_TRUE(orders.lastMarketDraft.has_value());
     EXPECT_EQ(orders.lastMarketDraft->quantity.value(), "0.02");
     EXPECT_DOUBLE_EQ(orders.lastMarketDraft->quantity.toDouble(), 0.02);
+}
+
+// CR-8: When the market placement reports an executed (filled) quantity that is
+// smaller than the requested size (a partial fill), the take-profit/stop-loss
+// protection legs must be sized to the *executed* quantity reported by the order
+// response — not the requested quantity — and without relying on a lagging
+// position-snapshot poll. This locks the executedQty-first reconciliation path.
+TEST(SignalEngineTest, ProtectionSizedToExecutedQtyOnPartialFill) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.01, 0.01, 5.0);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 2700 + i;
+        k.high = 350.0;
+        k.low = 320.0;
+        k.close = 333.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 100.0;
+    account.nextSnapshot = snapshot;
+    // Deliberately make any position-snapshot poll report a wrong (full) size so
+    // the test fails if the engine falls back to polling instead of using the
+    // executed quantity from the order response.
+    account::AccountSnapshot livePoll;
+    livePoll.positions = std::vector<Position>{Position{.symbol = "BTCUSDT", .positionAmt = 0.02}};
+    account.livePositionSnapshotOverride = livePoll;
+
+    MockOrdersPort orders;
+    // Requested size is 0.02 (see MarketQuantityUsesSymbolMinNotional); report a
+    // half partial fill of 0.01 on the market response.
+    orders.marketResult = [] {
+        NormalPlacementResult result;
+        result.state = PlacementState::Accepted;
+        result.orderId = 1;
+        result.avgPrice = "333";
+        result.executedQty = "0.01";
+        return OrdersResult<NormalPlacementResult>(result);
+    }();
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    cfg.minNotional = 1.0;
+    cfg.takeProfitPercent = 20.0;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 100.0,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    exposure.minNotional = 0.5;
+    engine::SignalEngine engine(
+        scanner,
+        registry,
+        account,
+        orders,
+        exposure,
+        engine::SignalEngine::Config{.minNotional = 1.0, .placeStopLoss = true});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    ASSERT_TRUE(orders.lastMarketDraft.has_value());
+    EXPECT_EQ(orders.lastMarketDraft->quantity.value(), "0.02");
+    // Take-profit leg is sized from the executed (0.01) quantity, not the request.
+    ASSERT_TRUE(orders.lastLimitDraft.has_value());
+    EXPECT_EQ(orders.lastLimitDraft->quantity.value(), "0.01");
+    // Stop-loss protection leg likewise reflects the executed fill.
+    ASSERT_TRUE(orders.lastProtectionDraft.has_value());
+    ASSERT_TRUE(std::holds_alternative<Quantity>(orders.lastProtectionDraft->closeQuantity));
+    EXPECT_EQ(std::get<Quantity>(orders.lastProtectionDraft->closeQuantity).value(), "0.01");
 }
 
 TEST(SignalEngineTest, TimeExitCancelsExitsClosesPositionAndRemovesTracker) {
@@ -2084,6 +2253,128 @@ TEST(SignalEngineTest, StopLossRejectCancelsTakeProfitClosesAndSkipsTracking) {
     ASSERT_TRUE(orders.lastCloseDraft.has_value());
     EXPECT_EQ(orders.lastCloseDraft->side, OrderSide::Sell);
     EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
+TEST(SignalEngineTest, UsesReconciledLiveQuantityForProtectionAndTracking) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 3650 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot preflight;
+    preflight.account.availableBalance = 1000.0;
+    account.nextSnapshot = preflight;
+
+    account::AccountSnapshot liveQtySnapshot;
+    Position livePos;
+    livePos.symbol = "BTCUSDT";
+    livePos.positionAmt = 0.25;
+    liveQtySnapshot.positions = std::vector<Position>{livePos};
+    account.livePositionSnapshotOverride = liveQtySnapshot;
+
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    cfg.takeProfitPercent = 0.0;
+    cfg.tpMultiplier = 0.0;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(
+        scanner,
+        registry,
+        account,
+        orders,
+        exposure,
+        engine::SignalEngine::Config{.placeStopLoss = true});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    ASSERT_TRUE(orders.lastProtectionDraft.has_value());
+    ASSERT_TRUE(std::holds_alternative<Quantity>(orders.lastProtectionDraft->closeQuantity));
+    const auto& closeQty = std::get<Quantity>(orders.lastProtectionDraft->closeQuantity);
+    EXPECT_NEAR(closeQty.toDouble(), 0.25, 1e-12);
+
+    const auto tracked = engine.tracker().bySymbol("BTCUSDT");
+    ASSERT_TRUE(tracked.has_value());
+    EXPECT_NEAR(tracked->quantity, 0.25, 1e-12);
+}
+
+TEST(SignalEngineTest, KeepsEmergencyTrackedPositionWhenCleanupCloseFails) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    scanner.setSymbols({"BTCUSDT"});
+    scanner.setRules("BTCUSDT", 0.001, 0.01);
+    for (int i = 0; i < 20; ++i) {
+        Kline k;
+        k.openTime = 3700 + i;
+        k.high = 110.0;
+        k.low = 90.0;
+        k.close = 100.0;
+        scanner.push("BTCUSDT", "15m", k);
+    }
+
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    snapshot.account.availableBalance = 1000.0;
+    account.nextSnapshot = snapshot;
+
+    MockOrdersPort orders;
+    NormalPlacementResult rejectedTp;
+    rejectedTp.state = PlacementState::Rejected;
+    rejectedTp.binanceCode = -2010;
+    rejectedTp.binanceMessage = "Order would immediately trigger";
+    orders.limitResult = rejectedTp;
+
+    NormalPlacementResult rejectedClose;
+    rejectedClose.state = PlacementState::Rejected;
+    rejectedClose.binanceCode = -2011;
+    rejectedClose.binanceMessage = "Close rejected";
+    orders.closeResult = rejectedClose;
+
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "mock";
+    cfg.intervals = {"15m"};
+    cfg.minConfidence = 0.1;
+    cfg.takeProfitPercent = 20.0;
+    auto strategy = std::make_unique<MockStrategy>(cfg);
+    auto* strategyPtr = strategy.get();
+    strategyPtr->nextSignal = strategy::Signal{
+        .direction = strategy::Signal::Direction::Long,
+        .confidence = 1.0,
+        .atr = 5.0,
+    };
+    registry.add(std::move(strategy));
+
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+    runAwaitable(ioc, engine.processItem(singleWork(strategyPtr)));
+
+    EXPECT_EQ(orders.closeCalls, 1);
+    EXPECT_TRUE(engine.tracker().has("BTCUSDT"));
+    const auto tracked = engine.tracker().bySymbol("BTCUSDT");
+    ASSERT_TRUE(tracked.has_value());
+    EXPECT_FALSE(tracked->openingInFlight);
+    EXPECT_GT(tracked->quantity, 0.0);
 }
 
 TEST(SignalEngineTest, PartialExitFillReducesTrackedQuantity) {

@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <iomanip>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -330,6 +331,10 @@ bool latestDecisionContradicts(sqlite3* db, const MarketOrderDraft& draft, std::
         reason = "direction_reversed action=" + action + " direction=" + direction;
         return true;
     }
+    if (!expectedLongBuy && (action != "sell" || direction != "short")) {
+        reason = "direction_reversed action=" + action + " direction=" + direction;
+        return true;
+    }
     return false;
 }
 
@@ -384,6 +389,12 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                 OrdersResult<NormalPlacementResult> lastResult =
                     std::unexpected(BinanceError::fromApiResponse(-92004, "qlib plan had no submitted slices"));
                 double cumulativeQuantity = 0.0;
+                // Sum of the executed (filled) base quantity reported by each accepted
+                // slice. Used to stamp an aggregate executedQty on the returned result so
+                // downstream protection sizing (CR-8) sees the true total fill rather than
+                // only the last slice's fill.
+                double aggregateExecutedQty = 0.0;
+                bool anyExecutedQtyReported = false;
                 const double approvedQuantity = draft.quantity.toDouble();
                 const std::string expectedSide = sideToDb(draft.side);
 
@@ -444,7 +455,21 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                         revokePendingSlices(db.get(), readyPlan->planId, "slice placement not accepted");
                         co_return lastResult;
                     }
+                    if (lastResult->executedQty.has_value()) {
+                        if (auto sliceExecuted = DecimalString::parse(*lastResult->executedQty)) {
+                            aggregateExecutedQty += sliceExecuted->toDouble();
+                            anyExecutedQtyReported = true;
+                        }
+                    }
                     markSlice(db.get(), slice.sliceId, "filled", "");
+                }
+                // CR-8: stamp the aggregate executed quantity across all slices so the
+                // caller sizes protection orders against the true total fill rather than
+                // only the final slice's fill.
+                if (lastResult && anyExecutedQtyReported) {
+                    std::ostringstream qtyOut;
+                    qtyOut << std::fixed << std::setprecision(8) << aggregateExecutedQty;
+                    lastResult->executedQty = qtyOut.str();
                 }
                 co_return lastResult;
             }

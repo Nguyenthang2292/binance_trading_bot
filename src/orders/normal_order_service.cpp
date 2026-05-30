@@ -386,6 +386,9 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     result.orderId = placed->orderId;
     result.orderStatus = placed->status;
     result.avgPrice = placed->avgPrice;
+    if (!placed->executedQty.empty()) {
+        result.executedQty = placed->executedQty;
+    }
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
     logPlacement(result, startedAt, prepared->metadata);
     co_return result;
@@ -427,6 +430,9 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     result.orderId = placed->orderId;
     result.orderStatus = placed->status;
     result.avgPrice = placed->avgPrice;
+    if (!placed->executedQty.empty()) {
+        result.executedQty = placed->executedQty;
+    }
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
     logPlacement(result, startedAt, prepared->metadata);
     co_return result;
@@ -468,6 +474,9 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     result.orderId = placed->orderId;
     result.orderStatus = placed->status;
     result.avgPrice = placed->avgPrice;
+    if (!placed->executedQty.empty()) {
+        result.executedQty = placed->executedQty;
+    }
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
     logPlacement(result, startedAt, prepared->metadata);
     co_return result;

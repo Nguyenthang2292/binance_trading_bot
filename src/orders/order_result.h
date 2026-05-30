@@ -18,6 +18,12 @@ struct NormalPlacementResult {
     std::optional<int64_t> orderId;
     std::optional<std::string> orderStatus;
     std::optional<std::string> avgPrice;
+    /// Executed (filled) base quantity as an exact decimal string, when the
+    /// exchange response reported it (RESULT response type). Empty/absent for
+    /// ACK-only placements or when the venue did not include the field. Callers
+    /// that need the authoritative filled size (e.g. sizing protective orders to
+    /// the real fill) should prefer this over the requested quantity.
+    std::optional<std::string> executedQty;
     std::optional<OrderErrorCategory> errorCategory;
     std::optional<int> binanceCode;
     std::optional<std::string> binanceMessage;
