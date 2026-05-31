@@ -21,6 +21,7 @@
 #include "types/events.h"
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/io_context_strand.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/thread_pool.hpp>
 
@@ -312,6 +313,7 @@ private:
     orchestration::IShadowMetricsPort* m_shadowMetricsPort{nullptr};
     IExecutionPlanner* m_executionPlanner{nullptr};
     OpenDecisionState m_lastOpenDecision;
+    boost::asio::io_context::strand m_strand;
     std::atomic<bool> m_running{false};
     ScanCycleStatusCb m_scanCycleStatusCb;
     std::mutex m_externalCloseCooldownMutex;

@@ -19,6 +19,9 @@ StrategyCatalog::LoadSummary StrategyCatalog::initialize(const std::vector<nlohm
     m_info.clear();
     m_registry.clear();
     LoadSummary summary;
+    std::vector<std::shared_ptr<strategy::IStrategy>> pendingStrategies;
+    std::vector<StrategyInfo> pendingInfo;
+
     const auto pluginResults = m_loader.loadAll();
     summary.pluginsFound = static_cast<int>(pluginResults.size());
     for (const auto& result : pluginResults) {
@@ -77,10 +80,22 @@ StrategyCatalog::LoadSummary StrategyCatalog::initialize(const std::vector<nlohm
             info.pluginFile = loadedIt->path.filename().string();
         }
 
-        m_registry.addShared(shared);
-        m_info.push_back(std::move(info));
+        pendingStrategies.push_back(std::move(shared));
+        pendingInfo.push_back(std::move(info));
+    }
+
+    if (pendingStrategies.empty() && summary.errors.empty()) {
+        summary.errors.push_back("no strategies registered");
+    }
+    if (!summary.errors.empty()) {
+        return summary;
+    }
+
+    for (auto& strategy : pendingStrategies) {
+        m_registry.addShared(std::move(strategy));
         ++summary.strategiesRegistered;
     }
+    m_info = std::move(pendingInfo);
 
     return summary;
 }

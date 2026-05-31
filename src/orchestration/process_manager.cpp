@@ -3,9 +3,13 @@
 #include "orchestration/sqlite_helpers.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <ctime>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -49,6 +53,115 @@ std::string commandTag(const std::vector<std::string>& cmd) {
     }
     std::filesystem::path exe(cmd.front());
     return sanitizeTag(exe.stem().string());
+}
+
+std::string upperAscii(std::string value) {
+    for (char& ch : value) {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return value;
+}
+
+bool isSensitiveEnvName(const std::string& name) {
+    const std::string upper = upperAscii(name);
+    const char* markers[] = {
+        "SECRET",
+        "TOKEN",
+        "PASSWORD",
+        "PASSWD",
+        "PASSPHRASE",
+        "PRIVATE",
+        "CREDENTIAL",
+        "COOKIE",
+        "AUTH",
+        "API_KEY",
+        "ACCESS_KEY",
+    };
+    for (const char* marker : markers) {
+        if (upper.find(marker) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isAllowedEnvName(const std::string& name) {
+    if (isSensitiveEnvName(name)) {
+        return false;
+    }
+    const std::string upper = upperAscii(name);
+    return upper == "PATH" ||
+        upper == "PATHEXT" ||
+        upper == "SYSTEMROOT" ||
+        upper == "WINDIR" ||
+        upper == "COMSPEC" ||
+        upper == "TEMP" ||
+        upper == "TMP" ||
+        upper == "TMPDIR" ||
+        upper == "HOME" ||
+        upper == "USERPROFILE" ||
+        upper == "LANG" ||
+        upper == "TZ" ||
+        upper == "VIRTUAL_ENV" ||
+        upper == "PYTHONPATH" ||
+        upper.rfind("LC_", 0) == 0;
+}
+
+std::string envNameFromEntry(const std::string& entry) {
+    const size_t pos = entry.find('=');
+    if (pos == std::string::npos || pos == 0) {
+        return {};
+    }
+    return entry.substr(0, pos);
+}
+
+std::string redactSensitiveLogText(std::string text) {
+    const char* markers[] = {
+        "AUTHORIZATION",
+        "API_SECRET",
+        "API_KEY",
+        "ACCESS_KEY",
+        "SECRET",
+        "TOKEN",
+        "PASSWORD",
+        "PASSWD",
+        "PASSPHRASE",
+        "PRIVATE_KEY",
+        "CREDENTIAL",
+    };
+    for (const char* marker : markers) {
+        size_t searchFrom = 0;
+        while (searchFrom < text.size()) {
+            const std::string upper = upperAscii(text);
+            const size_t markerPos = upper.find(marker, searchFrom);
+            if (markerPos == std::string::npos) {
+                break;
+            }
+            const size_t delim = text.find_first_of("=:", markerPos);
+            if (delim == std::string::npos) {
+                searchFrom = markerPos + 1;
+                continue;
+            }
+            const size_t nextMarkerBoundary = markerPos + std::strlen(marker) + 32;
+            if (delim > nextMarkerBoundary) {
+                searchFrom = markerPos + 1;
+                continue;
+            }
+            size_t valueStart = delim + 1;
+            while (valueStart < text.size() &&
+                   (text[valueStart] == ' ' || text[valueStart] == '\t' || text[valueStart] == '"' ||
+                    text[valueStart] == '\'')) {
+                ++valueStart;
+            }
+            size_t valueEnd = valueStart;
+            while (valueEnd < text.size() && text[valueEnd] != '\r' && text[valueEnd] != '\n') {
+                ++valueEnd;
+            }
+            text.replace(valueStart, valueEnd - valueStart, "[REDACTED]");
+            searchFrom = valueStart + 10;
+        }
+    }
+    return text;
 }
 
 std::string localDate() {
@@ -109,7 +222,59 @@ std::string buildWindowsCmdline(const std::vector<std::string>& cmd) {
     }
     return out.str();
 }
+
+std::vector<char> buildSanitizedEnvBlock() {
+    LPCH rawEnv = GetEnvironmentStringsA();
+    if (!rawEnv) {
+        return {'\0', '\0'};
+    }
+    std::vector<std::string> entries;
+    for (LPCH cursor = rawEnv; *cursor != '\0';) {
+        const std::string entry(cursor);
+        cursor += entry.size() + 1;
+        const std::string name = envNameFromEntry(entry);
+        if (!name.empty() && name.front() != '=' && isAllowedEnvName(name)) {
+            entries.push_back(entry);
+        }
+    }
+    FreeEnvironmentStringsA(rawEnv);
+    std::sort(entries.begin(), entries.end(), [](const std::string& a, const std::string& b) {
+        return upperAscii(envNameFromEntry(a)) < upperAscii(envNameFromEntry(b));
+    });
+
+    std::vector<char> block;
+    for (const auto& entry : entries) {
+        block.insert(block.end(), entry.begin(), entry.end());
+        block.push_back('\0');
+    }
+    if (block.empty()) {
+        block.push_back('\0');
+    }
+    block.push_back('\0');
+    return block;
+}
 #else
+extern char** environ;
+
+void installSanitizedEnvironmentNoexcept() noexcept {
+    std::vector<std::string> kept;
+    for (char** cursor = environ; cursor != nullptr && *cursor != nullptr; ++cursor) {
+        const std::string entry(*cursor);
+        const std::string name = envNameFromEntry(entry);
+        if (!name.empty() && isAllowedEnvName(name)) {
+            kept.push_back(entry);
+        }
+    }
+    clearenv();
+    for (const auto& entry : kept) {
+        const size_t pos = entry.find('=');
+        if (pos == std::string::npos) {
+            continue;
+        }
+        setenv(entry.substr(0, pos).c_str(), entry.substr(pos + 1).c_str(), 1);
+    }
+}
+
 size_t cStringLength(const char* text) noexcept {
     if (text == nullptr) {
         return 0;
@@ -138,6 +303,25 @@ void writeAllNoexcept(int fd, const char* data, size_t size) noexcept {
 
 void writeCStringNoexcept(int fd, const char* text) noexcept {
     writeAllNoexcept(fd, text, cStringLength(text));
+}
+
+void copyRedactedPipeToLog(int readFd, int logFd) {
+    std::array<char, 4096> buffer{};
+    for (;;) {
+        const ssize_t bytesRead = ::read(readFd, buffer.data(), buffer.size());
+        if (bytesRead > 0) {
+            const std::string redacted =
+                redactSensitiveLogText(std::string(buffer.data(), buffer.data() + bytesRead));
+            writeAllNoexcept(logFd, redacted.data(), redacted.size());
+            continue;
+        }
+        if (bytesRead < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+    ::close(readFd);
+    ::close(logFd);
 }
 
 void writeIntNoexcept(int fd, int value) noexcept {
@@ -181,7 +365,6 @@ ProcessManager::ProcessManager(ProcessManagerConfig config)
 }
 
 ProcessResult ProcessManager::spawnWithRetry(const std::vector<std::string>& cmd) {
-    std::lock_guard<std::mutex> lock(m_mutex);
     ProcessResult last;
     const std::string tag = commandTag(cmd);
 
@@ -245,6 +428,7 @@ ProcessResult ProcessManager::spawnOnce(const std::vector<std::string>& cmd, con
     std::string cmdline = buildWindowsCmdline(cmd);
     std::vector<char> cmdBuf(cmdline.begin(), cmdline.end());
     cmdBuf.push_back('\0');
+    std::vector<char> envBlock = buildSanitizedEnvBlock();
 
     const DWORD creationFlags = CREATE_NO_WINDOW | CREATE_SUSPENDED;
     const BOOL started = CreateProcessA(
@@ -254,7 +438,7 @@ ProcessResult ProcessManager::spawnOnce(const std::vector<std::string>& cmd, con
         nullptr,
         TRUE,
         creationFlags,
-        nullptr,
+        envBlock.data(),
         nullptr,
         &si,
         &pi);
@@ -290,7 +474,8 @@ ProcessResult ProcessManager::spawnOnce(const std::vector<std::string>& cmd, con
         char buffer[4096];
         DWORD bytesRead = 0;
         while (ReadFile(readPipe, buffer, static_cast<DWORD>(sizeof(buffer)), &bytesRead, nullptr) && bytesRead > 0) {
-            log.write(buffer, static_cast<std::streamsize>(bytesRead));
+            const std::string redacted = redactSensitiveLogText(std::string(buffer, buffer + bytesRead));
+            log.write(redacted.data(), static_cast<std::streamsize>(redacted.size()));
         }
     });
 
@@ -329,9 +514,16 @@ ProcessResult ProcessManager::spawnOnce(const std::vector<std::string>& cmd, con
         std::filesystem::create_directories(logFile.parent_path());
     }
 
-    const int logFd = ::open(logPath.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    const int logFd = ::open(logPath.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
     if (logFd < 0) {
         std::ofstream(logPath, std::ios::trunc) << "open log file failed errno=" << errno << "\n";
+        return out;
+    }
+    int pipeFd[2]{-1, -1};
+    if (::pipe(pipeFd) != 0) {
+        const int pipeErrno = errno;
+        ::close(logFd);
+        std::ofstream(logPath, std::ios::app) << "pipe failed errno=" << pipeErrno << "\n";
         return out;
     }
 
@@ -345,14 +537,20 @@ ProcessResult ProcessManager::spawnOnce(const std::vector<std::string>& cmd, con
     const pid_t child = ::fork();
     if (child < 0) {
         const int forkErrno = errno;
+        ::close(pipeFd[0]);
+        ::close(pipeFd[1]);
         ::close(logFd);
         std::ofstream(logPath, std::ios::app) << "fork failed errno=" << forkErrno << "\n";
         return out;
     }
 
     if (child == 0) {
-        (void)::dup2(logFd, STDOUT_FILENO);
-        (void)::dup2(logFd, STDERR_FILENO);
+        (void)::setpgid(0, 0);
+        installSanitizedEnvironmentNoexcept();
+        ::close(pipeFd[0]);
+        (void)::dup2(pipeFd[1], STDOUT_FILENO);
+        (void)::dup2(pipeFd[1], STDERR_FILENO);
+        ::close(pipeFd[1]);
         ::close(logFd);
 
         ::execvp(argv[0], argv.data());
@@ -361,7 +559,10 @@ ProcessResult ProcessManager::spawnOnce(const std::vector<std::string>& cmd, con
         _exit(127);
     }
 
-    ::close(logFd);
+    ::close(pipeFd[1]);
+    std::thread reader([readFd = pipeFd[0], logFd]() {
+        copyRedactedPipeToLog(readFd, logFd);
+    });
 
     int status = 0;
     bool childExited = false;
@@ -377,13 +578,16 @@ ProcessResult ProcessManager::spawnOnce(const std::vector<std::string>& cmd, con
                 continue;
             }
             out.exitCode = -1;
+            if (reader.joinable()) {
+                reader.join();
+            }
             std::ofstream(logPath, std::ios::app) << "waitpid failed errno=" << errno << "\n";
             return out;
         }
 
         if (std::chrono::steady_clock::now() >= deadline) {
             out.timedOut = true;
-            (void)::kill(child, SIGKILL);
+            (void)::kill(-child, SIGKILL);
             pid_t killedWait = 0;
             do {
                 killedWait = ::waitpid(child, &status, 0);
@@ -397,6 +601,9 @@ ProcessResult ProcessManager::spawnOnce(const std::vector<std::string>& cmd, con
 
     if (out.timedOut) {
         out.exitCode = 124;
+        if (reader.joinable()) {
+            reader.join();
+        }
         std::ofstream(logPath, std::ios::app)
             << "\n[process_manager] timed out after " << m_config.timeoutSeconds << " seconds\n";
     } else if (WIFEXITED(status)) {
@@ -405,6 +612,9 @@ ProcessResult ProcessManager::spawnOnce(const std::vector<std::string>& cmd, con
         out.exitCode = 128 + WTERMSIG(status);
     } else {
         out.exitCode = -1;
+    }
+    if (reader.joinable()) {
+        reader.join();
     }
     out.succeeded = !out.timedOut && out.exitCode == 0;
 #endif
@@ -457,10 +667,11 @@ bool ProcessManager::startDaemon(const std::string& name, const std::vector<std:
     std::string cmdline = buildWindowsCmdline(cmd);
     std::vector<char> cmdBuf(cmdline.begin(), cmdline.end());
     cmdBuf.push_back('\0');
+    std::vector<char> envBlock = buildSanitizedEnvBlock();
 
     const DWORD creationFlags = CREATE_NO_WINDOW | CREATE_SUSPENDED;
     const BOOL started = CreateProcessA(
-        nullptr, cmdBuf.data(), nullptr, nullptr, TRUE, creationFlags, nullptr, nullptr, &si, &pi);
+        nullptr, cmdBuf.data(), nullptr, nullptr, TRUE, creationFlags, envBlock.data(), nullptr, &si, &pi);
 
     if (!started) {
         CloseHandle(readPipe);
@@ -487,7 +698,8 @@ bool ProcessManager::startDaemon(const std::string& name, const std::vector<std:
         char buffer[4096];
         DWORD bytesRead = 0;
         while (ReadFile(readPipe, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
-            log.write(buffer, bytesRead);
+            const std::string redacted = redactSensitiveLogText(std::string(buffer, buffer + bytesRead));
+            log.write(redacted.data(), static_cast<std::streamsize>(redacted.size()));
         }
         CloseHandle(readPipe);
     }).detach();
@@ -500,8 +712,13 @@ bool ProcessManager::startDaemon(const std::string& name, const std::vector<std:
         std::filesystem::create_directories(logFile.parent_path());
     }
 
-    const int logFd = ::open(logPath.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    const int logFd = ::open(logPath.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
     if (logFd < 0) return false;
+    int pipeFd[2]{-1, -1};
+    if (::pipe(pipeFd) != 0) {
+        ::close(logFd);
+        return false;
+    }
 
     std::vector<char*> argv;
     argv.reserve(cmd.size() + 1);
@@ -512,17 +729,26 @@ bool ProcessManager::startDaemon(const std::string& name, const std::vector<std:
 
     const pid_t child = ::fork();
     if (child < 0) {
+        ::close(pipeFd[0]);
+        ::close(pipeFd[1]);
         ::close(logFd);
         return false;
     }
     if (child == 0) {
-        ::dup2(logFd, STDOUT_FILENO);
-        ::dup2(logFd, STDERR_FILENO);
+        (void)::setpgid(0, 0);
+        installSanitizedEnvironmentNoexcept();
+        ::close(pipeFd[0]);
+        ::dup2(pipeFd[1], STDOUT_FILENO);
+        ::dup2(pipeFd[1], STDERR_FILENO);
+        ::close(pipeFd[1]);
         ::close(logFd);
         ::execvp(argv[0], argv.data());
         _exit(127);
     }
-    ::close(logFd);
+    ::close(pipeFd[1]);
+    std::thread([readFd = pipeFd[0], logFd]() {
+        copyRedactedPipeToLog(readFd, logFd);
+    }).detach();
     m_daemons[name] = { child };
     return true;
 #endif
@@ -534,7 +760,11 @@ bool ProcessManager::isDaemonRunning(const std::string& name) {
     if (it == m_daemons.end()) return false;
     
 #if defined(_WIN32)
-    if (WaitForSingleObject(static_cast<HANDLE>(it->second.hProcess), 0) == WAIT_TIMEOUT) {
+    const DWORD waitResult = WaitForSingleObject(static_cast<HANDLE>(it->second.hProcess), 0);
+    if (waitResult == WAIT_TIMEOUT) {
+        return true;
+    }
+    if (waitResult == WAIT_FAILED) {
         return true;
     }
     if (it->second.jobHandle) CloseHandle(static_cast<HANDLE>(it->second.jobHandle));
@@ -566,11 +796,11 @@ void ProcessManager::stopDaemon(const std::string& name) {
     WaitForSingleObject(static_cast<HANDLE>(it->second.hProcess), INFINITE);
     CloseHandle(static_cast<HANDLE>(it->second.hProcess));
 #else
-    ::kill(it->second.pid, SIGTERM);
+    ::kill(-it->second.pid, SIGTERM);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     int status = 0;
     if (::waitpid(it->second.pid, &status, WNOHANG) == 0) {
-        ::kill(it->second.pid, SIGKILL);
+        ::kill(-it->second.pid, SIGKILL);
         ::waitpid(it->second.pid, &status, 0);
     }
 #endif

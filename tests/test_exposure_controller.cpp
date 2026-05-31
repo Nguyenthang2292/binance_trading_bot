@@ -131,3 +131,26 @@ TEST(ExposureControllerTest, AllowsWhenTradeImprovesDeviation) {
     EXPECT_EQ(result.decision, engine::ExposureDecision::Allow);
 }
 
+TEST(ExposureControllerTest, HardLimitBlocksEvenIfDeviationImproves) {
+    scanner::KlineCache cache(64);
+    engine::ExposureConfig cfg;
+    cfg.enabled = true;
+    cfg.defaultBeta = 1.0;
+    cfg.targetNetBeta = 0.0;
+    cfg.softLimitNetBeta = 0.8;
+    cfg.hardLimitNetBeta = 1.0;
+    cfg.maxGrossBeta = 10.0;
+
+    engine::ExposureController controller(cfg, cache);
+    engine::PositionTracker tracker;
+    tracker.add(tracked("BTCUSDT", strategy::Signal::Direction::Long, 15.0, 100.0)); // current net=1500
+    account::AccountSnapshot snapshot;
+    const auto result = controller.check(
+        "ETHUSDT",
+        strategy::Signal::Direction::Short,
+        400.0,
+        tracker,
+        snapshot,
+        1000.0);
+    EXPECT_EQ(result.decision, engine::ExposureDecision::Block);
+}

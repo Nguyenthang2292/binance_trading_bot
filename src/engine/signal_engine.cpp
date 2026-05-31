@@ -7,6 +7,7 @@
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -47,6 +48,18 @@ std::optional<DecimalString> toDecimal(double value) {
         return std::nullopt;
     }
     return *parsed;
+}
+
+std::optional<double> parsePositiveDecimal(std::string_view value) {
+    auto parsed = DecimalString::parse(value);
+    if (!parsed) {
+        return std::nullopt;
+    }
+    const double number = parsed->toDouble();
+    if (!std::isfinite(number) || number <= 0.0) {
+        return std::nullopt;
+    }
+    return number;
 }
 
 std::string makeExitClientOrderId(std::string_view symbol, std::string_view suffix) {
@@ -328,6 +341,15 @@ void SignalEngine::closeBacktestGateForCycle(std::string reason, std::string_vie
 }
 
 void SignalEngine::setBacktestGate(backtest::IBacktestGatePort* gate, backtest::BacktestGateConfig config) {
+    if (!m_strand.running_in_this_thread()) {
+        boost::asio::dispatch(
+            m_strand,
+            [this, gate, config = std::move(config)]() mutable {
+                setBacktestGate(gate, std::move(config));
+            });
+        return;
+    }
+
     m_backtestGate = gate;
     m_backtestGateConfig = std::move(config);
 
@@ -510,6 +532,7 @@ SignalEngine::SignalEngine(
       m_riskPort(riskPort),
       m_geminiConfig(std::move(geminiConfig)),
       m_config(config),
+      m_strand(m_scanner.ioContext()),
       m_scanSleepTimer(m_scanner.ioContext()),
       m_timeExitTimer(m_scanner.ioContext()),
       m_trailingTimer(m_scanner.ioContext()) {
@@ -598,6 +621,8 @@ SignalEngine::SignalEngine(
           riskPort) {}
 
 boost::asio::awaitable<void> SignalEngine::run() {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     if (m_running.exchange(true)) {
         co_return;
     }
@@ -657,6 +682,11 @@ boost::asio::awaitable<void> SignalEngine::run() {
 }
 
 void SignalEngine::stop() {
+    if (!m_strand.running_in_this_thread()) {
+        boost::asio::dispatch(m_strand, [this] { stop(); });
+        return;
+    }
+
     m_running = false;
     boost::system::error_code ec;
     m_scanSleepTimer.cancel(ec);
@@ -665,6 +695,8 @@ void SignalEngine::stop() {
 }
 
 boost::asio::awaitable<void> SignalEngine::runScanCycle() {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     const auto symbols = m_scanner.symbols();
     const auto allStrategies = m_registry.all();
     const auto queue = WorkQueue::build(symbols, m_registry);
@@ -851,6 +883,8 @@ std::optional<SignalEngine::ArbiterCandidate> SignalEngine::DecisionArbiter::arb
 }
 
 boost::asio::awaitable<void> SignalEngine::processQlibCandidates(const std::string& symbol, const std::string& interval, DecisionArbiter& arbiter) {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     if (arbiter.candidates.empty()) co_return;
 
     const auto klines = m_scanner.cache().snapshot(symbol, interval);
@@ -1018,6 +1052,8 @@ boost::asio::awaitable<void> SignalEngine::processQlibCandidates(const std::stri
 }
 
 boost::asio::awaitable<void> SignalEngine::processItem(const WorkItem& item) {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     if (shouldSkipForClosedGeminiGate()) {
         ++m_geminiCycleGate.skippedItems;
         co_return;
@@ -1207,6 +1243,8 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     int swingLookback,
     double riskPctOverride,
     bool placeOrders) {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     auto preflight = co_await preflightOpenPosition(OpenPositionRequest{
         .symbol = std::string(symbol),
         .signalInterval = std::string(signalInterval),
@@ -1346,12 +1384,16 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
 
 boost::asio::awaitable<Result<std::optional<SignalEngine::OpenPositionPreflight>>> SignalEngine::preflightOpenPosition(
     OpenPositionRequest request) {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     co_return co_await preflightOpenPositionInternal(std::move(request), true);
 }
 
 boost::asio::awaitable<Result<std::optional<SignalEngine::OpenPositionPreflight>>> SignalEngine::preflightOpenPositionInternal(
     OpenPositionRequest request,
     bool evaluateGemini) {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     const std::string_view symbol = request.symbol;
     const std::string_view signalInterval = request.signalInterval;
     const auto direction = request.direction;
@@ -1619,6 +1661,8 @@ boost::asio::awaitable<Result<std::optional<SignalEngine::OpenPositionPreflight>
 }
 
 boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(OpenPositionPreflight preflight) {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     auto request = std::move(preflight.request);
     const std::string_view symbol = request.symbol;
     const std::string_view signalInterval = request.signalInterval;
@@ -2103,6 +2147,8 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
 }
 
 boost::asio::awaitable<void> SignalEngine::logExposureMetrics() {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     account::AccountSnapshotRequest request;
     request.includePositions = true;
     const auto snapshotResult = co_await m_account.snapshot(request);
@@ -2142,6 +2188,8 @@ boost::asio::awaitable<void> SignalEngine::logExposureMetrics() {
 }
 
 boost::asio::awaitable<void> SignalEngine::notifyRiskPositionClosed() {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     if (!m_riskPort) {
         co_return;
     }
@@ -2193,6 +2241,8 @@ void SignalEngine::markExternalCloseCooldown(std::string_view symbol, std::chron
 }
 
 boost::asio::awaitable<void> SignalEngine::monitorTimeExit() {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     while (m_running) {
         m_timeExitTimer.expires_after(m_config.positionCheckInterval);
         boost::system::error_code ec;
@@ -2226,6 +2276,8 @@ boost::asio::awaitable<void> SignalEngine::monitorTimeExit() {
 }
 
 boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions() {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     account::AccountSnapshotRequest request;
     request.includePositions = true;
     const auto snapshotResult = co_await m_account.snapshot(request);
@@ -2241,6 +2293,8 @@ boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions() {
 }
 
 boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions(const account::AccountSnapshot& snapshot) {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     std::unordered_map<std::string, const Position*> liveBySymbol;
     auto collectLive = [&liveBySymbol](const std::vector<Position>& positions) {
         for (const auto& position : positions) {
@@ -2276,6 +2330,28 @@ boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions(const accou
         const double absQty = std::abs(position->positionAmt);
         const auto existing = m_tracker.bySymbol(symbol);
         if (!existing.has_value()) {
+            if (m_config.placeStopLoss) {
+                const auto closeQty = toDecimal(absQty);
+                if (closeQty) {
+                    const auto forcedClose = co_await m_orders.closeByMarket(CloseByMarketDraft{
+                        symbol,
+                        closeSide(position->positionAmt >= 0.0
+                            ? strategy::Signal::Direction::Long
+                            : strategy::Signal::Direction::Short),
+                        *closeQty,
+                    });
+                    if (forcedClose) {
+                        Logger::instance().log(
+                            LogLevel::Warning,
+                            "recovery fail-closed: closed unprotected live position symbol=" + symbol);
+                        continue;
+                    }
+                }
+                Logger::instance().log(
+                    LogLevel::Error,
+                    "recovery fail-closed: unable to close unprotected live position symbol=" + symbol);
+            }
+
             TrackedPosition recovered;
             recovered.symbol = symbol;
             recovered.direction = position->positionAmt >= 0.0
@@ -2311,6 +2387,8 @@ boost::asio::awaitable<void> SignalEngine::reconcileTrackedPositions(const accou
 }
 
 boost::asio::awaitable<void> SignalEngine::monitorTrailingStops() {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     while (m_running) {
         const auto interval = m_config.trailingCheckInterval.count() > 0
             ? m_config.trailingCheckInterval
@@ -2336,6 +2414,8 @@ boost::asio::awaitable<void> SignalEngine::monitorTrailingStops() {
 }
 
 boost::asio::awaitable<void> SignalEngine::processExpiredPositions(std::chrono::system_clock::time_point now) {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     const auto expired = m_tracker.expired(now);
     for (const auto& pos : expired) {
         const auto currentTracked = m_tracker.bySymbol(pos.symbol);
@@ -2399,6 +2479,8 @@ boost::asio::awaitable<void> SignalEngine::processExpiredPositions(std::chrono::
 }
 
 boost::asio::awaitable<void> SignalEngine::processTrailingStops() {
+    co_await boost::asio::dispatch(m_strand, boost::asio::use_awaitable);
+
     const auto positions = m_tracker.all();
     for (const auto& pos : positions) {
         const auto latest = m_tracker.bySymbol(pos.symbol);
@@ -2487,8 +2569,15 @@ boost::asio::awaitable<void> SignalEngine::processTrailingStops() {
 
             if (!cancelSucceeded) {
                 Logger::instance().log(
-                    LogLevel::Warning,
-                    "trailing stop old-order cancel failed symbol=" + pos.symbol);
+                    LogLevel::Error,
+                    "trailing stop old-order cancel failed; reconcile required symbol=" + pos.symbol);
+                auto cancelNew = co_await m_orders.cancelAlgoByClientAlgoId(pos.symbol, clientOrderId);
+                if (!cancelNew) {
+                    Logger::instance().log(
+                        LogLevel::Error,
+                        "trailing stop rollback cancel of replacement failed symbol=" + pos.symbol);
+                }
+                continue;
             }
         }
 
@@ -2521,9 +2610,11 @@ void SignalEngine::onUserDataEvent(const UserDataEvent& event) {
         return;
     }
 
+    const auto lastFilledQty = parsePositiveDecimal(order->lastFilledQty);
+
     if (!order->clientOrderId.empty()) {
-        if (isPartial && order->lastFilledQty > 0.0 &&
-            m_tracker.applyExitFillByClientId(order->clientOrderId, order->lastFilledQty)) {
+        if (isPartial && lastFilledQty.has_value() &&
+            m_tracker.applyExitFillByClientId(order->clientOrderId, *lastFilledQty)) {
             return;
         }
         if (isFilled && m_tracker.removeByExitOrderClientId(order->clientOrderId)) {
@@ -2531,8 +2622,8 @@ void SignalEngine::onUserDataEvent(const UserDataEvent& event) {
         }
     }
     if (!order->originalClientOrderId.empty()) {
-        if (isPartial && order->lastFilledQty > 0.0 &&
-            m_tracker.applyExitFillByClientId(order->originalClientOrderId, order->lastFilledQty)) {
+        if (isPartial && lastFilledQty.has_value() &&
+            m_tracker.applyExitFillByClientId(order->originalClientOrderId, *lastFilledQty)) {
             return;
         }
         if (isFilled) {
@@ -2547,6 +2638,13 @@ void SignalEngine::onUserDataEvent(const UserDataEvent& event) {
 }
 
 void SignalEngine::setScanCycleStatusCallback(ScanCycleStatusCb cb) {
+    if (!m_strand.running_in_this_thread()) {
+        boost::asio::dispatch(m_strand, [this, cb = std::move(cb)]() mutable {
+            setScanCycleStatusCallback(std::move(cb));
+        });
+        return;
+    }
+
     m_scanCycleStatusCb = std::move(cb);
 }
 

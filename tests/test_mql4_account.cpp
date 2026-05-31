@@ -40,6 +40,7 @@ protected:
         AccountSnapshot snapshot;
         snapshot.capturedAt = std::chrono::system_clock::now();
         snapshot.account = std::move(acc);
+        snapshot.multiAssetsMargin = false;
         snapshot.compatibility = std::move(cfg);
         return snapshot;
     }
@@ -255,6 +256,7 @@ TEST_F(Mql4AccountAdapterTest, MultiAssetMode) {
     
     AccountSnapshot snapshot;
     snapshot.account = std::move(acc);
+    snapshot.multiAssetsMargin = false;
     snapshot.compatibility = std::move(cfg);
     
     Mql4AccountAdapter adapter(std::move(snapshot));
@@ -274,6 +276,16 @@ TEST_F(Mql4AccountAdapterTest, MultiAssetsMarginIsUnsupportedForSingleAssetMappi
     auto freeMargin = adapter.accountFreeMargin();
     EXPECT_FALSE(freeMargin.has_value());
     EXPECT_EQ(freeMargin.error(), AccountMappingError::Unsupported);
+}
+
+TEST_F(Mql4AccountAdapterTest, UnknownMultiAssetsMarginIsUnsupportedForSingleAssetMappings) {
+    auto snapshot = createBasicSnapshot();
+    snapshot.multiAssetsMargin.reset();
+    Mql4AccountAdapter adapter(std::move(snapshot));
+
+    auto balance = adapter.accountBalance();
+    EXPECT_FALSE(balance.has_value());
+    EXPECT_EQ(balance.error(), AccountMappingError::Unsupported);
 }
 
 TEST_F(Mql4AccountAdapterTest, CapturedAtAccessorReturnsSnapshotTimestamp) {

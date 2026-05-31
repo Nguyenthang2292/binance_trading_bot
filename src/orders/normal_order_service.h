@@ -10,6 +10,7 @@
 
 #include <boost/asio/awaitable.hpp>
 
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <string>
@@ -103,4 +104,7 @@ private:
     static std::optional<int> optionalCode(const BinanceError& error);
     static std::string serializeRequestParams(const OrderRequest& request);
     OrderView enrichWithMetadata(NormalOrderSnapshot snapshot);
+    boost::asio::awaitable<void> reconcilePendingJournalOnce();
+
+    std::atomic<bool> m_pendingJournalReconciled{false};
 };

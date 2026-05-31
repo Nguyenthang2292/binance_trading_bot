@@ -147,6 +147,34 @@ public:
     }
 };
 
+class PendingReconcileJournal final : public OrderJournal {
+public:
+    std::vector<JournalEntry> pendingEntries;
+    int updateCalls{0};
+    std::optional<int64_t> lastUpdatedOrderId;
+
+    std::expected<void, BinanceError> recordIntent(JournalEntry) override {
+        return {};
+    }
+
+    std::expected<void, BinanceError> updateState(
+        CorrelationId,
+        PlacementState,
+        std::optional<int64_t> binanceOrderId) override {
+        ++updateCalls;
+        lastUpdatedOrderId = binanceOrderId;
+        return {};
+    }
+
+    std::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override {
+        return pendingEntries;
+    }
+
+    std::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(const ClientOrderId&) override {
+        return std::optional<JournalEntry>{};
+    }
+};
+
 template <typename T>
 T runAwaitable(boost::asio::awaitable<T> task) {
     boost::asio::io_context ioc;
@@ -221,6 +249,20 @@ TEST(OrdersTest, SetLeverageDelegatesToRestClient) {
     EXPECT_EQ(rest.setLeverageSymbol, "BTCUSDT");
     EXPECT_EQ(rest.setLeverageValue, 13);
     EXPECT_EQ(result->leverage, 13);
+}
+
+TEST(OrdersTest, SetLeverageRejectsOutOfConfiguredRange) {
+    StubRestClient rest;
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.minLeverage = 2;
+    cfg.maxLeverage = 50;
+    Orders orders(rest, cfg);
+
+    auto result = runAwaitable(orders.setLeverage("BTCUSDT", 100));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, -90015);
+    EXPECT_EQ(rest.setLeverageCalls, 0);
 }
 
 TEST(OrdersTest, ProtectionUsesAlgoRestEndpoint) {
@@ -507,21 +549,11 @@ TEST(OrdersTest, DurableJournalWriteFailureBlocksPlacement) {
     cfg.clientIdNamespace = "test";
     cfg.journalIsDurable = true;
     cfg.journalPath = journalDirectory.string();
-    Orders orders(rest, cfg);
-
-    MarketOrderDraft draft{
-        .symbol = "BTCUSDT",
-        .side = OrderSide::Buy,
-        .quantity = qty("0.01"),
-        .clientOrderId = std::string("cid-journal-fail-1"),
-    };
-
-    auto result = runAwaitable(orders.market(draft));
-    ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->state, PlacementState::Rejected);
-    ASSERT_TRUE(result->errorCategory.has_value());
-    EXPECT_EQ(*result->errorCategory, OrderErrorCategory::Journal);
-    EXPECT_EQ(rest.newOrderCalls, 0);
+    EXPECT_THROW(
+        {
+            Orders orders(rest, cfg);
+        },
+        std::runtime_error);
 
     std::filesystem::remove_all(journalDirectory);
 }
@@ -680,6 +712,46 @@ TEST(OrdersTest, ReconcilePrimitiveCanQueryClientIdThenHistory) {
     ASSERT_EQ(history->size(), 1);
     EXPECT_EQ((*history)[0].clientOrderId, "cid-reconcile-1");
     EXPECT_EQ((*history)[0].orderId, 987);
+}
+
+TEST(OrdersTest, ReconcilesPendingJournalEntriesOnFirstPlacement) {
+    StubRestClient rest;
+    Order reconciledOrder;
+    reconciledOrder.symbol = "BTCUSDT";
+    reconciledOrder.orderId = 4567;
+    reconciledOrder.clientOrderId = "cid-pending-1";
+    reconciledOrder.status = "NEW";
+    rest.queryOrderResult = reconciledOrder;
+
+    auto journal = std::make_shared<PendingReconcileJournal>();
+    JournalEntry pending;
+    pending.correlationId = "corr-pending-1";
+    pending.symbol = "BTCUSDT";
+    pending.clientOrderId = "cid-pending-1";
+    pending.state = PlacementState::UnknownPendingReconcile;
+    pending.sendTimestampMs = 1700000000000;
+    journal->pendingEntries.push_back(pending);
+
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.journal = journal;
+    cfg.journalIsDurable = true;
+    Orders orders(rest, cfg);
+
+    MarketOrderDraft draft{
+        .symbol = "",
+        .side = OrderSide::Buy,
+        .quantity = qty("0.01"),
+        .clientOrderId = std::string("cid-market-reject-1"),
+    };
+
+    auto result = runAwaitable(orders.market(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->state, PlacementState::Rejected);
+    EXPECT_EQ(rest.queryOrderByClientOrderIdCalls, 1);
+    EXPECT_EQ(journal->updateCalls, 1);
+    ASSERT_TRUE(journal->lastUpdatedOrderId.has_value());
+    EXPECT_EQ(*journal->lastUpdatedOrderId, 4567);
 }
 
 TEST(OrdersTest, PlacementResultCarriesValidationReportOnSuccessAndFailure) {

@@ -1,7 +1,6 @@
 #include "orders/order_journal.h"
-
-#include "orders/order_journal.h"
 #include "orders/order_service_utils.h"
+#include "logger.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -9,8 +8,10 @@
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <chrono>
+#include <filesystem>
 
 #ifdef _WIN32
 #include <fcntl.h>
@@ -102,8 +103,18 @@ BinanceError journalIoError(int code, std::string_view action, int savedErrno) {
 }
 
 std::expected<void, BinanceError> appendDurably(const std::string& path, const std::string& data) {
+    std::error_code ec;
+    const auto parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            return std::unexpected(BinanceError::fromApiResponse(
+                -90011,
+                "Failed to create durable journal directory: " + ec.message()));
+        }
+    }
 #ifdef _WIN32
-    const int fd = _open(path.c_str(), _O_APPEND | _O_CREAT | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IREAD | _S_IWRITE);
+    const int fd = _open(path.c_str(), _O_APPEND | _O_CREAT | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE);
     if (fd == -1) {
         return std::unexpected(journalIoError(-90011, "Failed to open durable journal", errno));
     }
@@ -132,7 +143,7 @@ std::expected<void, BinanceError> appendDurably(const std::string& path, const s
     }
     return {};
 #else
-    const int fd = ::open(path.c_str(), O_APPEND | O_CREAT | O_WRONLY, 0644);
+    const int fd = ::open(path.c_str(), O_APPEND | O_CREAT | O_WRONLY, 0600);
     if (fd == -1) {
         return std::unexpected(journalIoError(-90011, "Failed to open durable journal", errno));
     }
@@ -216,8 +227,11 @@ DurableOrderJournal::DurableOrderJournal(std::string path)
     : m_path(std::move(path)) {
     auto loaded = loadFromFile();
     if (!loaded) {
-        // Create/append probe to return deterministic failure later in record/update calls.
-        std::ofstream out(m_path, std::ios::app);
+        throw std::runtime_error("durable journal initialization failed: " + loaded.error().toString());
+    }
+    auto probe = appendDurably(m_path, "");
+    if (!probe) {
+        throw std::runtime_error("durable journal probe failed: " + probe.error().toString());
     }
 }
 
@@ -284,87 +298,98 @@ std::expected<void, BinanceError> DurableOrderJournal::loadFromFile() {
     }
 
     std::string line;
+    int badLines = 0;
     while (std::getline(in, line)) {
         if (line.empty()) {
             continue;
         }
 
-        auto parts = splitTabs(line);
-        if (parts.empty()) {
-            continue;
-        }
-
-        if (parts[0] == "R") {
-            if (parts.size() < 13) {
+        try {
+            auto parts = splitTabs(line);
+            if (parts.empty()) {
                 continue;
             }
-            JournalEntry entry;
-            entry.correlationId = parts[1];
-            entry.symbol = parts[2];
-            entry.clientOrderId = parts[3];
-            entry.orderCategory = parts[4];
-            entry.side = parseSide(toInt(parts[5]));
-            entry.type = parseType(toInt(parts[6]));
-            entry.positionSide = parsePositionSide(toInt(parts[7]));
-            entry.quantity = parts[8];
-            entry.price = parts[9];
-            entry.requestParams = parts[10];
-            entry.sendTimestampMs = toInt64(parts[11]);
-            entry.state = parsePlacementState(toInt(parts[12]));
-            if (parts.size() > 13 && !parts[13].empty()) {
-                entry.binanceOrderId = toInt64(parts[13]);
-            }
 
-            if (parts.size() > 14) {
-                OrderMetadata metadata;
-                bool hasMetadata = false;
-                if (!parts[14].empty()) {
-                    metadata.magic = toInt64(parts[14]);
-                    hasMetadata = true;
+            if (parts[0] == "R") {
+                if (parts.size() < 13) {
+                    continue;
                 }
-                if (parts.size() > 15 && !parts[15].empty()) {
-                    metadata.comment = parts[15];
-                    hasMetadata = true;
+                JournalEntry entry;
+                entry.correlationId = parts[1];
+                entry.symbol = parts[2];
+                entry.clientOrderId = parts[3];
+                entry.orderCategory = parts[4];
+                entry.side = parseSide(toInt(parts[5]));
+                entry.type = parseType(toInt(parts[6]));
+                entry.positionSide = parsePositionSide(toInt(parts[7]));
+                entry.quantity = parts[8];
+                entry.price = parts[9];
+                entry.requestParams = parts[10];
+                entry.sendTimestampMs = toInt64(parts[11]);
+                entry.state = parsePlacementState(toInt(parts[12]));
+                if (parts.size() > 13 && !parts[13].empty()) {
+                    entry.binanceOrderId = toInt64(parts[13]);
                 }
-                if (parts.size() > 16 && !parts[16].empty()) {
-                    metadata.strategyTag = parts[16];
-                    hasMetadata = true;
-                }
-                if (parts.size() > 17 && !parts[17].empty()) {
-                    metadata.timeframe = parts[17];
-                    hasMetadata = true;
-                } else if (!metadata.timeframe.has_value()) {
-                    if (const auto derived = orders::detail::extractTimeframe(std::optional<OrderMetadata>{metadata});
-                        derived.has_value()) {
-                        metadata.timeframe = *derived;
+
+                if (parts.size() > 14) {
+                    OrderMetadata metadata;
+                    bool hasMetadata = false;
+                    if (!parts[14].empty()) {
+                        metadata.magic = toInt64(parts[14]);
                         hasMetadata = true;
                     }
+                    if (parts.size() > 15 && !parts[15].empty()) {
+                        metadata.comment = parts[15];
+                        hasMetadata = true;
+                    }
+                    if (parts.size() > 16 && !parts[16].empty()) {
+                        metadata.strategyTag = parts[16];
+                        hasMetadata = true;
+                    }
+                    if (parts.size() > 17 && !parts[17].empty()) {
+                        metadata.timeframe = parts[17];
+                        hasMetadata = true;
+                    } else if (!metadata.timeframe.has_value()) {
+                        if (const auto derived = orders::detail::extractTimeframe(std::optional<OrderMetadata>{metadata});
+                            derived.has_value()) {
+                            metadata.timeframe = *derived;
+                            hasMetadata = true;
+                        }
+                    }
+                    if (hasMetadata) {
+                        entry.metadata = metadata;
+                    }
                 }
-                if (hasMetadata) {
-                    entry.metadata = metadata;
-                }
-            }
 
-            m_correlationByClientId[entry.clientOrderId] = entry.correlationId;
-            m_entriesByCorrelationId[entry.correlationId] = std::move(entry);
-            continue;
-        }
-
-        if (parts[0] == "U" && parts.size() >= 3) {
-            const auto it = m_entriesByCorrelationId.find(parts[1]);
-            if (it == m_entriesByCorrelationId.end()) {
+                m_correlationByClientId[entry.clientOrderId] = entry.correlationId;
+                m_entriesByCorrelationId[entry.correlationId] = std::move(entry);
                 continue;
             }
-            it->second.state = parsePlacementState(toInt(parts[2]));
-            if (parts.size() > 3 && !parts[3].empty()) {
-                it->second.binanceOrderId = toInt64(parts[3]);
-            } else {
-                it->second.binanceOrderId = std::nullopt;
+
+            if (parts[0] == "U" && parts.size() >= 3) {
+                const auto it = m_entriesByCorrelationId.find(parts[1]);
+                if (it == m_entriesByCorrelationId.end()) {
+                    continue;
+                }
+                it->second.state = parsePlacementState(toInt(parts[2]));
+                if (parts.size() > 3 && !parts[3].empty()) {
+                    it->second.binanceOrderId = toInt64(parts[3]);
+                } else {
+                    it->second.binanceOrderId = std::nullopt;
+                }
+                if (parts.size() > 4 && !parts[4].empty()) {
+                    it->second.responseTimestampMs = toInt64(parts[4]);
+                }
             }
-            if (parts.size() > 4 && !parts[4].empty()) {
-                it->second.responseTimestampMs = toInt64(parts[4]);
-            }
+        } catch (const std::exception&) {
+            ++badLines;
         }
+    }
+
+    if (badLines > 0) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "durable journal ignored corrupt lines count=" + std::to_string(badLines));
     }
 
     return {};

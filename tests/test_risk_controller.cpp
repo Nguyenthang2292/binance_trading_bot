@@ -325,6 +325,39 @@ TEST(RiskControllerTest, SoftDrawdownAndUpiBreachesSetSoftStatus) {
     std::filesystem::remove_all(upiRoot);
 }
 
+TEST(RiskControllerTest, EqualThresholdsTriggerBreachesInclusively) {
+    auto cfg = baseConfig();
+    cfg.softMaxDrawdown = 0.10;
+    cfg.hardMaxDrawdown = 0.30;
+    cfg.softMinUpi = 0.5;
+    cfg.hardMinUpi = 0.0;
+    cfg.dbPath = uniqueDbPath("inclusive_threshold").string();
+    const auto root = std::filesystem::path(cfg.dbPath).parent_path();
+    {
+        engine::RiskDb db(cfg.dbPath);
+        engine::EquityCurve curve(db);
+        engine::RiskMetrics metrics(0.0, cfg.minDataPoints, std::chrono::minutes{cfg.sampleIntervalMinutes});
+        engine::RiskController controller(db, curve, metrics, cfg);
+
+        engine::RiskMetricsResult seeded;
+        seeded.windowKind = "rolling";
+        seeded.basis = "margin";
+        seeded.windowStartMs = 1;
+        seeded.windowEndMs = 2;
+        seeded.computedAtMs = 3;
+        seeded.dataPoints = 10;
+        seeded.valid = true;
+        seeded.maxDrawdown = -0.30;
+        seeded.upi = 1.0;
+        db.insertMetrics(seeded);
+
+        engine::RiskController restarted(db, curve, metrics, cfg);
+        EXPECT_EQ(restarted.currentStatus(), engine::RiskStatus::HARD_BREACH);
+        EXPECT_FALSE(restarted.canOpenPosition());
+    }
+    std::filesystem::remove_all(root);
+}
+
 TEST(RiskControllerTest, RiskConfigRejectsInvalidEnumValues) {
     auto j = nlohmann::json::object();
     j["enabled"] = true;

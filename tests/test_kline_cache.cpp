@@ -2,6 +2,7 @@
 
 #include "scanner/kline_cache.h"
 
+#include <span>
 #include <vector>
 
 TEST(KlineCacheTest, InsertReplaceAndSnapshot) {
@@ -75,4 +76,46 @@ TEST(KlineCacheTest, MergeKeepsAscendingOrderAndDeduplicates) {
     EXPECT_EQ((*snap)[1].openTime, 2000);
     EXPECT_EQ((*snap)[2].openTime, 2001);
     EXPECT_EQ((*snap)[3].openTime, 2002);
+}
+
+TEST(KlineCacheTest, MergeDoesNotDowngradeClosedCandleWithFormingDuplicate) {
+    scanner::KlineCache cache(4);
+
+    Kline closed;
+    closed.openTime = 2000;
+    closed.close = 100.0;
+    closed.isClosed = true;
+    cache.update("BTCUSDT", "15m", closed);
+
+    Kline forming = closed;
+    forming.close = 90.0;
+    forming.isClosed = false;
+    cache.merge("BTCUSDT", "15m", std::span<const Kline>(&forming, 1));
+
+    auto snap = cache.snapshot("BTCUSDT", "15m");
+    ASSERT_TRUE(snap.has_value());
+    ASSERT_EQ(snap->size(), 1u);
+    EXPECT_TRUE((*snap)[0].isClosed);
+    EXPECT_DOUBLE_EQ((*snap)[0].close, 100.0);
+}
+
+TEST(KlineCacheTest, ClosedDuplicateReplacesFormingCandle) {
+    scanner::KlineCache cache(4);
+
+    Kline forming;
+    forming.openTime = 2000;
+    forming.close = 90.0;
+    forming.isClosed = false;
+    cache.update("BTCUSDT", "15m", forming);
+
+    Kline closed = forming;
+    closed.close = 100.0;
+    closed.isClosed = true;
+    cache.merge("BTCUSDT", "15m", std::span<const Kline>(&closed, 1));
+
+    auto snap = cache.snapshot("BTCUSDT", "15m");
+    ASSERT_TRUE(snap.has_value());
+    ASSERT_EQ(snap->size(), 1u);
+    EXPECT_TRUE((*snap)[0].isClosed);
+    EXPECT_DOUBLE_EQ((*snap)[0].close, 100.0);
 }

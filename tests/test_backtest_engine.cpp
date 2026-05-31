@@ -118,7 +118,7 @@ TEST(BacktestEngineTest, LongTakeProfit) {
     EXPECT_EQ(stats.winRate, 1.0);
 }
 
-TEST(BacktestEngineTest, UsesInfinityForSingleSidedReturnDistributions) {
+TEST(BacktestEngineTest, UsesFiniteRatiosForSingleSidedReturnDistributions) {
     BacktestEngine engine(BacktestEngine::Config{0.0, 0.0, false});
     AlwaysLongStub stub(/*atr=*/10.0);
     auto cfg = makeBaseCfg();
@@ -132,8 +132,61 @@ TEST(BacktestEngineTest, UsesInfinityForSingleSidedReturnDistributions) {
                                       strategy::Signal::Direction::Long);
     ASSERT_EQ(stats.numTrades, 1);
     EXPECT_TRUE(std::isinf(stats.profitFactor));
-    EXPECT_TRUE(std::isinf(stats.sortino));
-    EXPECT_TRUE(std::isinf(stats.sharpe));
+    EXPECT_TRUE(std::isfinite(stats.sortino));
+    EXPECT_TRUE(std::isfinite(stats.sharpe));
+    EXPECT_DOUBLE_EQ(stats.sortino, 0.0);
+    EXPECT_DOUBLE_EQ(stats.sharpe, 0.0);
+}
+
+TEST(BacktestEngineTest, EntryCandleStopIsAppliedConservatively) {
+    BacktestEngine engine(BacktestEngine::Config{0.0, 0.0, false});
+    AlwaysLongStub stub(/*atr=*/10.0);
+    auto cfg = makeBaseCfg();
+
+    std::vector<Kline> klines{
+        makeBar(0,       100, 100, 100, 100),
+        makeBar(60'000,  100, 125,  85,  95),  // entry candle hits both SL=90 and TP=120
+        makeBar(120'000, 100, 125,  99, 120),
+    };
+
+    const auto stats = engine.runFold(stub, "X", "1m", klines, {}, cfg,
+                                      strategy::Signal::Direction::Long);
+    ASSERT_EQ(stats.numTrades, 1);
+    EXPECT_DOUBLE_EQ(stats.winRate, 0.0);
+}
+
+TEST(BacktestEngineTest, OpenPositionIsMarkedToMarketAtFoldEnd) {
+    BacktestEngine engine(BacktestEngine::Config{0.0, 0.0, false});
+    AlwaysLongStub stub(/*atr=*/50.0);
+    auto cfg = makeBaseCfg();
+
+    std::vector<Kline> klines{
+        makeBar(0,       100, 100, 100, 100),
+        makeBar(60'000,  100, 101,  99, 105),
+        makeBar(120'000, 105, 106, 104, 106),
+    };
+
+    const auto stats = engine.runFold(stub, "X", "1m", klines, {}, cfg,
+                                      strategy::Signal::Direction::Long);
+    ASSERT_EQ(stats.numTrades, 1);
+    EXPECT_DOUBLE_EQ(stats.winRate, 1.0);
+}
+
+TEST(BacktestEngineTest, RejectsDerivedNonPositiveExitPrices) {
+    BacktestEngine engine(BacktestEngine::Config{0.0, 0.0, false});
+    AlwaysShortStub stub(/*atr=*/200.0);
+    auto cfg = makeBaseCfg();
+    cfg.tpMultiplier = 1.0;  // short TP = entry - 200, invalid.
+
+    std::vector<Kline> klines{
+        makeBar(0,       100, 100, 100, 100),
+        makeBar(60'000,  100, 110,  90,  95),
+        makeBar(120'000,  95, 100,  90,  95),
+    };
+
+    const auto stats = engine.runFold(stub, "X", "1m", klines, {}, cfg,
+                                      strategy::Signal::Direction::Short);
+    EXPECT_EQ(stats.numTrades, 0);
 }
 
 TEST(BacktestEngineTest, UsesFixedTakeProfitPercentWhenConfiguredOnStrategy) {
@@ -163,14 +216,15 @@ TEST(BacktestEngineTest, TickRoundsLongTakeProfitDownLikeLiveOrders) {
     std::vector<Kline> klines{
         makeBar(0,        100, 100,   100, 100),
         makeBar(60'000,   100, 101,    99, 100),
-        makeBar(120'000,  100, 120.1,  99, 110),
+        makeBar(120'000,  100, 120.1,  99, 100),
     };
     auto withoutMeta = engine.runFold(stub, "X", "1m", klines, {}, cfg,
                                       strategy::Signal::Direction::Long);
     auto withMeta = engine.runFold(stub, "X", "1m", klines, {}, cfg,
                                    strategy::Signal::Direction::Long, meta);
 
-    EXPECT_EQ(withoutMeta.numTrades, 0);  // raw TP=120.4 is not touched.
+    ASSERT_EQ(withoutMeta.numTrades, 1);  // raw TP=120.4 is not touched; fold-end close is flat.
+    EXPECT_EQ(withoutMeta.winRate, 0.0);
     ASSERT_EQ(withMeta.numTrades, 1);     // tick TP=120.0 is touched.
     EXPECT_EQ(withMeta.winRate, 1.0);
 }
@@ -184,14 +238,15 @@ TEST(BacktestEngineTest, TickRoundsShortTakeProfitUpLikeLiveOrders) {
     std::vector<Kline> klines{
         makeBar(0,        100, 100,   100, 100),
         makeBar(60'000,   100, 101,    99, 100),
-        makeBar(120'000,  100, 100.1, 79.9, 90),
+        makeBar(120'000,  100, 100.1, 79.9, 100),
     };
     auto withoutMeta = engine.runFold(stub, "X", "1m", klines, {}, cfg,
                                       strategy::Signal::Direction::Short);
     auto withMeta = engine.runFold(stub, "X", "1m", klines, {}, cfg,
                                    strategy::Signal::Direction::Short, meta);
 
-    EXPECT_EQ(withoutMeta.numTrades, 0);  // raw TP=79.6 is not touched.
+    ASSERT_EQ(withoutMeta.numTrades, 1);  // raw TP=79.6 is not touched; fold-end close is flat.
+    EXPECT_EQ(withoutMeta.winRate, 0.0);
     ASSERT_EQ(withMeta.numTrades, 1);     // tick TP=80.0 is touched.
     EXPECT_EQ(withMeta.winRate, 1.0);
 }
@@ -205,14 +260,15 @@ TEST(BacktestEngineTest, TickRoundsLongStopLossUpLikeLiveOrders) {
     std::vector<Kline> klines{
         makeBar(0,        100, 100,  100, 100),
         makeBar(60'000,   100, 101,   99, 100),
-        makeBar(120'000,  100, 100.1, 89.9, 95),
+        makeBar(120'000,  100, 100.1, 89.9, 100),
     };
     auto withoutMeta = engine.runFold(stub, "X", "1m", klines, {}, cfg,
                                       strategy::Signal::Direction::Long);
     auto withMeta = engine.runFold(stub, "X", "1m", klines, {}, cfg,
                                    strategy::Signal::Direction::Long, meta);
 
-    EXPECT_EQ(withoutMeta.numTrades, 0);  // raw SL=89.8 is not touched.
+    ASSERT_EQ(withoutMeta.numTrades, 1);  // raw SL=89.8 is not touched; fold-end close is flat.
+    EXPECT_EQ(withoutMeta.winRate, 0.0);
     ASSERT_EQ(withMeta.numTrades, 1);     // tick SL=90.0 is touched.
     EXPECT_EQ(withMeta.winRate, 0.0);
 }
@@ -226,14 +282,15 @@ TEST(BacktestEngineTest, TickRoundsShortStopLossDownLikeLiveOrders) {
     std::vector<Kline> klines{
         makeBar(0,        100, 100,   100, 100),
         makeBar(60'000,   100, 101,    99, 100),
-        makeBar(120'000,  100, 110.1, 99.9, 105),
+        makeBar(120'000,  100, 110.1, 99.9, 100),
     };
     auto withoutMeta = engine.runFold(stub, "X", "1m", klines, {}, cfg,
                                       strategy::Signal::Direction::Short);
     auto withMeta = engine.runFold(stub, "X", "1m", klines, {}, cfg,
                                    strategy::Signal::Direction::Short, meta);
 
-    EXPECT_EQ(withoutMeta.numTrades, 0);  // raw SL=110.2 is not touched.
+    ASSERT_EQ(withoutMeta.numTrades, 1);  // raw SL=110.2 is not touched; fold-end close is flat.
+    EXPECT_EQ(withoutMeta.winRate, 0.0);
     ASSERT_EQ(withMeta.numTrades, 1);     // tick SL=110.0 is touched.
     EXPECT_EQ(withMeta.winRate, 0.0);
 }
@@ -249,14 +306,15 @@ TEST(BacktestEngineTest, TickRoundsFixedTakeProfitPercent) {
     std::vector<Kline> klines{
         makeBar(0,        100, 100,   100, 100),
         makeBar(60'000,   100, 101,    99, 100),
-        makeBar(120'000,  100, 120.1,  99, 110),
+        makeBar(120'000,  100, 120.1,  99, 100),
     };
     auto withoutMeta = engine.runFold(stub, "X", "1m", klines, {}, cfg,
                                       strategy::Signal::Direction::Long);
     auto withMeta = engine.runFold(stub, "X", "1m", klines, {}, cfg,
                                    strategy::Signal::Direction::Long, meta);
 
-    EXPECT_EQ(withoutMeta.numTrades, 0);  // raw fixed TP=120.4 is not touched.
+    ASSERT_EQ(withoutMeta.numTrades, 1);  // raw fixed TP=120.4 is not touched; fold-end close is flat.
+    EXPECT_EQ(withoutMeta.winRate, 0.0);
     ASSERT_EQ(withMeta.numTrades, 1);     // tick fixed TP=120.0 is touched.
     EXPECT_EQ(withMeta.winRate, 1.0);
 }
@@ -270,12 +328,13 @@ TEST(BacktestEngineTest, InvalidTickSizeKeepsUnroundedBehaviour) {
     std::vector<Kline> klines{
         makeBar(0,        100, 100,   100, 100),
         makeBar(60'000,   100, 101,    99, 100),
-        makeBar(120'000,  100, 120.1,  99, 110),
+        makeBar(120'000,  100, 120.1,  99, 100),
     };
     auto stats = engine.runFold(stub, "X", "1m", klines, {}, cfg,
                                 strategy::Signal::Direction::Long, meta);
 
-    EXPECT_EQ(stats.numTrades, 0);
+    ASSERT_EQ(stats.numTrades, 1);
+    EXPECT_EQ(stats.winRate, 0.0);
 }
 
 TEST(BacktestEngineTest, LongStopLossWinsOnSameCandle) {

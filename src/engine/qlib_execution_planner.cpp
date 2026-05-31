@@ -6,6 +6,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -55,30 +56,20 @@ std::string metadataJson(const std::optional<OrderMetadata>& metadata) {
     if (!metadata.has_value()) {
         return "{}";
     }
-    std::ostringstream out;
-    out << "{";
-    bool first = true;
-    auto field = [&](std::string_view key, const auto& value) {
-        if (!value.has_value()) {
-            return;
-        }
-        if (!first) {
-            out << ",";
-        }
-        first = false;
-        out << "\"" << key << "\":\"" << *value << "\"";
-    };
-    field("timeframe", metadata->timeframe);
-    field("comment", metadata->comment);
-    field("strategy_tag", metadata->strategyTag);
-    if (metadata->magic.has_value()) {
-        if (!first) {
-            out << ",";
-        }
-        out << "\"magic\":" << *metadata->magic;
+    nlohmann::json payload = nlohmann::json::object();
+    if (metadata->timeframe.has_value()) {
+        payload["timeframe"] = *metadata->timeframe;
     }
-    out << "}";
-    return out.str();
+    if (metadata->comment.has_value()) {
+        payload["comment"] = *metadata->comment;
+    }
+    if (metadata->strategyTag.has_value()) {
+        payload["strategy_tag"] = *metadata->strategyTag;
+    }
+    if (metadata->magic.has_value()) {
+        payload["magic"] = *metadata->magic;
+    }
+    return payload.dump();
 }
 
 void configureConnection(sqlite3* db) {
@@ -374,13 +365,13 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
         while (orchestration::sqlite_helpers::nowMs() < deadlineMs) {
             auto readyPlan = fetchReadyPlan(db.get(), requestId, reason);
             if (readyPlan.has_value()) {
-                markRequest(db.get(), requestId, "succeeded", "");
                 Logger::instance().log(
                     LogLevel::Info,
                     "[QlibExecutionPlanner] plan ready request_id=" + requestId +
                         " plan_id=" + readyPlan->planId +
                         " slices=" + std::to_string(readyPlan->slices.size()));
                 if (m_nativeFallback == nullptr) {
+                    markRequest(db.get(), requestId, "failed", "slice executor fallback is not configured");
                     co_return std::unexpected(BinanceError::fromApiResponse(
                         -92002,
                         "qlib plan ready but slice executor fallback is not configured"));
@@ -401,17 +392,20 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                 for (const auto& slice : readyPlan->slices) {
                     if (slice.side != expectedSide) {
                         markSlice(db.get(), slice.sliceId, "failed", "side mismatch");
+                        markRequest(db.get(), requestId, "failed", "slice side mismatch");
                         co_return std::unexpected(BinanceError::fromApiResponse(-92005, "qlib slice side mismatch"));
                     }
                     auto sliceQty = DecimalString::parse(slice.quantity);
                     if (!sliceQty) {
                         markSlice(db.get(), slice.sliceId, "failed", "invalid quantity");
+                        markRequest(db.get(), requestId, "failed", "invalid slice quantity");
                         co_return std::unexpected(sliceQty.error());
                     }
                     cumulativeQuantity += sliceQty->toDouble();
                     if (cumulativeQuantity > approvedQuantity + 1e-12) {
                         markSlice(db.get(), slice.sliceId, "failed", "quantity exceeds parent");
                         revokePendingSlices(db.get(), readyPlan->planId, "quantity exceeds parent");
+                        markRequest(db.get(), requestId, "failed", "slice quantity exceeds parent");
                         co_return std::unexpected(BinanceError::fromApiResponse(-92006, "qlib slice quantity exceeds parent"));
                     }
 
@@ -428,6 +422,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                             revokeReason = "latest decision unavailable";
                         }
                         revokePendingSlices(db.get(), readyPlan->planId, revokeReason);
+                        markRequest(db.get(), requestId, "failed", revokeReason);
                         Logger::instance().log(
                             LogLevel::Warning,
                             "[QLIB_EXEC][SLICE_REVOKED] request=" + requestId +
@@ -448,11 +443,13 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                     if (!lastResult) {
                         markSlice(db.get(), slice.sliceId, "failed", lastResult.error().toString());
                         revokePendingSlices(db.get(), readyPlan->planId, "slice submission failed");
+                        markRequest(db.get(), requestId, "failed", "slice submission failed");
                         co_return lastResult;
                     }
                     if (lastResult->state != PlacementState::Accepted) {
                         markSlice(db.get(), slice.sliceId, "failed", "placement not accepted");
                         revokePendingSlices(db.get(), readyPlan->planId, "slice placement not accepted");
+                        markRequest(db.get(), requestId, "failed", "slice placement not accepted");
                         co_return lastResult;
                     }
                     if (lastResult->executedQty.has_value()) {
@@ -471,6 +468,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                     qtyOut << std::fixed << std::setprecision(8) << aggregateExecutedQty;
                     lastResult->executedQty = qtyOut.str();
                 }
+                markRequest(db.get(), requestId, "succeeded", "");
                 co_return lastResult;
             }
             boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor);

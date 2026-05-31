@@ -8,10 +8,52 @@
 #include "scanner/kline_cache.h"
 
 #include <chrono>
+#include <cmath>
 #include <span>
 #include <utility>
 
 namespace backtest {
+
+namespace {
+
+bool hasValidOhlc(const Kline& kline) {
+    if (!std::isfinite(kline.open) || !std::isfinite(kline.high) ||
+        !std::isfinite(kline.low) || !std::isfinite(kline.close)) {
+        return false;
+    }
+    return kline.high >= kline.open && kline.high >= kline.close && kline.high >= kline.low &&
+           kline.low <= kline.open && kline.low <= kline.close;
+}
+
+bool hasConsecutiveSpacing(std::span<const Kline> bars) {
+    if (bars.size() < 2) {
+        return true;
+    }
+    const int64_t spacing = bars[1].openTime - bars[0].openTime;
+    if (spacing <= 0) {
+        return false;
+    }
+    for (size_t i = 1; i < bars.size(); ++i) {
+        if ((bars[i].openTime - bars[i - 1].openTime) != spacing) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isSaneWindow(std::span<const Kline> bars) {
+    if (!hasConsecutiveSpacing(bars)) {
+        return false;
+    }
+    for (const auto& bar : bars) {
+        if (!bar.isClosed || !hasValidOhlc(bar)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
 
 /**
  * @brief Construct a cache-first historical window provider with REST fallback.
@@ -103,6 +145,10 @@ IHistoricalWindowProvider::WindowResult RestBackfillingHistoricalWindowProvider:
     }
     if (fetch.bars.empty() || fetch.bars.back().openTime != signalOpenMs) {
         out.errorReason = "signal_bar_missing";
+        return out;
+    }
+    if (!isSaneWindow(std::span<const Kline>(fetch.bars.data(), fetch.bars.size()))) {
+        out.errorReason = "invalid_history";
         return out;
     }
 

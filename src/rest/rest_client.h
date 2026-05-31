@@ -146,6 +146,18 @@ private:
         std::string_view path,
         std::string params,
         RateLimiter::Cost cost = {});
+    boost::asio::awaitable<HttpSession::Result> apiKeyPost(
+        std::string_view path,
+        std::string params,
+        RateLimiter::Cost cost = {});
+    boost::asio::awaitable<HttpSession::Result> apiKeyPut(
+        std::string_view path,
+        std::string params,
+        RateLimiter::Cost cost = {});
+    boost::asio::awaitable<HttpSession::Result> apiKeyDelete(
+        std::string_view path,
+        std::string params,
+        RateLimiter::Cost cost = {});
 
 };
 

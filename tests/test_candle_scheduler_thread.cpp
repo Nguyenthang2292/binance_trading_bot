@@ -240,6 +240,25 @@ private:
     std::vector<std::vector<std::string>> m_calls;
 };
 
+class ThrowingProcessRunner final : public orchestration::IProcessRunner {
+public:
+    orchestration::ProcessResult spawnWithRetry(const std::vector<std::string>& cmd) override {
+        (void)cmd;
+        throw std::runtime_error("runner unavailable");
+    }
+
+    bool startDaemon(const std::string& name, const std::vector<std::string>& cmd) override {
+        (void)name;
+        (void)cmd;
+        return false;
+    }
+    bool isDaemonRunning(const std::string& name) override {
+        (void)name;
+        return false;
+    }
+    void stopDaemon(const std::string& name) override { (void)name; }
+};
+
 orchestration::CandleSchedulerConfig makeCandleConfig(
     const std::filesystem::path& root,
     const std::string& dbPath) {
@@ -377,6 +396,20 @@ TEST(CandleSchedulerThreadTest, Phase4CheckSkippedAfterPhase3Failure) {
     worker.join();
 
     EXPECT_EQ(ctx.stateStore->snapshot().mode, orchestration::ExecutionMode::Shadow);
+}
+
+TEST(CandleSchedulerThreadTest, ProcessCandleCatchesRunnerExceptions) {
+    TestContext ctx;
+    orchestration::PromotionChecker promoter({.minCandles = 1000});
+    ThrowingProcessRunner runner;
+
+    orchestration::CandleSchedulerThread scheduler(
+        makeCandleConfig(ctx.tempDir, ctx.dbPath),
+        runner,
+        *ctx.stateStore,
+        promoter);
+
+    EXPECT_FALSE(scheduler.processCandle(1'700'000'000'000LL));
 }
 
 TEST(CandleSchedulerThreadTest, MissingDatasetAsofSkipsPhase3AndDoesNotAdvanceCursor) {

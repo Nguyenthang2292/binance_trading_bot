@@ -85,6 +85,7 @@ struct LeverageResult {
     std::string symbol;
     int leverage{0};
     double maxNotionalValue{0.0};
+    std::string maxNotionalValueRaw{"0"};
 };
 
 struct FuturesAccountConfig {
@@ -105,12 +106,22 @@ struct LeverageBracketTier {
     int bracket{0};
     int initialLeverage{0};
     double notionalCap{0.0};
+    std::string notionalCapRaw{"0"};
     double notionalFloor{0.0};
+    std::string notionalFloorRaw{"0"};
     double maintMarginRatio{0.0};
+    std::string maintMarginRatioRaw{"0"};
     double cum{0.0};
+    std::string cumRaw{"0"};
+    double qtyCap{0.0};
+    std::string qtyCapRaw{"0"};
+    double qtyFloor{0.0};
+    std::string qtyFloorRaw{"0"};
 };
 
 struct SymbolLeverageBrackets {
     std::string symbol;
+    double notionalCoef{0.0};
+    std::string notionalCoefRaw{"0"};
     std::vector<LeverageBracketTier> brackets;
 };

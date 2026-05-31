@@ -933,7 +933,7 @@ TEST(SignalEngineTest, ExternalReduceOnlyCloseCooldownBlocksImmediateReopen) {
     manualClose.orderStatus = "FILLED";
     manualClose.clientOrderId = "electron_manual_close";
     manualClose.isReduceOnly = true;
-    manualClose.lastFilledQty = 0.001;
+    manualClose.lastFilledQty = "0.001";
     engine.onUserDataEvent(manualClose);
 
     account::AccountSnapshot flatSnapshot;
@@ -1887,6 +1887,36 @@ TEST(SignalEngineTest, ReconcileTrackedPositionsRemovesStaleTrackerEntry) {
     EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
 }
 
+TEST(SignalEngineTest, ReconcileFailClosedClosesRecoveredLivePositionWithoutStopBinding) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    MockAccountPort account;
+    account::AccountSnapshot snapshot;
+    Position live;
+    live.symbol = "BTCUSDT";
+    live.positionAmt = 0.02;
+    snapshot.positions = std::vector<Position>{live};
+    account.nextSnapshot = snapshot;
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    MockExposurePort exposure;
+    engine::SignalEngine engine(
+        scanner,
+        registry,
+        account,
+        orders,
+        exposure,
+        engine::SignalEngine::Config{.placeStopLoss = true});
+
+    runAwaitable(ioc, engine.reconcileTrackedPositions());
+
+    EXPECT_EQ(orders.closeCalls, 1);
+    ASSERT_TRUE(orders.lastCloseDraft.has_value());
+    EXPECT_EQ(orders.lastCloseDraft->symbol, "BTCUSDT");
+    EXPECT_EQ(orders.lastCloseDraft->side, OrderSide::Sell);
+    EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
 TEST(SignalEngineTest, EvaluatesSignalBeforeTrackedPositionSkip) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);
@@ -1994,6 +2024,50 @@ TEST(SignalEngineTest, ProcessTrailingStopsMovesLongStopAndUpdatesTracker) {
     runAwaitable(ioc, engine.processTrailingStops());
     EXPECT_EQ(orders.cancelAlgoByAlgoIdCalls, 1);
     EXPECT_EQ(orders.protectionCalls, 1);
+}
+
+TEST(SignalEngineTest, ProcessTrailingStopsDoesNotAdvanceTrackerWhenOldStopCancelFails) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    MockAccountPort account;
+    MockOrdersPort orders;
+    orders.cancelAlgoResult = std::unexpected(BinanceError::fromApiResponse(-1000, "cancel failed"));
+    strategy::StrategyRegistry registry;
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+
+    for (int i = 0; i < 3; ++i) {
+        Kline k;
+        k.openTime = 8000 + i;
+        k.high = 120.0 + i;
+        k.low = 100.0 + i;
+        k.close = 110.0 + i;
+        k.isClosed = true;
+        scanner.push("BTCUSDT", "4h", k);
+    }
+
+    engine::TrackedPosition pos;
+    pos.symbol = "BTCUSDT";
+    pos.direction = strategy::Signal::Direction::Long;
+    pos.quantity = 0.01;
+    pos.slOrderId = 20;
+    pos.slClientOrderId = "old_sl";
+    pos.trailingEnabled = true;
+    pos.trailingInterval = "4h";
+    pos.trailingCandles = 3;
+    pos.currentTrailLevel = 80.0;
+    engine.tracker().add(pos);
+
+    runAwaitable(ioc, engine.processTrailingStops());
+
+    EXPECT_EQ(orders.protectionCalls, 1);
+    EXPECT_EQ(orders.cancelAlgoByAlgoIdCalls, 1);
+    EXPECT_EQ(orders.cancelAlgoByClientAlgoIdCalls, 1);
+    const auto tracked = engine.tracker().bySymbol("BTCUSDT");
+    ASSERT_TRUE(tracked.has_value());
+    EXPECT_EQ(tracked->slOrderId, 20);
+    EXPECT_EQ(tracked->slClientOrderId, "old_sl");
+    EXPECT_DOUBLE_EQ(tracked->currentTrailLevel, 80.0);
 }
 
 TEST(SignalEngineTest, ExposureBlockSkipsOpen) {
@@ -2397,14 +2471,14 @@ TEST(SignalEngineTest, PartialExitFillReducesTrackedQuantity) {
     partial.symbol = "BTCUSDT";
     partial.orderStatus = "PARTIALLY_FILLED";
     partial.clientOrderId = "tp-partial";
-    partial.lastFilledQty = 0.4;
+    partial.lastFilledQty = "0.4";
     engine.onUserDataEvent(partial);
 
     const auto afterPartial = engine.tracker().bySymbol("BTCUSDT");
     ASSERT_TRUE(afterPartial.has_value());
     EXPECT_NEAR(afterPartial->quantity, 0.6, 1e-12);
 
-    partial.lastFilledQty = 0.6;
+    partial.lastFilledQty = "0.6";
     engine.onUserDataEvent(partial);
     EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
 }

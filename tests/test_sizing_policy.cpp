@@ -86,3 +86,22 @@ TEST(SizingPolicyTest, ReturnsZeroWhenMaximumIsBelowMinimum) {
     EXPECT_DOUBLE_EQ(result.quantity, 0.0);
 }
 
+TEST(SizingPolicyTest, ReturnsZeroWhenMinNotionalRoundUpWouldExceedMaximum) {
+    const auto result = engine::calculateSize(
+        engine::SizingInput{
+            .availableBalance = 100.0,
+            .atr = 100.0,
+            .riskPct = 0.01,
+            .slMultiplier = 2.0,
+            .minNotional = 5.0,
+            .maxNotional = 5.2,
+        },
+        333.0,
+        0.01);
+
+    EXPECT_TRUE(result.isMinClamped);
+    EXPECT_TRUE(result.isMaxCapped);
+    EXPECT_DOUBLE_EQ(result.notional, 0.0);
+    EXPECT_DOUBLE_EQ(result.quantity, 0.0);
+}
+

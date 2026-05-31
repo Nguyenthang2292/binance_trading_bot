@@ -141,6 +141,36 @@ void RateLimiter::updateFromHeaders(int usedWeight, int usedOrders1m, int usedOr
     }
 }
 
+int RateLimiter::depthWeight(int limit) {
+    if (limit <= 50) {
+        return 2;
+    }
+    if (limit <= 100) {
+        return 5;
+    }
+    if (limit <= 500) {
+        return 10;
+    }
+    return 20;
+}
+
+void RateLimiter::release(Cost cost) {
+    if (cost.requestWeight < 0) {
+        cost.requestWeight = 0;
+    }
+    if (cost.orders1m < 0) {
+        cost.orders1m = 0;
+    }
+    if (cost.orders10s < 0) {
+        cost.orders10s = 0;
+    }
+
+    std::scoped_lock lock(m_mutex);
+    m_reservedWeight = std::max(0, m_reservedWeight - cost.requestWeight);
+    m_reservedOrders1m = std::max(0, m_reservedOrders1m - cost.orders1m);
+    m_reservedOrders10s = std::max(0, m_reservedOrders10s - cost.orders10s);
+}
+
 void RateLimiter::penalize(std::chrono::milliseconds delay) {
     if (delay.count() <= 0) {
         return;

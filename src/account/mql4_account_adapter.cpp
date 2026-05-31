@@ -44,6 +44,9 @@ bool isMultiAssetsMarginEnabled(const AccountSnapshot& snapshot) {
  *         AccountMappingError::Unsupported when multi-assets margin is set.
  */
 AccountMappingResult<void> requireSingleAssetMode(const AccountSnapshot& snapshot) {
+    if (!snapshot.multiAssetsMargin.has_value()) {
+        return std::unexpected(AccountMappingError::Unsupported);
+    }
     if (isMultiAssetsMarginEnabled(snapshot)) {
         return std::unexpected(AccountMappingError::Unsupported);
     }

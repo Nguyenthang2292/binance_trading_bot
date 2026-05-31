@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <openssl/crypto.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -58,6 +59,56 @@ size_t loadWindowsRootCertificates(ssl::context& context) {
 
 } // namespace
 #endif
+
+ContextConfig::ContextConfig(const ContextConfig& other) = default;
+
+ContextConfig& ContextConfig::operator=(const ContextConfig& other) {
+    if (this != &other) {
+        clearSecretKey();
+        apiKey = other.apiKey;
+        secretKey = other.secretKey;
+        testnet = other.testnet;
+        threadPoolSize = other.threadPoolSize;
+        signingMethod = other.signingMethod;
+        socks5Proxy = other.socks5Proxy;
+    }
+    return *this;
+}
+
+ContextConfig::ContextConfig(ContextConfig&& other) noexcept
+    : apiKey(std::move(other.apiKey)),
+      secretKey(std::move(other.secretKey)),
+      testnet(other.testnet),
+      threadPoolSize(other.threadPoolSize),
+      signingMethod(other.signingMethod),
+      socks5Proxy(std::move(other.socks5Proxy)) {
+    other.clearSecretKey();
+}
+
+ContextConfig& ContextConfig::operator=(ContextConfig&& other) noexcept {
+    if (this != &other) {
+        clearSecretKey();
+        apiKey = std::move(other.apiKey);
+        secretKey = std::move(other.secretKey);
+        testnet = other.testnet;
+        threadPoolSize = other.threadPoolSize;
+        signingMethod = other.signingMethod;
+        socks5Proxy = std::move(other.socks5Proxy);
+        other.clearSecretKey();
+    }
+    return *this;
+}
+
+ContextConfig::~ContextConfig() {
+    clearSecretKey();
+}
+
+void ContextConfig::clearSecretKey() noexcept {
+    if (!secretKey.empty()) {
+        OPENSSL_cleanse(secretKey.data(), secretKey.size());
+        secretKey.clear();
+    }
+}
 
 BinanceContext::BinanceContext(ContextConfig cfg)
     : m_cfg(std::move(cfg)),

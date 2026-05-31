@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,12 +41,19 @@ struct Trade {
 struct Ticker24h {
     std::string symbol;
     double lastPrice{0.0};
+    std::string lastPriceRaw{"0"};
     double priceChange{0.0};
+    std::string priceChangeRaw{"0"};
     double priceChangePercent{0.0};
+    std::string priceChangePercentRaw{"0"};
     double highPrice{0.0};
+    std::string highPriceRaw{"0"};
     double lowPrice{0.0};
+    std::string lowPriceRaw{"0"};
     double volume{0.0};
+    std::string volumeRaw{"0"};
     double quoteVolume{0.0};
+    std::string quoteVolumeRaw{"0"};
     int64_t openTime{0};
     int64_t closeTime{0};
 };
@@ -55,11 +63,35 @@ using Ticker = Ticker24h;
 struct MarkPrice {
     std::string symbol;
     double markPrice{0.0};
+    std::string markPriceRaw{"0"};
     double indexPrice{0.0};
+    std::string indexPriceRaw{"0"};
     double estimatedSettlePrice{0.0};
+    std::string estimatedSettlePriceRaw{"0"};
     double fundingRate{0.0};
+    std::string fundingRateRaw{"0"};
     int64_t nextFundingTime{0};
     int64_t time{0};
+};
+
+struct ExchangePriceFilter {
+    double minPrice{0.0};
+    double maxPrice{0.0};
+    double tickSize{0.0};
+};
+
+struct ExchangeLotSizeFilter {
+    double minQty{0.0};
+    double maxQty{0.0};
+    double stepSize{0.0};
+};
+
+struct ExchangeNotionalFilter {
+    double minNotional{0.0};
+    double maxNotional{0.0};
+    bool applyMinToMarket{false};
+    bool applyMaxToMarket{false};
+    int avgPriceMins{0};
 };
 
 struct ExchangeSymbol {
@@ -71,6 +103,14 @@ struct ExchangeSymbol {
     int pricePrecision{0};
     int quantityPrecision{0};
     int baseAssetPrecision{0};
+
+    std::optional<ExchangePriceFilter> priceFilter;
+    std::optional<ExchangeLotSizeFilter> lotSize;
+    std::optional<ExchangeLotSizeFilter> marketLotSize;
+    std::optional<ExchangeNotionalFilter> minNotionalFilter;
+    std::optional<ExchangeNotionalFilter> notionalFilter;
+
+    // Legacy aliases retained for existing sizing/validation code.
     double tickSize{0.0};
     double stepSize{0.0};
     double minNotional{0.0};

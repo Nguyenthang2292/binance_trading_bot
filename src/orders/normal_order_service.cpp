@@ -4,7 +4,9 @@
 #include "logger.h"
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -351,6 +353,8 @@ OrdersResult<NormalOrderService::PreparedPlacement> NormalOrderService::prepareC
 }
 
 boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::market(MarketOrderDraft draft) {
+    co_await reconcilePendingJournalOnce();
+
     const auto startedAt = std::chrono::steady_clock::now();
     auto prepared = prepareMarket(std::move(draft));
     if (!prepared) {
@@ -395,6 +399,8 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
 }
 
 boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::limit(LimitOrderDraft draft) {
+    co_await reconcilePendingJournalOnce();
+
     const auto startedAt = std::chrono::steady_clock::now();
     auto prepared = prepareLimit(std::move(draft));
     if (!prepared) {
@@ -439,6 +445,8 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
 }
 
 boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::closeByMarket(CloseByMarketDraft draft) {
+    co_await reconcilePendingJournalOnce();
+
     const auto startedAt = std::chrono::steady_clock::now();
     auto prepared = prepareCloseByMarket(std::move(draft));
     if (!prepared) {
@@ -483,6 +491,14 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
 }
 
 boost::asio::awaitable<OrdersResult<LeverageResult>> NormalOrderService::setLeverage(Symbol symbol, int leverage) {
+    const int minLeverage = std::max(1, m_cfg.minLeverage);
+    const int maxLeverage = std::max(minLeverage, m_cfg.maxLeverage);
+    if (leverage < minLeverage || leverage > maxLeverage) {
+        co_return std::unexpected(BinanceError::fromApiResponse(
+            -90015,
+            "leverage out of configured range [" + std::to_string(minLeverage) + ", " +
+                std::to_string(maxLeverage) + "]"));
+    }
     co_return co_await m_rest.setLeverage(std::move(symbol), leverage);
 }
 
@@ -748,6 +764,8 @@ boost::asio::awaitable<OrdersResult<OrderFillSummary>> NormalOrderService::query
 }
 
 boost::asio::awaitable<OrdersResult<BatchPlacementResult>> NormalOrderService::batchNormal(std::vector<NormalOrderDraft> drafts) {
+    co_await reconcilePendingJournalOnce();
+
     const auto startedAt = std::chrono::steady_clock::now();
     BatchPlacementResult output;
     output.items.resize(drafts.size());
@@ -929,4 +947,61 @@ OrderView NormalOrderService::enrichWithMetadata(NormalOrderSnapshot snapshot) {
     }
 
     return view;
+}
+
+boost::asio::awaitable<void> NormalOrderService::reconcilePendingJournalOnce() {
+    if (!m_journal) {
+        co_return;
+    }
+    if (m_pendingJournalReconciled.exchange(true)) {
+        co_return;
+    }
+
+    auto pending = m_journal->pendingReconcile();
+    if (!pending) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "pending reconcile load failed reason=" + pending.error().toString());
+        co_return;
+    }
+
+    constexpr int64_t kMinuteMs = 60LL * 1000LL;
+    constexpr int64_t kSevenDaysMs = 7LL * 24LL * 60LL * 60LL * 1000LL;
+    const int64_t nowMs = unixMsNow();
+    int reconciledCount = 0;
+
+    for (const auto& entry : *pending) {
+        auto liveOrder = co_await m_rest.queryOrderByClientOrderId(entry.symbol, entry.clientOrderId);
+        if (liveOrder) {
+            (void)m_journal->updateState(entry.correlationId, PlacementState::Accepted, liveOrder->orderId);
+            ++reconciledCount;
+            continue;
+        }
+
+        if (liveOrder.error().category != ErrorCategory::Api || liveOrder.error().code != -2013) {
+            continue;
+        }
+
+        const int64_t safeStart = std::max<int64_t>(0, entry.sendTimestampMs - kMinuteMs);
+        const int64_t safeEnd = std::min<int64_t>(nowMs, safeStart + kSevenDaysMs - 1);
+        auto history = co_await m_rest.allOrders(entry.symbol, safeStart, safeEnd, 500);
+        if (!history) {
+            continue;
+        }
+
+        const auto hit = std::find_if(
+            history->begin(),
+            history->end(),
+            [&entry](const Order& order) { return order.clientOrderId == entry.clientOrderId; });
+        if (hit != history->end()) {
+            (void)m_journal->updateState(entry.correlationId, PlacementState::Accepted, hit->orderId);
+            ++reconciledCount;
+        }
+    }
+
+    if (reconciledCount > 0) {
+        Logger::instance().log(
+            LogLevel::Info,
+            "pending reconcile completed reconciled=" + std::to_string(reconciledCount));
+    }
 }

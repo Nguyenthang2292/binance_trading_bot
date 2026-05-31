@@ -174,6 +174,33 @@ TEST(AccountServiceTest, SnapshotPropagatesAccountRestFailure) {
     EXPECT_EQ(rest.positionsCalls, 0);
 }
 
+TEST(AccountServiceTest, SnapshotAllowsPartialOptionalEndpointFailuresWhenRequested) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.canTrade = true;
+    rest.accountResult = account;
+    rest.balanceResult = std::unexpected(BinanceError::fromApiResponse(-1001, "balance unavailable"));
+    Position position;
+    position.symbol = "BTCUSDT";
+    rest.positionsResult = std::vector<Position>{position};
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::AccountSnapshotRequest request;
+    request.includeBalanceEndpoint = true;
+    request.includePositions = true;
+    request.allowPartialResults = true;
+
+    auto result = runAwaitable(service.snapshot(request));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::AccountSnapshotCompleteness::AccountAndPositions);
+    EXPECT_FALSE(result->balances.has_value());
+    ASSERT_TRUE(result->positions.has_value());
+    ASSERT_EQ(result->partialErrors.size(), 1u);
+    EXPECT_EQ(result->partialErrors.front().code, -1001);
+}
+
 TEST(AccountServiceTest, SnapshotWithPositionsOnlyMarksAccountAndPositions) {
     StubAccountRestClient rest;
     FuturesAccount account;
@@ -255,7 +282,9 @@ TEST(AccountServiceTest, CheckFreeMarginValidatesViaTestOrder) {
     account::MarginCheckDraft draft{
         .symbol = "BTCUSDT",
         .side = account::MarginCheckSide::Buy,
+        .positionSide = PositionSide::Long,
         .quantity = qty("0.01"),
+        .reduceOnly = false,
     };
 
     auto result = runAwaitable(service.checkFreeMargin(draft));
@@ -266,6 +295,9 @@ TEST(AccountServiceTest, CheckFreeMarginValidatesViaTestOrder) {
     ASSERT_TRUE(rest.lastTestOrderRequest.has_value());
     EXPECT_EQ(rest.lastTestOrderRequest->symbol, "BTCUSDT");
     EXPECT_EQ(rest.lastTestOrderRequest->type, OrderType::Market);
+    EXPECT_EQ(rest.lastTestOrderRequest->positionSide, PositionSide::Long);
+    ASSERT_TRUE(rest.lastTestOrderRequest->reduceOnly.has_value());
+    EXPECT_FALSE(*rest.lastTestOrderRequest->reduceOnly);
 }
 
 TEST(AccountServiceTest, CheckFreeMarginBothOptionsKeepsServerValidatedOnly) {

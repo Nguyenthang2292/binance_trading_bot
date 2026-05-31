@@ -37,10 +37,12 @@ struct MarkPriceEvent {
 
 struct BookTickerEvent {
     std::string symbol;
+    int64_t updateId{0};
     double bidPrice{0.0};
     double bidQty{0.0};
     double askPrice{0.0};
     double askQty{0.0};
+    int64_t eventTime{0};
     int64_t transactTime{0};
 };
 
@@ -59,11 +61,11 @@ struct LiquidationEvent {
     OrderType type{OrderType::Limit};
     TimeInForce timeInForce{TimeInForce::GTC};
     std::string status;
-    double price{0.0};
-    double origQty{0.0};
-    double lastFilledQty{0.0};
-    double avgPrice{0.0};
-    double cumFilledQty{0.0};
+    std::string price{"0"};
+    std::string origQty{"0"};
+    std::string lastFilledQty{"0"};
+    std::string avgPrice{"0"};
+    std::string cumFilledQty{"0"};
     int64_t time{0};
 };
 
@@ -81,6 +83,11 @@ struct CompositeIndexEvent {
     std::vector<Component> components;
 };
 
+struct UnknownMarketEvent {
+    std::string stream;
+    std::string eventType;
+};
+
 using MarketEvent = std::variant<
     AggTradeEvent,
     KlineEvent,
@@ -88,7 +95,8 @@ using MarketEvent = std::variant<
     BookTickerEvent,
     DepthEvent,
     LiquidationEvent,
-    CompositeIndexEvent>;
+    CompositeIndexEvent,
+    UnknownMarketEvent>;
 
 struct OrderUpdateEvent {
     std::string symbol;
@@ -101,20 +109,20 @@ struct OrderUpdateEvent {
     TimeInForce timeInForce{TimeInForce::GTC};
     std::string executionType;
     std::string orderStatus;
-    double originalQty{0.0};
-    double originalPrice{0.0};
-    double avgPrice{0.0};
-    double lastFilledQty{0.0};
-    double lastFilledPrice{0.0};
-    double accumulatedFilledQty{0.0};
-    double realizedPnl{0.0};
-    double commission{0.0};
+    std::string originalQty{"0"};
+    std::string originalPrice{"0"};
+    std::string avgPrice{"0"};
+    std::string lastFilledQty{"0"};
+    std::string lastFilledPrice{"0"};
+    std::string accumulatedFilledQty{"0"};
+    std::string realizedPnl{"0"};
+    std::string commission{"0"};
     std::string commissionAsset;
     bool isReduceOnly{false};
     bool closePosition{false};
-    double stopPrice{0.0};
-    double activationPrice{0.0};
-    double priceRate{0.0};
+    std::string stopPrice{"0"};
+    std::string activationPrice{"0"};
+    std::string priceRate{"0"};
     WorkingType workingType{WorkingType::ContractPrice};
     int64_t orderTime{0};
     int64_t tradeTime{0};

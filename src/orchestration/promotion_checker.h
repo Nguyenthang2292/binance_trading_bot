@@ -10,8 +10,9 @@ struct PromotionConfig {
     int minCandles{168};
     double minSharpe{0.5};
     double minHitRate{0.52};
-    double minMeanNetReturnBps{0.0};
+    double minMeanNetReturnBps{0.1};
     int lookbackCandles{336};
+    int horizonBars{1};
 };
 
 class PromotionChecker {

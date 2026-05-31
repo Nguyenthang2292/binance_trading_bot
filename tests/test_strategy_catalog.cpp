@@ -198,3 +198,39 @@ TEST(StrategyCatalogTest, InvalidStrategyConfigIsRejectedBeforeRegistryInsert) {
     EXPECT_TRUE(registry.all().empty());
 }
 
+TEST(StrategyCatalogTest, PartialRegistrationFailsClosed) {
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins"},
+        [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"rsi.dll"}; },
+        [](const std::filesystem::path& path) {
+            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path,
+                &createCatalogStrategy,
+                &destroyCatalogStrategy,
+                &catalogTypeFn,
+                &catalogVersionFn,
+                "rsi_reversal",
+                "1.2.3"));
+        });
+
+    strategy::StrategyRegistry registry;
+    catalog::StrategyCatalog catalog({.pluginsDir = "plugins"}, registry, std::move(loader));
+    const std::vector<nlohmann::json> cfg{
+        nlohmann::json{
+            {"name", "valid"},
+            {"type", "rsi_reversal"},
+            {"intervals", nlohmann::json::array({"15m"})},
+        },
+        nlohmann::json{
+            {"name", "bad"},
+            {"type", "rsi_reversal"},
+            {"intervals", nlohmann::json::array()},
+        }};
+
+    const auto summary = catalog.initialize(cfg);
+    EXPECT_EQ(summary.strategiesRegistered, 0);
+    ASSERT_FALSE(summary.errors.empty());
+    EXPECT_TRUE(registry.all().empty());
+    EXPECT_TRUE(catalog.listStrategies().empty());
+}
+

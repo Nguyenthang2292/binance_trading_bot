@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "orchestration/orchestrator_config.h"
 #include "orchestration/shadow_metrics_recorder.h"
 
 #if __has_include(<sqlite3.h>)
@@ -113,6 +114,23 @@ double scalarDouble(const std::string& dbPath, const char* sql) {
     return sqlite3_column_double(stmt.get(), 0);
 }
 
+std::string scalarText(const std::string& dbPath, const char* sql) {
+    sqlite3* rawDb = nullptr;
+    EXPECT_EQ(sqlite3_open(dbPath.c_str(), &rawDb), SQLITE_OK);
+    EXPECT_NE(rawDb, nullptr);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(rawDb, sqlite3_close);
+
+    sqlite3_stmt* rawStmt = nullptr;
+    EXPECT_EQ(sqlite3_prepare_v2(db.get(), sql, -1, &rawStmt, nullptr), SQLITE_OK);
+    EXPECT_NE(rawStmt, nullptr);
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
+    if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+        return {};
+    }
+    const char* value = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0));
+    return value ? std::string(value) : std::string{};
+}
+
 int64_t scalarInt64(const std::string& dbPath, const char* sql) {
     sqlite3* rawDb = nullptr;
     EXPECT_EQ(sqlite3_open(dbPath.c_str(), &rawDb), SQLITE_OK);
@@ -187,6 +205,71 @@ TEST(ShadowMetricsRecorderTest, RecordsSignalAndMaturesOutcome) {
         scalarDouble(dbPath, "SELECT raw_return FROM qlib_actual_returns LIMIT 1;"),
         0.05,
         1e-9);
+    EXPECT_NE(
+        scalarText(dbPath, "SELECT cost_model_version FROM qlib_shadow_outcomes LIMIT 1;").find("rtf=0"),
+        std::string::npos);
+}
+
+TEST(ShadowMetricsRecorderTest, OutcomeBackfillIsScopedToRecorderModel) {
+    const auto tmp = makeTempDir();
+    TempDirGuard guard{tmp};
+    const std::string dbPath = (tmp / "predictions.db").string();
+
+    orchestration::ShadowMetricsConfig cfg;
+    cfg.dbPath = dbPath;
+    cfg.modelId = "model_a";
+    cfg.interval = "1h";
+    cfg.horizonBars = 1;
+    cfg.costModel.estimatedRoundTripFeeBps = 0.0;
+    cfg.costModel.estimatedSlippageBps = 0.0;
+    cfg.costModel.estimatedFundingBpsPerDay = 0.0;
+    orchestration::ShadowMetricsRecorder recorder(cfg);
+    recorder.initializeSchema();
+
+    const int64_t asofMs = 1'700'000'000'000LL;
+    orchestration::ShadowSignalRecord record;
+    record.symbol = "BTCUSDT";
+    record.interval = "1h";
+    record.asofOpenTimeMs = asofMs;
+    record.capturedAtMs = asofMs + 1000;
+    record.direction = strategy::Signal::Direction::Long;
+    record.confidence = 0.9;
+    record.executionMode = orchestration::ExecutionMode::Shadow;
+    record.wouldPlaceOrder = true;
+
+    record.modelId = "model_a";
+    recorder.recordShadowSignal(record);
+    record.modelId = "model_b";
+    recorder.recordShadowSignal(record);
+
+    recorder.onCandleClosed("BTCUSDT", "1h", makeKline(asofMs, 100.0));
+    recorder.onCandleClosed("BTCUSDT", "1h", makeKline(asofMs + 3'600'000LL, 105.0));
+
+    EXPECT_EQ(scalarInt64(dbPath, "SELECT COUNT(*) FROM qlib_shadow_outcomes;"), 1);
+    EXPECT_EQ(
+        scalarInt64(
+            dbPath,
+            "SELECT COUNT(*) FROM qlib_shadow_outcomes o "
+            "JOIN qlib_shadow_signals s ON s.shadow_id=o.shadow_id "
+            "WHERE s.model_id='model_a';"),
+        1);
+}
+
+TEST(ShadowMetricsRecorderTest, NegativeCostConfigIsClamped) {
+    const auto cfg = orchestration::parseOrchestratorConfig(nlohmann::json::parse(R"json({
+        "qlib_orchestration": {
+            "enabled": true,
+            "cost_model": {
+                "estimated_round_trip_fee_bps": -1.0,
+                "estimated_slippage_bps": -2.0,
+                "estimated_funding_bps_per_day": -3.0
+            }
+        }
+    })json"));
+
+    EXPECT_EQ(cfg.shadowMetrics.costModel.estimatedRoundTripFeeBps, 0.0);
+    EXPECT_EQ(cfg.shadowMetrics.costModel.estimatedSlippageBps, 0.0);
+    EXPECT_EQ(cfg.shadowMetrics.costModel.estimatedFundingBpsPerDay, 0.0);
 }
 
 TEST(ShadowMetricsRecorderTest, RepeatedSignalForSameAsofUpdatesSingleShadowRow) {

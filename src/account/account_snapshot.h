@@ -64,6 +64,7 @@ struct AccountSnapshot {
     std::optional<bool> dualSidePosition;
     std::optional<bool> multiAssetsMargin;
     AccountCompatibilityConfig compatibility;
+    std::vector<BinanceError> partialErrors;
 };
 
 /// High-level mapping errors returned by adapter-style account APIs.
@@ -81,6 +82,7 @@ struct AccountSnapshotRequest {
     bool includeBalanceEndpoint{false};    // call /fapi/v2/balance in addition to account.assets
     bool includePositions{false};          // call /fapi/v2/positionRisk
     bool includeAccountConfig{false};      // call /fapi/v1/accountConfig for canTrade, dualSidePosition, multiAssetsMargin
+    bool allowPartialResults{false};        // keep successful sections when optional endpoint calls fail
     std::optional<std::string> positionFilter;  // scope positionRisk to single symbol when set
 };
 
@@ -101,8 +103,10 @@ enum class MarginCheckCompleteness {
 struct MarginCheckDraft {
     std::string symbol;
     MarginCheckSide side;
+    PositionSide positionSide{PositionSide::Both};
     Quantity quantity;
     std::optional<Price> assumedPrice;
+    std::optional<bool> reduceOnly;
     bool useServerTestOrder{true};
 };
 

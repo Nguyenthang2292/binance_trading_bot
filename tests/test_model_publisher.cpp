@@ -184,3 +184,18 @@ TEST(ModelPublisherTest, PublishFailureLeavesStagingAndNoVisibleManifest) {
     EXPECT_FALSE(std::filesystem::exists(tmp / "artifacts" / request.modelId / request.runId));
     EXPECT_FALSE(std::filesystem::exists(request.manifestPath));
 }
+
+TEST(ModelPublisherTest, RejectsTraversalIdsBeforeFilesystemWrites) {
+    const auto tmp = makeTempDir();
+    TempDirGuard guard{tmp};
+    const std::string dbPath = (tmp / "predictions.db").string();
+    initializeRuntimeState(dbPath);
+
+    auto request = makeRequest(tmp, dbPath, "..\\escape");
+
+    std::string error;
+    EXPECT_FALSE(orchestration::ModelPublisher::publish(request, error));
+    EXPECT_EQ(error, "unsafe run_id");
+    EXPECT_FALSE(std::filesystem::exists(tmp / "artifacts"));
+    EXPECT_FALSE(std::filesystem::exists(request.manifestPath));
+}

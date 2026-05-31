@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -108,6 +109,7 @@ inline OrchestratorConfig parseOrchestratorConfig(const nlohmann::json& root) {
     cfg.promotion.minMeanNetReturnBps =
         promotion.value("min_mean_net_return_bps", cfg.promotion.minMeanNetReturnBps);
     cfg.promotion.lookbackCandles = promotion.value("lookback_candles", cfg.promotion.lookbackCandles);
+    cfg.promotion.horizonBars = horizonBars;
 
     cfg.stateStore.dbPath = dbPath;
     cfg.stateStore.modelId = modelId;
@@ -126,6 +128,15 @@ inline OrchestratorConfig parseOrchestratorConfig(const nlohmann::json& root) {
         costModel.value("estimated_slippage_bps", cfg.shadowMetrics.costModel.estimatedSlippageBps);
     cfg.shadowMetrics.costModel.estimatedFundingBpsPerDay =
         costModel.value("estimated_funding_bps_per_day", cfg.shadowMetrics.costModel.estimatedFundingBpsPerDay);
+    auto sanitizeCost = [](double value) {
+        return std::isfinite(value) && value >= 0.0 ? value : 0.0;
+    };
+    cfg.shadowMetrics.costModel.estimatedRoundTripFeeBps =
+        sanitizeCost(cfg.shadowMetrics.costModel.estimatedRoundTripFeeBps);
+    cfg.shadowMetrics.costModel.estimatedSlippageBps =
+        sanitizeCost(cfg.shadowMetrics.costModel.estimatedSlippageBps);
+    cfg.shadowMetrics.costModel.estimatedFundingBpsPerDay =
+        sanitizeCost(cfg.shadowMetrics.costModel.estimatedFundingBpsPerDay);
 
     return cfg;
 }

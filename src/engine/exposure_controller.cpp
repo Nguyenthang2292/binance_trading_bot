@@ -188,16 +188,16 @@ ExposureCheckResult ExposureController::decide(
         };
     }
 
-    if (newDeviation <= currentDeviation) {
-        return {ExposureDecision::Allow, 1.0, "improves net beta deviation"};
-    }
-
     if (newDeviation >= hardLimit) {
         return {
             ExposureDecision::Block,
             0.0,
             "net beta deviation " + fmt(newDeviation) + " >= hard limit " + fmt(hardLimit),
         };
+    }
+
+    if (newDeviation <= currentDeviation) {
+        return {ExposureDecision::Allow, 1.0, "improves net beta deviation"};
     }
 
     if (hardLimit > softLimit && newDeviation >= softLimit) {

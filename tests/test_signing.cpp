@@ -2,6 +2,11 @@
 
 #include "rest/signer.h"
 
+#include <type_traits>
+
+static_assert(!std::is_copy_constructible_v<Signer>);
+static_assert(!std::is_move_constructible_v<Signer>);
+
 TEST(SignerTest, HmacSha256KnownVector) {
     Signer signer("key");
     EXPECT_EQ(

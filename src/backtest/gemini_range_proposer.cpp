@@ -26,6 +26,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #ifdef _WIN32
@@ -353,12 +354,15 @@ std::string GeminiRangeProposer::buildCacheKey(
     const RangeProposalRequest& req,
     const PromptContextAggregates& aggs) const
 {
-    // key v1.2|symbol|strategyId|interval|prompt-aggs|base-config|current-values
+    // key v1.3|symbol|strategyId|interval|signal-context|prompt-aggs|base-config|current-values
     std::ostringstream k;
-    k << "v1.2"
+    k << "v1.3"
       << "|" << req.symbol
       << "|" << req.strategyId
       << "|" << req.interval
+      << "|dir=" << (req.signalDirection == strategy::Signal::Direction::Long ? "long" :
+                      req.signalDirection == strategy::Signal::Direction::Short ? "short" : "none")
+      << "|asof=" << req.signalBarOpenTimeMs
       << "|ret=" << fmt6(aggs.ret30dPct)
       << "|atr=" << fmt6(aggs.atrPctCurrent)
       << "|trend=" << aggs.trendDirection
@@ -734,11 +738,15 @@ IRangeProposer::Result GeminiRangeProposer::parseOutput(
         Output out;
         out.notes = j.value("notes", "");
 
+        std::unordered_set<std::string> seen;
         for (const auto& r : j.at("ranges")) {
             const std::string name = r.at("name").get<std::string>();
             // Validate name is in tunableParams
             if (std::find(tunableParams.begin(), tunableParams.end(), name) == tunableParams.end()) {
                 throw std::runtime_error("unknown param in output: " + name);
+            }
+            if (!seen.insert(name).second) {
+                throw std::runtime_error("duplicate param in output: " + name);
             }
             ParamRange pr;
             pr.name = name;
@@ -761,6 +769,9 @@ IRangeProposer::Result GeminiRangeProposer::parseOutput(
             }
 
             out.ranges.push_back(std::move(pr));
+        }
+        if (seen.size() != tunableParams.size()) {
+            throw std::runtime_error("missing tunable params in output");
         }
         return out;
     } catch (const std::exception& e) {
@@ -821,6 +832,10 @@ IRangeProposer::Result GeminiRangeProposer::proposeWithPartitions(
         return *cached;
     }
 
+    if (std::chrono::steady_clock::now() >= deadline) {
+        return failure(IRangeProposer::FailureReason::Timeout, "deadline already expired");
+    }
+
     cleanupStaleEvalDirsOnce();
 
     // 3. Build eval dir
@@ -850,6 +865,9 @@ IRangeProposer::Result GeminiRangeProposer::proposeWithPartitions(
 
     // 5. Compute remaining time for subprocess
     const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+        return failure(IRangeProposer::FailureReason::Timeout, "deadline already expired");
+    }
     const int remainSecs = static_cast<int>(
         std::chrono::duration_cast<std::chrono::seconds>(deadline - now).count());
     const int timeoutSec = std::min(m_cfg.timeoutSeconds, std::max(1, remainSecs - 1));

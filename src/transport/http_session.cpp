@@ -210,11 +210,13 @@ asio::awaitable<HttpSession::Result> HttpSession::execute(http::request<http::st
     req.set(http::field::user_agent, "binance-futures-sdk-cpp/1.0");
     req.keep_alive(true);
 
+    bool requestWritten = false;
     try {
         http::response<http::string_body> res;
         beast::flat_buffer buffer;
         beast::get_lowest_layer(*m_stream).expires_after(m_requestIoTimeout);
         co_await http::async_write(*m_stream, req, asio::use_awaitable);
+        requestWritten = true;
         beast::get_lowest_layer(*m_stream).expires_after(m_requestIoTimeout);
         co_await http::async_read(*m_stream, buffer, res, asio::use_awaitable);
         beast::get_lowest_layer(*m_stream).expires_never();
@@ -244,7 +246,9 @@ asio::awaitable<HttpSession::Result> HttpSession::execute(http::request<http::st
         co_return res.body();
     } catch (const boost::system::system_error& e) {
         resetStream();
-        co_return std::unexpected(BinanceError::fromNetwork(e.code(), NetworkErrorPhase::AfterSend));
+        co_return std::unexpected(BinanceError::fromNetwork(
+            e.code(),
+            requestWritten ? NetworkErrorPhase::AfterSend : NetworkErrorPhase::BeforeSend));
     } catch (const std::exception& e) {
         resetStream();
         co_return std::unexpected(BinanceError{ErrorCategory::Network, 0, e.what()});

@@ -2,6 +2,7 @@
 
 #include "common/expected_compat.h"
 #include "types/error.h"
+#include "types/market.h"
 
 #include <chrono>
 #include <memory>
@@ -96,8 +97,14 @@ struct OrdersConfig {
     ResponseType defaultResponseType{ResponseType::ACK};
     std::chrono::milliseconds recvWindow{5000};
     bool allowRawTimestampOverride{false};
+    int minLeverage{1};
+    int maxLeverage{125};
     PositionMode positionMode{PositionMode::Unknown};
     std::shared_ptr<OrderJournal> journal;
     bool journalIsDurable{false};
     std::string journalPath{"orders_journal.log"};
+    bool requireExchangeInfo{false};
+    std::unordered_map<std::string, ExchangeSymbol> exchangeInfoBySymbol;
+    std::chrono::system_clock::time_point exchangeInfoUpdatedAt{};
+    std::chrono::milliseconds exchangeInfoMaxAge{std::chrono::minutes{60}};
 };

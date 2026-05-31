@@ -1,5 +1,6 @@
 #include "rest/signer.h"
 
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
@@ -11,6 +12,36 @@
 #include <vector>
 
 namespace {
+
+void cleanse(std::vector<unsigned char>& buffer) {
+    if (!buffer.empty()) {
+        OPENSSL_cleanse(buffer.data(), buffer.size());
+        buffer.clear();
+    }
+}
+
+struct SensitiveBytes {
+    std::vector<unsigned char> value;
+
+    SensitiveBytes() = default;
+    explicit SensitiveBytes(std::vector<unsigned char> bytes) : value(std::move(bytes)) {}
+    SensitiveBytes(const SensitiveBytes&) = delete;
+    SensitiveBytes& operator=(const SensitiveBytes&) = delete;
+    SensitiveBytes(SensitiveBytes&& other) noexcept : value(std::move(other.value)) {
+        other.value.clear();
+    }
+    SensitiveBytes& operator=(SensitiveBytes&& other) noexcept {
+        if (this != &other) {
+            cleanse(value);
+            value = std::move(other.value);
+            other.value.clear();
+        }
+        return *this;
+    }
+    ~SensitiveBytes() {
+        cleanse(value);
+    }
+};
 
 std::string toHex(const unsigned char* data, size_t len) {
     std::ostringstream out;
@@ -102,7 +133,15 @@ void removeQueryParam(std::string& params, std::string_view key) {
 } // namespace
 
 Signer::Signer(std::string secretKey, SigningMethod method)
-    : m_secretKey(std::move(secretKey)), m_method(method) {}
+    : m_secretKey(secretKey.begin(), secretKey.end()), m_method(method) {
+    if (!secretKey.empty()) {
+        OPENSSL_cleanse(secretKey.data(), secretKey.size());
+    }
+}
+
+Signer::~Signer() {
+    cleanse(m_secretKey);
+}
 
 std::string Signer::sign(std::string_view payload) const {
     if (m_method == SigningMethod::HMAC_SHA256) {
@@ -131,27 +170,38 @@ int64_t Signer::nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 }
 
+std::string_view Signer::secretKeyView() const {
+    const auto* raw = reinterpret_cast<const char*>(m_secretKey.data());
+    return std::string_view(raw, m_secretKey.size());
+}
+
 std::string Signer::signHmacSha256(std::string_view payload) const {
     unsigned int len = SHA256_DIGEST_LENGTH;
     unsigned char digest[SHA256_DIGEST_LENGTH];
+    const auto secret = secretKeyView();
     HMAC(EVP_sha256(),
-         m_secretKey.data(),
-         static_cast<int>(m_secretKey.size()),
+         secret.data(),
+         static_cast<int>(secret.size()),
          reinterpret_cast<const unsigned char*>(payload.data()),
          payload.size(),
          digest,
          &len);
-    return toHex(digest, len);
+    std::string signature = toHex(digest, len);
+    OPENSSL_cleanse(digest, sizeof(digest));
+    return signature;
 }
 
 std::string Signer::signEd25519(std::string_view payload) const {
-    auto keyBytes = hexToBytes(m_secretKey);
-    if (keyBytes.size() != 32 && keyBytes.size() != 64) {
+    SensitiveBytes keyBytes(hexToBytes(secretKeyView()));
+    if (keyBytes.value.size() != 32 && keyBytes.value.size() != 64) {
         throw std::invalid_argument("Ed25519 private key must be 32 or 64 bytes in hex");
     }
 
     EVP_PKEY* pkey = EVP_PKEY_new_raw_private_key(
-        EVP_PKEY_ED25519, nullptr, keyBytes.data(), keyBytes.size() == 64 ? 32 : keyBytes.size());
+        EVP_PKEY_ED25519,
+        nullptr,
+        keyBytes.value.data(),
+        keyBytes.value.size() == 64 ? 32 : keyBytes.value.size());
     if (!pkey) {
         throw std::runtime_error("failed to create Ed25519 private key");
     }
@@ -171,8 +221,8 @@ std::string Signer::signEd25519(std::string_view payload) const {
         throw std::runtime_error("failed to size Ed25519 signature");
     }
 
-    std::vector<unsigned char> sig(sigLen);
-    if (EVP_DigestSign(ctx, sig.data(), &sigLen,
+    SensitiveBytes signatureBytes{std::vector<unsigned char>(sigLen)};
+    if (EVP_DigestSign(ctx, signatureBytes.value.data(), &sigLen,
                        reinterpret_cast<const unsigned char*>(payload.data()), payload.size()) != 1) {
         EVP_MD_CTX_free(ctx);
         EVP_PKEY_free(pkey);
@@ -181,5 +231,5 @@ std::string Signer::signEd25519(std::string_view payload) const {
 
     EVP_MD_CTX_free(ctx);
     EVP_PKEY_free(pkey);
-    return toBase64(sig.data(), sigLen);
+    return toBase64(signatureBytes.value.data(), sigLen);
 }

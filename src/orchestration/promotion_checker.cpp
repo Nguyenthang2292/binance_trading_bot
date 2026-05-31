@@ -41,6 +41,10 @@ PromotionChecker::PromotionChecker(PromotionConfig config)
     : m_config(std::move(config)) {
     m_config.minCandles = std::max(1, m_config.minCandles);
     m_config.lookbackCandles = std::max(1, m_config.lookbackCandles);
+    m_config.horizonBars = std::max(1, m_config.horizonBars);
+    if (!std::isfinite(m_config.minMeanNetReturnBps) || m_config.minMeanNetReturnBps <= 0.0) {
+        m_config.minMeanNetReturnBps = 0.1;
+    }
 }
 
 PromotionChecker::Stats PromotionChecker::computeStats(
@@ -113,7 +117,7 @@ PromotionChecker::Stats PromotionChecker::computeStats(
         ? static_cast<double>(returns.size() - 1)
         : static_cast<double>(returns.size());
     const double stdDev = std::sqrt(sq / denom);
-    const double annualizedBars = barsPerYear(interval);
+    const double annualizedBars = barsPerYear(interval) / static_cast<double>(std::max(1, config.horizonBars));
     if (!std::isfinite(annualizedBars) || annualizedBars <= 0.0) {
         out.sharpe = std::numeric_limits<double>::quiet_NaN();
         Logger::instance().log(
@@ -214,6 +218,10 @@ PromotionChecker::EffectiveConfig PromotionChecker::resolveConfig(QlibStateStore
     EffectiveConfig effective{.config = m_config};
     effective.config.minCandles = std::max(1, effective.config.minCandles);
     effective.config.lookbackCandles = std::max(1, effective.config.lookbackCandles);
+    effective.config.horizonBars = std::max(1, effective.config.horizonBars);
+    if (!std::isfinite(effective.config.minMeanNetReturnBps) || effective.config.minMeanNetReturnBps <= 0.0) {
+        effective.config.minMeanNetReturnBps = 0.1;
+    }
     const auto profileSnapshot = stateStore.promotionProfileNameAndJson();
     effective.profileName = profileSnapshot.profileName;
     if (effective.profileName.empty() || effective.profileName == "default") {
@@ -245,10 +253,15 @@ PromotionChecker::EffectiveConfig PromotionChecker::resolveConfig(QlibStateStore
         effective.config.minCandles = readInt("min_shadow_signals", effective.config.minCandles);
         effective.config.minCandles = readInt("min_mature_signals", effective.config.minCandles);
         effective.config.lookbackCandles = readInt("lookback_candles", effective.config.lookbackCandles);
+        effective.config.horizonBars = readInt("horizon_bars", effective.config.horizonBars);
         effective.config.minSharpe = readDouble("min_sharpe", effective.config.minSharpe);
         effective.config.minHitRate = readDouble("min_hit_rate", effective.config.minHitRate);
         effective.config.minMeanNetReturnBps =
             readDouble("min_mean_net_return_bps", effective.config.minMeanNetReturnBps);
+        if (!std::isfinite(effective.config.minMeanNetReturnBps) ||
+            effective.config.minMeanNetReturnBps <= 0.0) {
+            effective.config.minMeanNetReturnBps = 0.1;
+        }
     } catch (const std::exception& e) {
         effective.profileError = std::string("profile_json_invalid:") + e.what();
     }

@@ -11,8 +11,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +27,8 @@ enum class WarmupPhase {
     Regular,
     Beta,
 };
+
+constexpr int kMaxBinanceKlineLimit = 1500;
 
 const char* phaseName(WarmupPhase phase) {
     return phase == WarmupPhase::Regular ? "klines" : "beta";
@@ -68,6 +72,47 @@ void logWarmupProgress(
             " (" + std::to_string(percent) + "%)" +
             " symbol=" + std::string(symbol) +
             " interval=" + std::string(interval));
+}
+
+int clampKlineRequestLimit(size_t requested) {
+    return static_cast<int>(std::clamp<size_t>(requested, 1, kMaxBinanceKlineLimit));
+}
+
+boost::asio::awaitable<Result<std::vector<Kline>>> fetchKlineWindow(
+    RestClient& client,
+    const std::string& symbol,
+    const std::string& interval,
+    size_t requestedLimit) {
+    requestedLimit = std::max<size_t>(1, requestedLimit);
+
+    std::vector<Kline> out;
+    out.reserve(requestedLimit);
+    std::optional<int64_t> endTime;
+
+    while (out.size() < requestedLimit) {
+        const size_t remaining = requestedLimit - out.size();
+        const int pageLimit = clampKlineRequestLimit(remaining);
+        auto page = co_await client.klines(symbol, interval, pageLimit, {}, endTime);
+        if (!page) {
+            co_return std::unexpected(page.error());
+        }
+        if (page->empty()) {
+            break;
+        }
+
+        const auto pageSize = page->size();
+        out.insert(out.begin(), page->begin(), page->end());
+        const int64_t earliestOpenTime = page->front().openTime;
+        if (pageSize < static_cast<size_t>(pageLimit) || earliestOpenTime <= 0) {
+            break;
+        }
+        endTime = earliestOpenTime - 1;
+    }
+
+    if (out.size() > requestedLimit) {
+        out.erase(out.begin(), out.end() - static_cast<std::ptrdiff_t>(requestedLimit));
+    }
+    co_return out;
 }
 
 class WarmupPool {
@@ -159,7 +204,11 @@ private:
             (void)currentCompleted;
             (void)currentTotal;
 
-            const auto klines = co_await client.klines(item.symbol, item.interval, item.limit);
+            const auto klines = co_await fetchKlineWindow(
+                client,
+                item.symbol,
+                item.interval,
+                static_cast<size_t>(std::max(1, item.limit)));
             if (klines) {
                 cache.merge(item.symbol, item.interval, *klines);
             }
@@ -239,7 +288,7 @@ size_t MarketScanner::streamConnectionCount(size_t symbolCount, size_t intervalC
 size_t MarketScanner::normalizedWarmupInitialLimit() const {
     const size_t cappedBuffer = std::max<size_t>(1, m_config.klineBufferSize);
     const size_t warmupLimit = std::max<size_t>(1, m_config.warmupInitialLimit);
-    return std::min(warmupLimit, cappedBuffer);
+    return std::min({warmupLimit, cappedBuffer, static_cast<size_t>(kMaxBinanceKlineLimit)});
 }
 
 boost::asio::awaitable<Result<void>> MarketScanner::waitForConnectionsReady(
@@ -520,7 +569,7 @@ boost::asio::awaitable<void> MarketScanner::backgroundBackfill(
     std::vector<std::string> symbols,
     std::shared_ptr<BackfillState> state) {
     RestClient backfillRest(m_ctx.ioc(), m_ctx.sslContext(), m_ctx.config(), m_ctx.rateLimiter());
-    const int fullLimit = static_cast<int>(std::max<size_t>(1, m_config.klineBufferSize));
+    const size_t fullLimit = std::max<size_t>(1, m_config.klineBufferSize);
     size_t completed = 0;
     const size_t total = symbols.size() * m_config.intervals.size();
 
@@ -530,7 +579,7 @@ boost::asio::awaitable<void> MarketScanner::backgroundBackfill(
                 co_return;
             }
 
-            const auto klines = co_await backfillRest.klines(symbol, interval, fullLimit);
+            const auto klines = co_await fetchKlineWindow(backfillRest, symbol, interval, fullLimit);
             if (state->cancel.load()) {
                 co_return;
             }
@@ -540,7 +589,7 @@ boost::asio::awaitable<void> MarketScanner::backgroundBackfill(
             } else {
                 Logger::instance().log(
                     LogLevel::Warning,
-                    "market_scanner backfill failed symbol=" + symbol +
+                        "market_scanner backfill failed symbol=" + symbol +
                         " interval=" + interval +
                         " limit=" + std::to_string(fullLimit) +
                         " reason=" + klines.error().toString());

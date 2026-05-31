@@ -184,33 +184,47 @@ bool CandleSchedulerThread::datasetContainsAsofMs(int64_t asofMs) const {
 }
 
 bool CandleSchedulerThread::processCandle(int64_t candleOpenTimeMs) {
-    if (!datasetContainsAsofMs(candleOpenTimeMs)) {
-        Logger::instance().log(
-            LogLevel::Warning,
-            "[CANDLE][PHASE3][SKIPPED] asof=" + std::to_string(candleOpenTimeMs) +
-                " reason=dataset_missing_asof");
-        return false;
-    }
-    const auto modelPath = resolvePublishedModelPath();
-    if (!modelPath) {
-        Logger::instance().log(
-            LogLevel::Warning,
-            "[CANDLE][PHASE3][SKIPPED] asof=" + std::to_string(candleOpenTimeMs) +
-                " reason=active_model_unavailable");
-        return false;
-    }
+    try {
+        if (!datasetContainsAsofMs(candleOpenTimeMs)) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "[CANDLE][PHASE3][SKIPPED] asof=" + std::to_string(candleOpenTimeMs) +
+                    " reason=dataset_missing_asof");
+            return false;
+        }
+        const auto modelPath = resolvePublishedModelPath();
+        if (!modelPath) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "[CANDLE][PHASE3][SKIPPED] asof=" + std::to_string(candleOpenTimeMs) +
+                    " reason=active_model_unavailable");
+            return false;
+        }
 
-    const auto phase3 = m_runner.spawnWithRetry(buildPhase3Cmd(candleOpenTimeMs, *modelPath));
-    Logger::instance().log(
-        phase3.succeeded ? LogLevel::Info : LogLevel::Warning,
-        "[CANDLE][PHASE3][" + std::string(phase3.succeeded ? "SUCCESS" : "FAILED") + "] asof=" +
-            std::to_string(candleOpenTimeMs) +
-            " exit=" + std::to_string(phase3.exitCode));
-    if (!phase3.succeeded) {
+        const auto phase3 = m_runner.spawnWithRetry(buildPhase3Cmd(candleOpenTimeMs, *modelPath));
+        Logger::instance().log(
+            phase3.succeeded ? LogLevel::Info : LogLevel::Warning,
+            "[CANDLE][PHASE3][" + std::string(phase3.succeeded ? "SUCCESS" : "FAILED") + "] asof=" +
+                std::to_string(candleOpenTimeMs) +
+                " exit=" + std::to_string(phase3.exitCode));
+        if (!phase3.succeeded) {
+            return false;
+        }
+        (void)m_promoter.evaluate(m_stateStore);
+        return true;
+    } catch (const std::exception& e) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "[CANDLE][PHASE3][FAILED] asof=" + std::to_string(candleOpenTimeMs) +
+                " reason=exception:" + e.what());
+        return false;
+    } catch (...) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "[CANDLE][PHASE3][FAILED] asof=" + std::to_string(candleOpenTimeMs) +
+                " reason=unknown_exception");
         return false;
     }
-    (void)m_promoter.evaluate(m_stateStore);
-    return true;
 }
 
 void CandleSchedulerThread::run(std::stop_token stopToken) {
@@ -236,7 +250,20 @@ void CandleSchedulerThread::run(std::stop_token stopToken) {
         if (stopToken.stop_requested()) {
             return;
         }
-        const bool processed = processCandle(nextCandle);
+        bool processed = false;
+        try {
+            processed = processCandle(nextCandle);
+        } catch (const std::exception& e) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "[CANDLE][THREAD][FAILED] asof=" + std::to_string(nextCandle) +
+                    " reason=exception:" + e.what());
+        } catch (...) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "[CANDLE][THREAD][FAILED] asof=" + std::to_string(nextCandle) +
+                    " reason=unknown_exception");
+        }
 
         if (processed) {
             std::lock_guard<std::mutex> lock(m_mutex);

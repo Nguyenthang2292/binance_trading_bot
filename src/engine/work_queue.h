@@ -3,6 +3,7 @@
 #include "strategy/strategy_registry.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -13,6 +14,7 @@ struct WorkItem {
     std::string symbol;
     std::string interval;
     const strategy::IStrategy* strategy{nullptr};
+    std::shared_ptr<const strategy::IStrategy> strategyOwner;
 };
 
 class WorkQueue {

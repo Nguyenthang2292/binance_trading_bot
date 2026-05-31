@@ -11,7 +11,7 @@ namespace {
 
 struct WorkBlock {
     std::string symbol;
-    const strategy::IStrategy* strategy{nullptr};
+    std::shared_ptr<const strategy::IStrategy> strategy;
 };
 
 } // namespace
@@ -21,7 +21,7 @@ std::vector<WorkItem> WorkQueue::build(
     const strategy::StrategyRegistry& registry,
     std::optional<uint64_t> seed) {
     std::vector<WorkItem> out;
-    auto strategies = registry.all();
+    auto strategies = registry.allShared();
     if (strategies.empty() || symbols.empty()) {
         return out;
     }
@@ -32,7 +32,7 @@ std::vector<WorkItem> WorkQueue::build(
     std::vector<WorkBlock> blocks;
     blocks.reserve(strategies.size() * symbols.size());
 
-    for (const auto* strategy : strategies) {
+    for (const auto& strategy : strategies) {
         if (!strategy) {
             continue;
         }
@@ -60,7 +60,8 @@ std::vector<WorkItem> WorkQueue::build(
             out.push_back(WorkItem{
                 .symbol = block.symbol,
                 .interval = interval,
-                .strategy = block.strategy,
+                .strategy = block.strategy.get(),
+                .strategyOwner = block.strategy,
             });
         }
     }

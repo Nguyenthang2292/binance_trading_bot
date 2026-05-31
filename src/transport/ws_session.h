@@ -56,6 +56,8 @@ private:
     boost::asio::awaitable<void> readLoop();
     boost::asio::awaitable<void> writeLoop();
     void onConnected();
+    void armReconnectDeadline();
+    void cancelReconnectDeadline();
     void clearWriteQueue();
     void resetSocket();
 
@@ -70,9 +72,11 @@ private:
     WsSimpleCb m_onDisconnect;
     WsSimpleCb m_onReconnect;
     ReconnectConfig m_reconnectCfg;
+    std::unique_ptr<boost::asio::steady_timer> m_reconnectDeadlineTimer;
     std::atomic<bool> m_stopped{false};
     std::atomic<bool> m_connected{false};
     bool m_writerRunning{false};
     std::queue<std::string> m_outboundMessages;
     std::chrono::steady_clock::time_point m_connectedAt;
+    std::chrono::milliseconds m_maxSessionLifetime{std::chrono::hours(23) + std::chrono::minutes(50)};
 };

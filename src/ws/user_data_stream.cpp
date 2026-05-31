@@ -79,20 +79,20 @@ UserDataEvent parseUserEvent(simdjson::dom::element doc) {
         e.timeInForce = ws_parse::parseTimeInForce(ws_parse::stringField(o, "f"));
         e.executionType = ws_parse::stringField(o, "x");
         e.orderStatus = ws_parse::stringField(o, "X");
-        e.originalQty = ws_parse::doubleField(o, "q");
-        e.originalPrice = ws_parse::doubleField(o, "p");
-        e.avgPrice = ws_parse::doubleField(o, "ap");
-        e.lastFilledQty = ws_parse::doubleField(o, "l");
-        e.lastFilledPrice = ws_parse::doubleField(o, "L");
-        e.accumulatedFilledQty = ws_parse::doubleField(o, "z");
-        e.realizedPnl = ws_parse::doubleField(o, "rp");
-        e.commission = ws_parse::doubleField(o, "n");
+        e.originalQty = ws_parse::stringField(o, "q", "0");
+        e.originalPrice = ws_parse::stringField(o, "p", "0");
+        e.avgPrice = ws_parse::stringField(o, "ap", "0");
+        e.lastFilledQty = ws_parse::stringField(o, "l", "0");
+        e.lastFilledPrice = ws_parse::stringField(o, "L", "0");
+        e.accumulatedFilledQty = ws_parse::stringField(o, "z", "0");
+        e.realizedPnl = ws_parse::stringField(o, "rp", "0");
+        e.commission = ws_parse::stringField(o, "n", "0");
         e.commissionAsset = ws_parse::stringField(o, "N");
         e.isReduceOnly = ws_parse::boolField(o, "R");
         e.closePosition = ws_parse::boolField(o, "cp");
-        e.stopPrice = ws_parse::doubleField(o, "sp");
-        e.activationPrice = ws_parse::doubleField(o, "AP");
-        e.priceRate = ws_parse::doubleField(o, "cr");
+        e.stopPrice = ws_parse::stringField(o, "sp", "0");
+        e.activationPrice = ws_parse::stringField(o, "AP", "0");
+        e.priceRate = ws_parse::stringField(o, "cr", "0");
         e.workingType = ws_parse::parseWorkingType(ws_parse::stringField(o, "wt"));
         e.orderTime = ws_parse::intField(o, "T");
         e.tradeTime = ws_parse::intField(o, "t");
@@ -131,7 +131,17 @@ UserDataStream::UserDataStream(boost::asio::io_context& ioc, boost::asio::ssl::c
       m_ssl(ssl),
       m_rest(std::make_shared<RestClient>(ioc, ssl, cfg)),
       m_cfg(std::move(cfg)),
-      m_keepaliveTimer(ioc) {}
+      m_keepaliveTimer(ioc) {
+    m_cfg.clearSecretKey();
+}
+
+UserDataStream::~UserDataStream() {
+    {
+        std::lock_guard<std::mutex> lock(m_callbackGuard->mutex);
+        m_callbackGuard->alive = false;
+    }
+    stop();
+}
 
 void UserDataStream::start(UserDataCb cb) {
     {
@@ -148,7 +158,12 @@ void UserDataStream::start(UserDataCb cb) {
 boost::asio::awaitable<void> UserDataStream::startAsync() {
     auto listenKey = co_await m_rest->createListenKey();
     if (!listenKey) {
-        if (m_callback) m_callback(boost::asio::error::operation_aborted, OrderUpdateEvent{});
+        UserDataCb callback;
+        {
+            std::lock_guard lock(m_stateMutex);
+            callback = m_callback;
+        }
+        if (callback) callback(boost::asio::error::operation_aborted, OrderUpdateEvent{});
         co_return;
     }
     if (m_stopped.load()) {
@@ -217,61 +232,22 @@ void UserDataStream::startSessionWithCurrentListenKey() {
 
     session->start(
         "/ws/" + listenKey,
-        [this](auto ec, auto raw) { onRawMessage(ec, raw); },
+        [this, guard = m_callbackGuard](auto ec, auto raw) {
+            std::lock_guard<std::mutex> lock(guard->mutex);
+            if (!guard->alive) {
+                return;
+            }
+            onRawMessage(ec, raw);
+        },
         std::move(onDisconnect),
         [this, onReconnect = std::move(onReconnect)] {
             if (m_stopped.load()) {
                 return;
             }
-            boost::asio::co_spawn(
-                m_ioc,
-                [this] { return refreshListenKeyAfterReconnect(); },
-                [](std::exception_ptr ep) {
-                    logCoroutineException("UserDataStream refreshListenKeyAfterReconnect", ep);
-                });
             if (onReconnect) {
                 onReconnect();
             }
         });
-}
-
-boost::asio::awaitable<void> UserDataStream::refreshListenKeyAfterReconnect() {
-    if (m_stopped.load()) {
-        co_return;
-    }
-    bool expected = false;
-    if (!m_refreshingListenKey.compare_exchange_strong(expected, true)) {
-        co_return;
-    }
-
-    auto releaseGuard = [this]() { m_refreshingListenKey.store(false); };
-    auto refreshed = co_await m_rest->createListenKey();
-    if (!refreshed) {
-        releaseGuard();
-        co_return;
-    }
-    if (m_stopped.load()) {
-        (void)co_await m_rest->deleteListenKey(*refreshed);
-        releaseGuard();
-        co_return;
-    }
-
-    std::string oldListenKey;
-    std::shared_ptr<WsSession> oldSession;
-    {
-        std::lock_guard lock(m_stateMutex);
-        oldListenKey = m_listenKey;
-        m_listenKey = *refreshed;
-        oldSession = std::move(m_session);
-    }
-    if (oldSession) {
-        oldSession->stop();
-    }
-    startSessionWithCurrentListenKey();
-    if (!oldListenKey.empty() && oldListenKey != *refreshed) {
-        (void)co_await m_rest->deleteListenKey(oldListenKey);
-    }
-    releaseGuard();
 }
 
 boost::asio::awaitable<void> UserDataStream::keepaliveLoop() {
@@ -293,24 +269,38 @@ boost::asio::awaitable<void> UserDataStream::keepaliveLoop() {
 }
 
 void UserDataStream::onRawMessage(boost::system::error_code ec, std::string_view raw) {
-    if (!m_callback) {
+    UserDataCb callback;
+    {
+        std::lock_guard lock(m_stateMutex);
+        callback = m_callback;
+    }
+    if (!callback) {
         return;
     }
     if (ec) {
-        m_callback(ec, OrderUpdateEvent{});
+        callback(ec, OrderUpdateEvent{});
         return;
     }
 
-    simdjson::dom::parser parser;
-    simdjson::padded_string padded(raw);
-    simdjson::dom::element doc;
-    if (parser.parse(padded).get(doc)) {
-        m_callback(boost::asio::error::invalid_argument, OrderUpdateEvent{});
+    UserDataEvent parsedEvent;
+    boost::system::error_code parseError;
+    {
+        std::scoped_lock lock(m_parserMutex);
+        simdjson::padded_string padded(raw);
+        simdjson::dom::element doc;
+        if (m_parser.parse(padded).get(doc)) {
+            parseError = boost::asio::error::invalid_argument;
+        } else {
+            try {
+                parsedEvent = parseUserEvent(doc);
+            } catch (const std::exception&) {
+                parseError = boost::asio::error::invalid_argument;
+            }
+        }
+    }
+    if (parseError) {
+        callback(parseError, OrderUpdateEvent{});
         return;
     }
-    try {
-        m_callback({}, parseUserEvent(doc));
-    } catch (const std::exception&) {
-        m_callback(boost::asio::error::invalid_argument, OrderUpdateEvent{});
-    }
+    callback({}, std::move(parsedEvent));
 }

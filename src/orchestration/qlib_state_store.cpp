@@ -42,6 +42,61 @@ void ensureColumn(sqlite3* db, std::string_view table, std::string_view column, 
     execOrThrow(db, sql.c_str());
 }
 
+std::string tableSql(sqlite3* db, std::string_view table) {
+    const char* sql = "SELECT sql FROM sqlite_master WHERE type='table' AND name=?;";
+    sqlite3_stmt* rawStmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &rawStmt, nullptr) != SQLITE_OK || rawStmt == nullptr) {
+        return {};
+    }
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(rawStmt, sqlite3_finalize);
+    bindText(stmt.get(), 1, table);
+    if (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+        return columnText(stmt.get(), 0);
+    }
+    return {};
+}
+
+void ensureRuntimeStateAllowsShadowOnly(sqlite3* db) {
+    const std::string sqlText = tableSql(db, "qlib_runtime_state");
+    if (sqlText.empty() || sqlText.find("shadow_only") != std::string::npos) {
+        return;
+    }
+
+    execOrThrow(db, "BEGIN IMMEDIATE TRANSACTION;");
+    try {
+        execOrThrow(
+            db,
+            "CREATE TABLE qlib_runtime_state_new ("
+            "model_id TEXT NOT NULL,"
+            "interval TEXT NOT NULL,"
+            "execution_mode TEXT NOT NULL CHECK (execution_mode IN ('disabled','shadow','shadow_only','live_canary','live')),"
+            "active_run_id TEXT,"
+            "active_manifest_path TEXT,"
+            "state_version INTEGER NOT NULL DEFAULT 0,"
+            "promoted_at_ms INTEGER,"
+            "rollback_reason TEXT,"
+            "updated_at_ms INTEGER NOT NULL,"
+            "PRIMARY KEY (model_id, interval)"
+            ");");
+        execOrThrow(
+            db,
+            "INSERT INTO qlib_runtime_state_new("
+            "model_id, interval, execution_mode, active_run_id, active_manifest_path, state_version, "
+            "promoted_at_ms, rollback_reason, updated_at_ms"
+            ") SELECT model_id, interval, execution_mode, active_run_id, active_manifest_path, state_version, "
+            "promoted_at_ms, rollback_reason, updated_at_ms FROM qlib_runtime_state;");
+        execOrThrow(db, "DROP TABLE qlib_runtime_state;");
+        execOrThrow(db, "ALTER TABLE qlib_runtime_state_new RENAME TO qlib_runtime_state;");
+        execOrThrow(db, "COMMIT;");
+    } catch (...) {
+        try {
+            execOrThrow(db, "ROLLBACK;");
+        } catch (...) {
+        }
+        throw;
+    }
+}
+
 } // namespace
 
 std::shared_ptr<QlibStateStore> QlibStateStore::create(QlibStateStoreConfig config) {
@@ -82,7 +137,7 @@ void QlibStateStore::initializeSchema() {
         "CREATE TABLE IF NOT EXISTS qlib_runtime_state ("
         "model_id TEXT NOT NULL,"
         "interval TEXT NOT NULL,"
-        "execution_mode TEXT NOT NULL CHECK (execution_mode IN ('disabled','shadow','live_canary','live')),"
+        "execution_mode TEXT NOT NULL CHECK (execution_mode IN ('disabled','shadow','shadow_only','live_canary','live')),"
         "active_run_id TEXT,"
         "active_manifest_path TEXT,"
         "state_version INTEGER NOT NULL DEFAULT 0,"
@@ -91,6 +146,7 @@ void QlibStateStore::initializeSchema() {
         "updated_at_ms INTEGER NOT NULL,"
         "PRIMARY KEY (model_id, interval)"
         ");");
+    ensureRuntimeStateAllowsShadowOnly(m_db);
 
     execOrThrow(
         m_db,

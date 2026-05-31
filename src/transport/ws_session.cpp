@@ -41,6 +41,7 @@ WsSession::WsSession(asio::io_context& ioc,
 }
 
 void WsSession::resetSocket() {
+    cancelReconnectDeadline();
     m_ws = std::make_unique<WebSocket>(m_strand, m_ssl);
     m_connected = false;
 }
@@ -91,6 +92,7 @@ void WsSession::stop() {
     auto self = shared_from_this();
     asio::post(m_strand, [self] {
         self->m_stopped = true;
+        self->cancelReconnectDeadline();
         self->clearWriteQueue();
         self->m_writerRunning = false;
 
@@ -175,6 +177,30 @@ void WsSession::onConnected() {
     }
 }
 
+void WsSession::armReconnectDeadline() {
+    cancelReconnectDeadline();
+    auto self = shared_from_this();
+    m_reconnectDeadlineTimer = std::make_unique<asio::steady_timer>(m_strand);
+    m_reconnectDeadlineTimer->expires_after(m_maxSessionLifetime);
+    m_reconnectDeadlineTimer->async_wait([self](const boost::system::error_code& ec) {
+        if (ec || self->m_stopped || !self->m_ws) {
+            return;
+        }
+        Logger::instance().log(LogLevel::Info, "WsSession rotating websocket connection after max session lifetime");
+        boost::system::error_code ignored;
+        beast::get_lowest_layer(*self->m_ws).socket().cancel(ignored);
+    });
+}
+
+void WsSession::cancelReconnectDeadline() {
+    if (!m_reconnectDeadlineTimer) {
+        return;
+    }
+    boost::system::error_code ignored;
+    m_reconnectDeadlineTimer->cancel(ignored);
+    m_reconnectDeadlineTimer.reset();
+}
+
 asio::awaitable<void> WsSession::connectLoop() {
     auto delay = m_reconnectCfg.initialBackoff;
     bool firstConnect = true;
@@ -184,6 +210,7 @@ asio::awaitable<void> WsSession::connectLoop() {
             co_await doConnect();
             m_connected = true;
             m_connectedAt = std::chrono::steady_clock::now();
+            armReconnectDeadline();
             onConnected();
             if (!firstConnect && m_onReconnect) {
                 m_onReconnect();
@@ -207,6 +234,7 @@ asio::awaitable<void> WsSession::connectLoop() {
         }
 
         m_connected = false;
+        cancelReconnectDeadline();
         m_writerRunning = false;
         clearWriteQueue();
         resetSocket();
@@ -272,12 +300,6 @@ asio::awaitable<void> WsSession::readLoop() {
         std::string text = beast::buffers_to_string(buffer.data());
         if (m_onMessage) {
             m_onMessage({}, std::move(text));
-        }
-
-        if (std::chrono::steady_clock::now() - m_connectedAt >= std::chrono::hours(23) + std::chrono::minutes(50)) {
-            boost::system::error_code ec;
-            m_ws->close(websocket::close_code::normal, ec);
-            throw boost::system::system_error(asio::error::connection_reset);
         }
     }
 }

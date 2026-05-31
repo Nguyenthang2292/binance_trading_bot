@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <sstream>
+#include <stdexcept>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -84,10 +86,12 @@ MarketEvent parseMarketEvent(std::string_view stream, simdjson::dom::element dat
     if (eventType == "bookTicker" || streamLower.find("@bookticker") != std::string::npos) {
         BookTickerEvent e;
         e.symbol = ws_parse::stringField(data, "s");
+        e.updateId = ws_parse::intField(data, "u");
         e.bidPrice = ws_parse::doubleField(data, "b");
         e.bidQty = ws_parse::doubleField(data, "B");
         e.askPrice = ws_parse::doubleField(data, "a");
         e.askQty = ws_parse::doubleField(data, "A");
+        e.eventTime = ws_parse::intField(data, "E");
         e.transactTime = ws_parse::intField(data, "T");
         return e;
     }
@@ -112,26 +116,35 @@ MarketEvent parseMarketEvent(std::string_view stream, simdjson::dom::element dat
         e.type = ws_parse::parseOrderType(ws_parse::stringField(o, "o"));
         e.timeInForce = ws_parse::parseTimeInForce(ws_parse::stringField(o, "f"));
         e.status = ws_parse::stringField(o, "X");
-        e.price = ws_parse::doubleField(o, "p");
-        e.origQty = ws_parse::doubleField(o, "q");
-        e.lastFilledQty = ws_parse::doubleField(o, "l");
-        e.avgPrice = ws_parse::doubleField(o, "ap");
-        e.cumFilledQty = ws_parse::doubleField(o, "z");
+        e.price = ws_parse::stringField(o, "p", "0");
+        e.origQty = ws_parse::stringField(o, "q", "0");
+        e.lastFilledQty = ws_parse::stringField(o, "l", "0");
+        e.avgPrice = ws_parse::stringField(o, "ap", "0");
+        e.cumFilledQty = ws_parse::stringField(o, "z", "0");
         e.time = ws_parse::intField(o, "T");
         return e;
     }
 
-    CompositeIndexEvent e;
-    e.symbol = ws_parse::stringField(data, "s");
-    e.price = ws_parse::doubleField(data, "p");
-    e.time = ws_parse::intField(data, "E");
-    return e;
+    if (eventType == "compositeIndex" || streamLower.find("@compositeindex") != std::string::npos) {
+        CompositeIndexEvent e;
+        e.symbol = ws_parse::stringField(data, "s");
+        e.price = ws_parse::doubleField(data, "p");
+        e.time = ws_parse::intField(data, "E");
+        return e;
+    }
+
+    return UnknownMarketEvent{
+        .stream = std::string(stream),
+        .eventType = eventType,
+    };
 }
 
 } // namespace
 
 WsClient::WsClient(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl, ContextConfig cfg)
-    : m_ioc(ioc), m_ssl(ssl), m_cfg(std::move(cfg)) {}
+    : m_ioc(ioc), m_ssl(ssl), m_cfg(std::move(cfg)) {
+    m_cfg.clearSecretKey();
+}
 
 WsClient::~WsClient() {
     // Block new callbacks and wait for any in-flight callback to finish before
@@ -162,7 +175,9 @@ void WsClient::subscribeMarkPrice(std::string symbol, MarketEventCb cb) {
 
 void WsClient::subscribeBookTicker(std::string symbol, MarketEventCb cb) {
     std::lock_guard lock(m_stateMutex);
-    m_subscriptions[lower(symbol) + "@bookticker"] = std::move(cb);
+    const auto stream = lower(symbol) + "@bookticker";
+    m_lastBookTickerUpdateIds.erase(stream);
+    m_subscriptions[stream] = std::move(cb);
 }
 
 void WsClient::subscribeDepth(std::string symbol, int levels, std::string updateSpeed, MarketEventCb cb) {
@@ -186,6 +201,7 @@ void WsClient::unsubscribe(std::string streamName) {
     {
         std::lock_guard lock(m_stateMutex);
         m_subscriptions.erase(streamName);
+        m_lastBookTickerUpdateIds.erase(streamName);
         session = m_session;
     }
     if (session) {
@@ -203,6 +219,7 @@ void WsClient::unsubscribeAll() {
             streams.push_back(stream);
         }
         m_subscriptions.clear();
+        m_lastBookTickerUpdateIds.clear();
         session = m_session;
     }
     if (!session) {
@@ -264,12 +281,12 @@ void WsClient::connect() {
     auto guard = m_callbackGuard;
     session->start(
         path,
-        [this, guard](auto ec, auto raw) {
+        [this, guard](auto ec, auto raw) mutable {
             std::lock_guard<std::mutex> lock(guard->mutex);
             if (!guard->alive) {
                 return;
             }
-            onRawMessage(ec, raw);
+            onRawMessage(ec, std::move(raw));
         },
         [this, guard] {
             std::lock_guard<std::mutex> lock(guard->mutex);
@@ -312,7 +329,7 @@ void WsClient::disconnect() {
     }
 }
 
-void WsClient::onRawMessage(boost::system::error_code ec, std::string_view raw) {
+void WsClient::onRawMessage(boost::system::error_code ec, std::string raw) {
     const auto subscriptions = snapshotSubscriptions();
     if (ec) {
         for (const auto& [_, cb] : subscriptions) {
@@ -361,6 +378,9 @@ void WsClient::onRawMessage(boost::system::error_code ec, std::string_view raw) 
         return;
     }
     if (hasEvent) {
+        if (!shouldDispatchMarketEvent(stream, parsedEvent)) {
+            return;
+        }
         it->second({}, std::move(parsedEvent));
     }
 }
@@ -368,4 +388,19 @@ void WsClient::onRawMessage(boost::system::error_code ec, std::string_view raw) 
 std::map<std::string, MarketEventCb> WsClient::snapshotSubscriptions() const {
     std::lock_guard lock(m_stateMutex);
     return m_subscriptions;
+}
+
+bool WsClient::shouldDispatchMarketEvent(const std::string& stream, const MarketEvent& event) {
+    const auto* bookTicker = std::get_if<BookTickerEvent>(&event);
+    if (bookTicker == nullptr || bookTicker->updateId <= 0) {
+        return true;
+    }
+
+    std::lock_guard lock(m_stateMutex);
+    auto& lastUpdateId = m_lastBookTickerUpdateIds[stream];
+    if (lastUpdateId >= bookTicker->updateId) {
+        return false;
+    }
+    lastUpdateId = bookTicker->updateId;
+    return true;
 }

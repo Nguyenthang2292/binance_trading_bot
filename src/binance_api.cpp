@@ -26,12 +26,14 @@ OrdersConfig BinanceAPI::makeLegacyOrdersConfig() {
 }
 
 BinanceAPI::BinanceAPI(const std::string& apiKey, const std::string& secretKey)
-    : m_context(std::make_unique<BinanceContext>(ContextConfig{
-          .apiKey = apiKey,
-          .secretKey = secretKey,
-          .testnet = false,
-          .threadPoolSize = 2,
-      })),
+    : m_context(std::make_unique<BinanceContext>([&] {
+          ContextConfig cfg;
+          cfg.apiKey = apiKey;
+          cfg.secretKey = secretKey;
+          cfg.testnet = false;
+          cfg.threadPoolSize = 2;
+          return cfg;
+      }())),
       m_rest(std::make_unique<RestClient>(m_context->ioc(), m_context->sslContext(), m_context->config())),
       m_ordersAdapter(std::make_unique<RestClientAdapter>(*m_rest)) {
     OrdersConfig ordersConfig = makeLegacyOrdersConfig();

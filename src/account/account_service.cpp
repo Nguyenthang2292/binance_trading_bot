@@ -118,7 +118,11 @@ boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> AccountService::sn
             snapshot.balances = std::move(*bal_res);
             snapshot.completeness = AccountSnapshotCompleteness::AccountAndBalance;
         } else {
-            co_return std::unexpected(AccountServiceError{bal_res.error()});
+            if (request.allowPartialResults) {
+                snapshot.partialErrors.push_back(bal_res.error());
+            } else {
+                co_return std::unexpected(AccountServiceError{bal_res.error()});
+            }
         }
     }
 
@@ -133,13 +137,21 @@ boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> AccountService::sn
                 snapshot.completeness = AccountSnapshotCompleteness::AccountAndPositions;
             }
         } else {
-            co_return std::unexpected(AccountServiceError{pos_res.error()});
+            if (request.allowPartialResults) {
+                snapshot.partialErrors.push_back(pos_res.error());
+            } else {
+                co_return std::unexpected(AccountServiceError{pos_res.error()});
+            }
         }
     }
 
     if (request.includeAccountConfig) {
         auto config_res = co_await m_rest.accountConfig();
         if (!config_res) {
+            if (request.allowPartialResults) {
+                snapshot.partialErrors.push_back(config_res.error());
+                co_return snapshot;
+            }
             co_return std::unexpected(AccountServiceError{config_res.error()});
         }
         snapshot.account.canTrade = snapshot.account.canTrade && config_res->canTrade;
@@ -186,9 +198,11 @@ boost::asio::awaitable<AccountServiceResult<MarginCheckResult>> AccountService::
         OrderRequest testReq;
         testReq.symbol = draft.symbol;
         testReq.side = draft.side == MarginCheckSide::Buy ? OrderSide::Buy : OrderSide::Sell;
+        testReq.positionSide = draft.positionSide;
         // checkFreeMargin currently validates only MARKET notional for server test-order.
         testReq.type = OrderType::Market;
         testReq.quantity = std::string(draft.quantity.value());
+        testReq.reduceOnly = draft.reduceOnly;
         auto test_res = co_await m_rest.testOrder(std::move(testReq));
         if (!test_res) {
             if (test_res.error().category == ErrorCategory::Api) {

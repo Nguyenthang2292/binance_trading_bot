@@ -43,8 +43,9 @@ public:
 
 private:
     std::string buildStreamPath() const;
-    void onRawMessage(boost::system::error_code ec, std::string_view raw);
+    void onRawMessage(boost::system::error_code ec, std::string raw);
     std::map<std::string, MarketEventCb> snapshotSubscriptions() const;
+    bool shouldDispatchMarketEvent(const std::string& stream, const MarketEvent& event);
 
     // Shared lifetime guard for session callbacks. Session callbacks run on
     // io_context threads and may fire concurrently with WsClient destruction.
@@ -64,6 +65,7 @@ private:
     ContextConfig m_cfg;
     std::shared_ptr<WsSession> m_session;
     std::map<std::string, MarketEventCb> m_subscriptions;
+    std::map<std::string, int64_t> m_lastBookTickerUpdateIds;
     std::function<void()> m_onDisconnect;
     std::function<void()> m_onReconnect;
     simdjson::dom::parser m_parser;
