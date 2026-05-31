@@ -272,11 +272,14 @@ TEST(AccountServiceTest, CheckFreeMarginBothOptionsKeepsServerValidatedOnly) {
     StubAccountRestClient rest;
     FuturesAccount account;
     account.availableBalance = 1000.0;
+    account.availableBalanceRaw = "1000";
     Position position;
     position.symbol = "BTCUSDT";
     position.leverage = 10;
     account.positions.push_back(position);
     rest.accountResult = account;
+    ASSERT_TRUE(rest.accountResult.has_value());
+    EXPECT_EQ(rest.accountResult->availableBalanceRaw, "1000");
 
     account::AccountCompatibilityConfig cfg;
     account::AccountService service(rest, cfg);
@@ -297,6 +300,121 @@ TEST(AccountServiceTest, CheckFreeMarginBothOptionsKeepsServerValidatedOnly) {
     EXPECT_EQ(*result->estimatedRemainingFreeMargin, "990.0");
     EXPECT_EQ(rest.testOrderCalls, 1);
     EXPECT_EQ(rest.accountCalls, 1);
+}
+
+TEST(AccountServiceTest, CheckFreeMarginLocalEstimateUsesAvailableBalanceRawWhenPresent) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.availableBalance = 1000.0;
+    account.availableBalanceRaw = "500";
+    Position position;
+    position.symbol = "BTCUSDT";
+    position.leverage = 10;
+    account.positions.push_back(position);
+    rest.accountResult = account;
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::MarginCheckDraft draft{
+        .symbol = "BTCUSDT",
+        .side = account::MarginCheckSide::Buy,
+        .quantity = qty("1"),
+        .assumedPrice = price("100"),
+        .useServerTestOrder = false,
+    };
+
+    auto result = runAwaitable(service.checkFreeMargin(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::MarginCheckCompleteness::Estimated);
+    ASSERT_TRUE(result->estimatedRemainingFreeMargin.has_value());
+    EXPECT_EQ(*result->estimatedRemainingFreeMargin, "490.0");
+}
+
+TEST(AccountServiceTest, CheckFreeMarginLocalEstimateUnavailableWhenQuantityNonPositive) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.availableBalance = 1000.0;
+    account.availableBalanceRaw = "1000";
+    Position position;
+    position.symbol = "BTCUSDT";
+    position.leverage = 10;
+    account.positions.push_back(position);
+    rest.accountResult = account;
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::MarginCheckDraft draft{
+        .symbol = "BTCUSDT",
+        .side = account::MarginCheckSide::Buy,
+        .quantity = qty("0"),
+        .assumedPrice = price("100"),
+        .useServerTestOrder = false,
+    };
+
+    auto result = runAwaitable(service.checkFreeMargin(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::MarginCheckCompleteness::Unavailable);
+    EXPECT_FALSE(result->estimatedRemainingFreeMargin.has_value());
+    EXPECT_EQ(rest.accountCalls, 0);
+}
+
+TEST(AccountServiceTest, CheckFreeMarginLocalEstimateUnavailableWhenAssumedPriceNonPositive) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.availableBalance = 1000.0;
+    account.availableBalanceRaw = "1000";
+    Position position;
+    position.symbol = "BTCUSDT";
+    position.leverage = 10;
+    account.positions.push_back(position);
+    rest.accountResult = account;
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::MarginCheckDraft draft{
+        .symbol = "BTCUSDT",
+        .side = account::MarginCheckSide::Buy,
+        .quantity = qty("1"),
+        .assumedPrice = price("0"),
+        .useServerTestOrder = false,
+    };
+
+    auto result = runAwaitable(service.checkFreeMargin(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::MarginCheckCompleteness::Unavailable);
+    EXPECT_FALSE(result->estimatedRemainingFreeMargin.has_value());
+    EXPECT_EQ(rest.accountCalls, 0);
+}
+
+TEST(AccountServiceTest, CheckFreeMarginLocalEstimateUnavailableWhenAvailableBalanceRawInvalid) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.availableBalance = 1000.0;
+    account.availableBalanceRaw = "invalid";
+    Position position;
+    position.symbol = "BTCUSDT";
+    position.leverage = 10;
+    account.positions.push_back(position);
+    rest.accountResult = account;
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::MarginCheckDraft draft{
+        .symbol = "BTCUSDT",
+        .side = account::MarginCheckSide::Buy,
+        .quantity = qty("1"),
+        .assumedPrice = price("100"),
+        .useServerTestOrder = false,
+    };
+
+    auto result = runAwaitable(service.checkFreeMargin(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::MarginCheckCompleteness::Unavailable);
+    EXPECT_FALSE(result->estimatedRemainingFreeMargin.has_value());
 }
 
 TEST(AccountServiceTest, CheckFreeMarginRejectsEmptyOptionsWithUnsupportedError) {

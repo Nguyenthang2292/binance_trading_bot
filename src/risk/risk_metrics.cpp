@@ -77,10 +77,10 @@ RiskMetricsResult RiskMetrics::compute(
     out.sharpeRatio = out.stdDevAll > 0.0 ? (out.excessReturn / out.stdDevAll) : 0.0;
     out.sortinoRatio = out.stdDevDownside > 0.0
         ? (out.excessReturn / out.stdDevDownside)
-        : std::numeric_limits<double>::infinity();
+        : (out.excessReturn > 0.0 ? 0.0 : out.excessReturn);
     out.upi = out.ulcerIndex > 0.0
         ? (out.excessReturn / out.ulcerIndex)
-        : std::numeric_limits<double>::infinity();
+        : 0.0;
 
     out.valid = true;
     return out;

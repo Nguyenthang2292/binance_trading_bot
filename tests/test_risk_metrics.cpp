@@ -60,7 +60,7 @@ TEST(RiskMetricsTest, ReturnsInvalidWhenDataPointsBelowConfiguredMinimum) {
     EXPECT_EQ(result.dataPoints, 3);
 }
 
-TEST(RiskMetricsTest, UsesInfinityWhenNoDownsideReturnsOrDrawdowns) {
+TEST(RiskMetricsTest, UsesFiniteFailClosedRatiosWhenNoDownsideReturnsOrDrawdowns) {
     engine::RiskMetrics metrics(0.0, 5, std::chrono::minutes{60});
     std::vector<engine::SampledEquityPoint> points;
     points.reserve(40);
@@ -76,9 +76,28 @@ TEST(RiskMetricsTest, UsesInfinityWhenNoDownsideReturnsOrDrawdowns) {
     EXPECT_TRUE(result.valid);
     EXPECT_GT(result.annualReturn, 0.0);
     EXPECT_DOUBLE_EQ(result.stdDevDownside, 0.0);
-    EXPECT_TRUE(std::isinf(result.sortinoRatio));
+    EXPECT_DOUBLE_EQ(result.sortinoRatio, 0.0);
     EXPECT_DOUBLE_EQ(result.maxDrawdown, 0.0);
-    EXPECT_TRUE(std::isinf(result.upi));
+    EXPECT_DOUBLE_EQ(result.upi, 0.0);
+}
+
+TEST(RiskMetricsTest, UsesFiniteNonPositiveSortinoWhenNoDownsideAndNonPositiveExcessReturn) {
+    engine::RiskMetrics metrics(0.05, 5, std::chrono::minutes{60});
+    std::vector<engine::SampledEquityPoint> points;
+    points.reserve(20);
+    int64_t ts = 0;
+    for (int i = 0; i < 20; ++i) {
+        points.push_back(engine::SampledEquityPoint{.timestampMs = ts, .equity = 100.0});
+        ts += 3'600'000;
+    }
+
+    const auto result = metrics.compute(points, "rolling", 0, ts - 3'600'000, "margin");
+    ASSERT_TRUE(result.valid);
+    EXPECT_DOUBLE_EQ(result.stdDevDownside, 0.0);
+    EXPECT_LE(result.sortinoRatio, 0.0);
+    EXPECT_DOUBLE_EQ(result.sortinoRatio, result.excessReturn);
+    EXPECT_DOUBLE_EQ(result.maxDrawdown, 0.0);
+    EXPECT_DOUBLE_EQ(result.upi, 0.0);
 }
 
 TEST(RiskMetricsTest, AnnualizedReturnMatchesCagrByElapsedTime) {

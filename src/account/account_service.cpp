@@ -7,6 +7,7 @@
 #include "account/internal/string_utils.h"
 #include "account/rest_account_client_adapter.h"
 
+#include <cmath>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -31,6 +32,29 @@ std::string formatDecimal(double value, int precision = 8) {
         text.push_back('0');
     }
     return text.empty() ? "0.0" : text;
+}
+
+std::optional<double> parsePositiveFiniteDecimal(const DecimalString& value) {
+    const double parsed = value.toDouble();
+    if (!std::isfinite(parsed) || parsed <= 0.0) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+std::optional<double> parseFiniteRawDecimal(std::string_view raw) {
+    if (raw.empty()) {
+        return std::nullopt;
+    }
+    auto parsed = DecimalString::parse(raw);
+    if (!parsed) {
+        return std::nullopt;
+    }
+    const double value = parsed->toDouble();
+    if (!std::isfinite(value)) {
+        return std::nullopt;
+    }
+    return value;
 }
 
 } // namespace
@@ -182,6 +206,12 @@ boost::asio::awaitable<AccountServiceResult<MarginCheckResult>> AccountService::
     }
 
     if (draft.assumedPrice.has_value()) {
+        const auto parsedQuantity = parsePositiveFiniteDecimal(draft.quantity);
+        const auto parsedPrice = parsePositiveFiniteDecimal(draft.assumedPrice.value());
+        if (!parsedQuantity || !parsedPrice) {
+            co_return result;
+        }
+
         auto acc_res = co_await m_rest.account();
         if (!acc_res) {
             co_return std::unexpected(AccountServiceError{acc_res.error()});
@@ -196,9 +226,22 @@ boost::asio::awaitable<AccountServiceResult<MarginCheckResult>> AccountService::
         }
 
         if (leverage > 0) {
-            const double notional = draft.quantity.toDouble() * draft.assumedPrice.value().toDouble();
+            std::optional<double> availableBalance;
+            if (acc_res->availableBalanceRaw.empty()) {
+                availableBalance = acc_res->availableBalance;
+            } else {
+                availableBalance = parseFiniteRawDecimal(acc_res->availableBalanceRaw);
+            }
+            if (!availableBalance || !std::isfinite(*availableBalance)) {
+                co_return result;
+            }
+
+            const double notional = *parsedQuantity * *parsedPrice;
             const double initialMargin = notional / static_cast<double>(leverage);
-            const double remaining = acc_res->availableBalance - initialMargin;
+            const double remaining = *availableBalance - initialMargin;
+            if (!std::isfinite(remaining)) {
+                co_return result;
+            }
             result.estimatedRemainingFreeMargin = formatDecimal(remaining);
             if (result.completeness == MarginCheckCompleteness::Unavailable) {
                 result.completeness = MarginCheckCompleteness::Estimated;

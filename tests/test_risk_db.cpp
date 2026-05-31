@@ -99,7 +99,7 @@ TEST(RiskDbTest, ReturnsLatestMetricsByWindowAndBasis) {
     std::filesystem::remove_all(root);
 }
 
-TEST(RiskDbTest, PreservesInfiniteMetricsAcrossCacheRoundTrip) {
+TEST(RiskDbTest, PersistsNonFiniteMetricsAsNullAndReadsSafeFiniteDefaults) {
     const auto dbPath = uniqueDbPath("metrics_inf");
     const auto root = dbPath.parent_path();
     {
@@ -114,15 +114,15 @@ TEST(RiskDbTest, PreservesInfiniteMetricsAcrossCacheRoundTrip) {
         metrics.dataPoints = 10;
         metrics.valid = true;
         metrics.sortinoRatio = std::numeric_limits<double>::infinity();
+        metrics.sharpeRatio = std::numeric_limits<double>::quiet_NaN();
         metrics.upi = std::numeric_limits<double>::infinity();
         db.insertMetrics(metrics);
 
         const auto latest = db.getLatestMetrics("rolling", "margin");
         ASSERT_TRUE(latest.has_value());
-        EXPECT_TRUE(std::isinf(latest->sortinoRatio));
-        EXPECT_GT(latest->sortinoRatio, 0.0);
-        EXPECT_TRUE(std::isinf(latest->upi));
-        EXPECT_GT(latest->upi, 0.0);
+        EXPECT_DOUBLE_EQ(latest->sharpeRatio, 0.0);
+        EXPECT_DOUBLE_EQ(latest->sortinoRatio, 0.0);
+        EXPECT_DOUBLE_EQ(latest->upi, 0.0);
     }
 
     std::filesystem::remove_all(root);
