@@ -95,6 +95,11 @@ void RiskConfig::validate() const {
     if (controlLookbackDays <= 0) {
         throw std::invalid_argument("risk_analytics.control_lookback_days must be > 0");
     }
+    // IN-3: bound the lookback so the days->ms conversion (days * 86,400,000) cannot
+    // overflow int64 and so a fat-fingered config cannot request an absurd window.
+    if (controlLookbackDays > 36500) {
+        throw std::invalid_argument("risk_analytics.control_lookback_days must be <= 36500 (100 years)");
+    }
     if (metricsComputeIntervalMinutes <= 0) {
         throw std::invalid_argument("risk_analytics.metrics_compute_interval_minutes must be > 0");
     }

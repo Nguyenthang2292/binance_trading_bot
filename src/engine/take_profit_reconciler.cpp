@@ -232,11 +232,18 @@ std::optional<std::string> makeGlobalTpClientOrderId(std::string_view symbol, st
         symbolHash ^= static_cast<std::uint32_t>(static_cast<unsigned char>(up));
         symbolHash *= 16777619U;
     }
-    std::string symbolFingerprint = toBase36(static_cast<std::uint64_t>(symbolHash % (36U * 36U)));
-    if (symbolFingerprint.size() < 2) {
-        symbolFingerprint = std::string(2 - symbolFingerprint.size(), '0') + symbolFingerprint;
-    } else if (symbolFingerprint.size() > 2) {
-        symbolFingerprint = symbolFingerprint.substr(symbolFingerprint.size() - 2);
+    // IN-6: widen the symbol fingerprint to 4 base36 chars (~1.68M buckets vs the
+    // previous 1296) so two distinct symbols are far less likely to collide on the
+    // same-millisecond client-id and have a take-profit adopted/cancelled on the
+    // wrong symbol. The id stays under the 36-char cap (<=12 symbol + 4 + 8 ts + 2
+    // seq + delimiters).
+    constexpr std::uint64_t kFingerprintBuckets = 36ULL * 36ULL * 36ULL * 36ULL;
+    constexpr std::size_t kFingerprintWidth = 4;
+    std::string symbolFingerprint = toBase36(static_cast<std::uint64_t>(symbolHash) % kFingerprintBuckets);
+    if (symbolFingerprint.size() < kFingerprintWidth) {
+        symbolFingerprint = std::string(kFingerprintWidth - symbolFingerprint.size(), '0') + symbolFingerprint;
+    } else if (symbolFingerprint.size() > kFingerprintWidth) {
+        symbolFingerprint = symbolFingerprint.substr(symbolFingerprint.size() - kFingerprintWidth);
     }
 
     const auto nowMsRaw = std::chrono::duration_cast<std::chrono::milliseconds>(

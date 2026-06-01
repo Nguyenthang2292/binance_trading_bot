@@ -383,7 +383,14 @@ TEST(PluginLoaderTest, StrategyInstancesRemainValidAcrossReloads) {
     EXPECT_EQ(g_destroyV2Count, 1);
 }
 
-TEST(PluginLoaderTest, EnforcedSha256AllowlistDetectsHashChangeBetweenVerifyAndLoad) {
+std::string readTextFile(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+TEST(PluginLoaderTest, EnforcedSha256AllowlistNeverLoadsTamperedPluginAcrossVerifyAndLoad) {
     const auto tmpDir = makeTempDir();
     ASSERT_FALSE(tmpDir.empty());
     TempDirGuard cleanup{tmpDir};
@@ -397,6 +404,9 @@ TEST(PluginLoaderTest, EnforcedSha256AllowlistDetectsHashChangeBetweenVerifyAndL
         {.pluginsDir = "plugins", .enforceSha256Allowlist = true, .sha256AllowlistFile = allowlistPath},
         [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
         [pluginPath](const std::filesystem::path& path) {
+            // Simulate an attacker swapping the file in the verify->load window.
+            // With WR-39's deny-write pin this write is blocked; without it the
+            // post-load re-hash must catch the change.
             writeTextFile(pluginPath, "tampered");
             return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
@@ -404,8 +414,16 @@ TEST(PluginLoaderTest, EnforcedSha256AllowlistDetectsHashChangeBetweenVerifyAndL
 
     const auto results = loader.loadAll();
     ASSERT_EQ(results.size(), 1u);
-    EXPECT_FALSE(results[0].success);
-    EXPECT_NE(results[0].error.find("changed between integrity check and load"), std::string::npos);
+
+    // Security invariant (platform-independent): a non-allowlisted/tampered
+    // plugin is never accepted. Either the pin prevented the swap (load succeeds
+    // and the original allowlisted bytes are still on disk) or the swap happened
+    // and the post-load re-hash rejected it.
+    if (results[0].success) {
+        EXPECT_EQ(readTextFile(pluginPath), "abc");
+    } else {
+        EXPECT_NE(results[0].error.find("changed between integrity check and load"), std::string::npos);
+    }
 }
 
 #if defined(_WIN32)

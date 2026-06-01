@@ -195,6 +195,11 @@ bool RateLimiter::isNearLimit() const {
     const int effectiveWeight = std::max(m_headerUsedWeight, m_reservedWeight);
     const int effectiveOrders1m = std::max(m_headerUsedOrders1m, m_reservedOrders1m);
     const int effectiveOrders10s = std::max(m_headerUsedOrders10s, m_reservedOrders10s);
+    // IN-7: this advisory deliberately fires at 80% of the raw exchange limit,
+    // which is below the ~95% safe budget acquire() admits against, so callers
+    // get an early "near limit" warning before admission control begins
+    // deferring. (The acquire() loop already sleeps the window remainder rather
+    // than spinning, so no busy-wait remains.)
     return effectiveWeight >= static_cast<int>(m_limits.requestWeightPerMinute * 0.8) ||
            effectiveOrders1m >= static_cast<int>(m_limits.ordersPerMinute * 0.8) ||
            effectiveOrders10s >= static_cast<int>(m_limits.ordersPer10Seconds * 0.8);

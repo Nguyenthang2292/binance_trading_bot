@@ -532,7 +532,7 @@ void ShadowMetricsRecorder::upsertShadowOutcomesLocked(std::string_view interval
         return;
     }
     const char* selectSql =
-        "SELECT s.shadow_id, s.direction, s.horizon_bars, e.close, x.close "
+        "SELECT s.shadow_id, s.direction, s.horizon_bars, e.close, x.close, s.generated_at_ms "
         "FROM qlib_shadow_signals s "
         "JOIN qlib_candles e "
         "  ON e.symbol = s.symbol "
@@ -574,6 +574,7 @@ void ShadowMetricsRecorder::upsertShadowOutcomesLocked(std::string_view interval
         const int horizonBars = sqlite3_column_int(selectStmt.get(), 2);
         const double entryClose = sqlite3_column_double(selectStmt.get(), 3);
         const double exitClose = sqlite3_column_double(selectStmt.get(), 4);
+        const int64_t generatedAtMs = sqlite3_column_int64(selectStmt.get(), 5);
         if (entryClose <= 0.0 || horizonBars <= 0) {
             continue;
         }
@@ -603,7 +604,10 @@ void ShadowMetricsRecorder::upsertShadowOutcomesLocked(std::string_view interval
         sqlite3_bind_double(insertStmt.get(), 4, netReturn);
         sqlite3_bind_int(insertStmt.get(), 5, hit);
         bindText(insertStmt.get(), 6, costModelVersion());
-        sqlite3_bind_int64(insertStmt.get(), 7, nowMs());
+        // IN-3: clamp maturity to never precede generation. A backward wall-clock
+        // step (NTP correction) could otherwise stamp matured_at_ms < generated_at_ms
+        // and reorder/duplicate maturity windows.
+        sqlite3_bind_int64(insertStmt.get(), 7, std::max(nowMs(), generatedAtMs));
         if (sqlite3_step(insertStmt.get()) != SQLITE_DONE) {
             throw std::runtime_error("ShadowMetricsRecorder insert shadow outcome failed");
         }

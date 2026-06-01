@@ -91,6 +91,12 @@ public:
     std::vector<std::string> intervals() const;
 
 private:
+    // IN-9: merge `klines` into an already-locked `bucket`. Callers must hold the
+    // exclusive lock; this lets `update()` handle an out-of-order insert without
+    // dropping and re-acquiring the lock (which previously opened a last-writer-
+    // wins TOCTOU window).
+    void mergeIntoBucketLocked(std::deque<Kline>& bucket, std::span<const Kline> klines) const;
+
     mutable std::shared_mutex m_mutex;
     std::unordered_map<std::string, std::unordered_map<std::string, std::deque<Kline>>> m_data;
     size_t m_bufferSize;

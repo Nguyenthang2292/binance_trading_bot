@@ -12,6 +12,7 @@
 #include <optional>
 #include <sstream>
 #include <unordered_set>
+#include <utility>
 
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -19,12 +20,89 @@
 #if defined(_WIN32)
 #include <windows.h>
 #else
+#include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
 #endif
 
 namespace catalog {
 
 namespace {
+
+// WR-39: pin a plugin file's bytes for the duration of hash-then-load so the
+// file cannot be swapped in the verify->load TOCTOU window. On Windows the file
+// is opened denying write/delete sharing (FILE_SHARE_READ only), which still
+// permits std::ifstream hashing and LoadLibraryExW (both read/execute) while
+// blocking any writer. On POSIX it takes a shared advisory lock and keeps the
+// descriptor open (advisory, but paired with the post-load re-hash and a
+// write-restricted plugins dir). The pin is held across the entire hash+load.
+class ScopedFilePin {
+public:
+    ScopedFilePin() = default;
+    ScopedFilePin(const ScopedFilePin&) = delete;
+    ScopedFilePin& operator=(const ScopedFilePin&) = delete;
+    ScopedFilePin(ScopedFilePin&& other) noexcept { *this = std::move(other); }
+    ScopedFilePin& operator=(ScopedFilePin&& other) noexcept {
+        if (this != &other) {
+            release();
+#if defined(_WIN32)
+            m_handle = other.m_handle;
+            other.m_handle = INVALID_HANDLE_VALUE;
+#else
+            m_fd = other.m_fd;
+            other.m_fd = -1;
+#endif
+        }
+        return *this;
+    }
+    ~ScopedFilePin() { release(); }
+
+    static compat::expected<ScopedFilePin, std::string> pin(const std::filesystem::path& path) {
+        ScopedFilePin out;
+#if defined(_WIN32)
+        out.m_handle = CreateFileW(
+            path.wstring().c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ,  // deny write + delete sharing while pinned
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (out.m_handle == INVALID_HANDLE_VALUE) {
+            return compat::unexpected("failed to pin plugin file (deny-write) for load: " + path.string());
+        }
+#else
+        out.m_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (out.m_fd < 0) {
+            return compat::unexpected("failed to pin plugin file for load: " + path.string());
+        }
+        (void)::flock(out.m_fd, LOCK_SH);  // advisory shared lock
+#endif
+        return out;
+    }
+
+    void release() {
+#if defined(_WIN32)
+        if (m_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(m_handle);
+            m_handle = INVALID_HANDLE_VALUE;
+        }
+#else
+        if (m_fd >= 0) {
+            (void)::flock(m_fd, LOCK_UN);
+            ::close(m_fd);
+            m_fd = -1;
+        }
+#endif
+    }
+
+private:
+#if defined(_WIN32)
+    HANDLE m_handle{INVALID_HANDLE_VALUE};
+#else
+    int m_fd{-1};
+#endif
+};
 
 std::filesystem::path executableDirectory() {
 #if defined(_WIN32)
@@ -195,6 +273,23 @@ std::vector<PluginLoadResult> PluginLoader::loadAll() {
     for (const auto& path : candidates) {
         PluginLoadResult result;
         result.path = path;
+
+        // WR-39: pin the file (deny-write) before hashing and keep it pinned
+        // across the load so the verified bytes cannot be swapped in the
+        // hash->load window. Best-effort: if pinning fails (e.g. transient lock),
+        // proceed anyway — the post-load re-hash below still detects a swap.
+        ScopedFilePin pin;
+        if (m_config.enforceSha256Allowlist) {
+            auto pinned = ScopedFilePin::pin(path);
+            if (pinned) {
+                pin = std::move(*pinned);
+            } else {
+                Logger::instance().log(
+                    LogLevel::Warning,
+                    "catalog integrity: " + pinned.error() + "; relying on post-load re-hash");
+            }
+        }
+
         std::optional<std::string> preLoadHash;
         if (auto integrity = verifyIntegrity(path); !integrity) {
             result.success = false;

@@ -381,4 +381,19 @@ TEST(RiskControllerTest, RiskConfigRejectsInvertedUpiThresholds) {
     EXPECT_THROW((void)engine::RiskConfig::fromJson(j), std::invalid_argument);
 }
 
+TEST(RiskControllerTest, RiskConfigRejectsOutOfRangeControlLookback) {
+    // IN-3: lookback must be bounded so the days->ms conversion cannot overflow.
+    auto tooLarge = nlohmann::json::object();
+    tooLarge["control_lookback_days"] = 36501;
+    EXPECT_THROW((void)engine::RiskConfig::fromJson(tooLarge), std::invalid_argument);
+
+    auto nonPositive = nlohmann::json::object();
+    nonPositive["control_lookback_days"] = 0;
+    EXPECT_THROW((void)engine::RiskConfig::fromJson(nonPositive), std::invalid_argument);
+
+    auto atBound = nlohmann::json::object();
+    atBound["control_lookback_days"] = 36500;
+    EXPECT_NO_THROW((void)engine::RiskConfig::fromJson(atBound));
+}
+
 } // namespace

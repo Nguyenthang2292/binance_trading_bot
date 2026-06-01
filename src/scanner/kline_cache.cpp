@@ -58,9 +58,11 @@ void KlineCache::update(std::string_view symbol, std::string_view interval, cons
         return;
     }
     if (!bucket.empty() && kline.openTime < bucket.back().openTime) {
-        std::vector<Kline> one{kline};
-        lock.unlock();
-        merge(symbol, interval, one);
+        // IN-9: merge in place while still holding the exclusive lock instead of
+        // unlocking and calling merge() (which would re-lock), closing the
+        // last-writer-wins race across the lock boundary.
+        const Kline one[] = {kline};
+        mergeIntoBucketLocked(bucket, std::span<const Kline>(one, 1));
         return;
     }
     bucket.push_back(kline);
@@ -97,6 +99,13 @@ void KlineCache::merge(std::string_view symbol, std::string_view interval, std::
 
     std::unique_lock lock(m_mutex);
     auto& bucket = m_data[std::string(symbol)][std::string(interval)];
+    mergeIntoBucketLocked(bucket, klines);
+}
+
+void KlineCache::mergeIntoBucketLocked(std::deque<Kline>& bucket, std::span<const Kline> klines) const {
+    if (klines.empty()) {
+        return;
+    }
 
     std::unordered_map<int64_t, Kline> mergedByOpenTime;
     mergedByOpenTime.reserve(bucket.size() + klines.size());
