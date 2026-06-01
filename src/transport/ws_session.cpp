@@ -146,6 +146,15 @@ void WsSession::send(std::string message) {
     });
 }
 
+void WsSession::updatePath(std::string path) {
+    auto self = shared_from_this();
+    asio::post(m_strand, [self, path = std::move(path)]() mutable {
+        if (!path.empty()) {
+            self->m_path = std::move(path);
+        }
+    });
+}
+
 void WsSession::onConnected() {
     if (m_connected && !m_outboundMessages.empty() && !m_writerRunning) {
         m_writerRunning = true;

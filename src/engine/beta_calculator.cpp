@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -25,19 +26,20 @@ std::optional<double> BetaCalculator::calculate(
     std::string_view symbol,
     const scanner::KlineCache& cache,
     int windowDays) const {
-    const auto coinKlines = cache.snapshot(symbol, "1d");
-    const auto btcKlines = cache.snapshot("BTCUSDT", "1d");
-    if (!coinKlines || !btcKlines) {
-        return std::nullopt;
-    }
-
     std::map<int64_t, double> coinCloseByOpenTime;
     std::map<int64_t, double> btcCloseByOpenTime;
-    for (const auto& k : *coinKlines) {
-        coinCloseByOpenTime[k.openTime] = k.close;
-    }
-    for (const auto& k : *btcKlines) {
-        btcCloseByOpenTime[k.openTime] = k.close;
+    const bool haveCoin = cache.read(symbol, "1d", [&coinCloseByOpenTime](const std::deque<Kline>& klines) {
+        for (const auto& k : klines) {
+            coinCloseByOpenTime[k.openTime] = k.close;
+        }
+    });
+    const bool haveBtc = cache.read("BTCUSDT", "1d", [&btcCloseByOpenTime](const std::deque<Kline>& klines) {
+        for (const auto& k : klines) {
+            btcCloseByOpenTime[k.openTime] = k.close;
+        }
+    });
+    if (!haveCoin || !haveBtc) {
+        return std::nullopt;
     }
 
     std::vector<int64_t> commonTimes;

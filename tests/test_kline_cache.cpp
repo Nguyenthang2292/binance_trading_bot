@@ -2,6 +2,7 @@
 
 #include "scanner/kline_cache.h"
 
+#include <deque>
 #include <span>
 #include <vector>
 
@@ -46,6 +47,35 @@ TEST(KlineCacheTest, RotatesFixedBuffer) {
 TEST(KlineCacheTest, MissingLookupReturnsNullopt) {
     scanner::KlineCache cache(3);
     EXPECT_FALSE(cache.snapshot("NONE", "15m").has_value());
+}
+
+TEST(KlineCacheTest, ReadInvokesCallbackZeroCopyWhenPresent) {
+    scanner::KlineCache cache(3);
+    for (int i = 0; i < 3; ++i) {
+        Kline k;
+        k.openTime = 1000 + i;
+        k.close = static_cast<double>(i);
+        cache.update("BTCUSDT", "15m", k);
+    }
+
+    std::size_t observed = 0;
+    int64_t lastOpenTime = 0;
+    const bool found = cache.read("BTCUSDT", "15m", [&](const std::deque<Kline>& klines) {
+        observed = klines.size();
+        lastOpenTime = klines.back().openTime;
+    });
+
+    EXPECT_TRUE(found);
+    EXPECT_EQ(observed, 3u);
+    EXPECT_EQ(lastOpenTime, 1002);
+}
+
+TEST(KlineCacheTest, ReadReturnsFalseAndSkipsCallbackWhenMissing) {
+    scanner::KlineCache cache(3);
+    bool invoked = false;
+    const bool found = cache.read("NONE", "15m", [&](const std::deque<Kline>&) { invoked = true; });
+    EXPECT_FALSE(found);
+    EXPECT_FALSE(invoked);
 }
 
 TEST(KlineCacheTest, MergeKeepsAscendingOrderAndDeduplicates) {

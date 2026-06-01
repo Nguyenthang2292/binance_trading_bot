@@ -78,12 +78,21 @@ struct ExchangePriceFilter {
     double minPrice{0.0};
     double maxPrice{0.0};
     double tickSize{0.0};
+    // WR-34: exact decimal strings as sent by the exchange. A binary double
+    // cannot represent decimal ticks exactly, so the raw string is the source of
+    // truth for tick-decimal counting; the double is a convenience for math.
+    std::string minPriceRaw{"0"};
+    std::string maxPriceRaw{"0"};
+    std::string tickSizeRaw{"0"};
 };
 
 struct ExchangeLotSizeFilter {
     double minQty{0.0};
     double maxQty{0.0};
     double stepSize{0.0};
+    std::string minQtyRaw{"0"};
+    std::string maxQtyRaw{"0"};
+    std::string stepSizeRaw{"0"};
 };
 
 struct ExchangeNotionalFilter {
@@ -92,6 +101,8 @@ struct ExchangeNotionalFilter {
     bool applyMinToMarket{false};
     bool applyMaxToMarket{false};
     int avgPriceMins{0};
+    std::string minNotionalRaw{"0"};
+    std::string maxNotionalRaw{"0"};
 };
 
 struct ExchangeSymbol {
@@ -116,4 +127,12 @@ struct ExchangeSymbol {
     double minNotional{0.0};
     double maxQty{0.0};
     double minQty{0.0};
+
+    // WR-34: exact decimal strings mirroring the legacy double aliases above,
+    // used for precise tick/step decimal counting at order-formatting time.
+    std::string tickSizeRaw{"0"};
+    std::string stepSizeRaw{"0"};
+    std::string minNotionalRaw{"0"};
+    std::string maxQtyRaw{"0"};
+    std::string minQtyRaw{"0"};
 };

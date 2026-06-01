@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <string_view>
 #include <stdexcept>
 #include <variant>
 #include <vector>
@@ -20,6 +21,11 @@ std::string lower(std::string value) {
         return static_cast<char>(std::tolower(c));
     });
     return value;
+}
+
+std::string controlFrame(std::string_view method, std::string_view stream) {
+    return "{\"method\":\"" + std::string(method) + "\",\"params\":[\"" +
+        std::string(stream) + "\"],\"id\":1}";
 }
 
 std::vector<std::pair<double, double>> parseLevels(simdjson::dom::element levels) {
@@ -159,53 +165,124 @@ WsClient::~WsClient() {
 }
 
 void WsClient::subscribeAggTrade(std::string symbol, MarketEventCb cb) {
-    std::lock_guard lock(m_stateMutex);
-    m_subscriptions[lower(symbol) + "@aggtrade"] = std::move(cb);
+    const auto stream = lower(std::move(symbol)) + "@aggtrade";
+    std::shared_ptr<WsSession> session;
+    std::string path;
+    {
+        std::lock_guard lock(m_stateMutex);
+        m_subscriptions[stream] = std::move(cb);
+        session = m_session;
+        if (session) path = buildStreamPathLocked();
+    }
+    refreshSessionPath(session, path);
+    if (session) session->send(controlFrame("SUBSCRIBE", stream));
 }
 
 void WsClient::subscribeKline(std::string symbol, std::string interval, MarketEventCb cb) {
-    std::lock_guard lock(m_stateMutex);
-    m_subscriptions[lower(symbol) + "@kline_" + lower(interval)] = std::move(cb);
+    const auto stream = lower(std::move(symbol)) + "@kline_" + lower(std::move(interval));
+    std::shared_ptr<WsSession> session;
+    std::string path;
+    {
+        std::lock_guard lock(m_stateMutex);
+        m_subscriptions[stream] = std::move(cb);
+        session = m_session;
+        if (session) path = buildStreamPathLocked();
+    }
+    refreshSessionPath(session, path);
+    if (session) session->send(controlFrame("SUBSCRIBE", stream));
 }
 
 void WsClient::subscribeMarkPrice(std::string symbol, MarketEventCb cb) {
-    std::lock_guard lock(m_stateMutex);
-    m_subscriptions[lower(symbol) + "@markprice"] = std::move(cb);
+    const auto stream = lower(std::move(symbol)) + "@markprice";
+    std::shared_ptr<WsSession> session;
+    std::string path;
+    {
+        std::lock_guard lock(m_stateMutex);
+        m_subscriptions[stream] = std::move(cb);
+        session = m_session;
+        if (session) path = buildStreamPathLocked();
+    }
+    refreshSessionPath(session, path);
+    if (session) session->send(controlFrame("SUBSCRIBE", stream));
 }
 
 void WsClient::subscribeBookTicker(std::string symbol, MarketEventCb cb) {
-    std::lock_guard lock(m_stateMutex);
     const auto stream = lower(symbol) + "@bookticker";
-    m_lastBookTickerUpdateIds.erase(stream);
-    m_subscriptions[stream] = std::move(cb);
+    std::shared_ptr<WsSession> session;
+    std::string path;
+    {
+        std::lock_guard lock(m_stateMutex);
+        m_lastBookTickerUpdateIds.erase(stream);
+        m_subscriptions[stream] = std::move(cb);
+        session = m_session;
+        if (session) path = buildStreamPathLocked();
+    }
+    refreshSessionPath(session, path);
+    if (session) session->send(controlFrame("SUBSCRIBE", stream));
 }
 
 void WsClient::subscribeDepth(std::string symbol, int levels, std::string updateSpeed, MarketEventCb cb) {
-    std::lock_guard lock(m_stateMutex);
-    m_subscriptions[lower(symbol) + "@depth" + std::to_string(levels) + "@" + lower(updateSpeed)] = std::move(cb);
+    const auto stream = lower(std::move(symbol)) + "@depth" + std::to_string(levels) + "@" + lower(std::move(updateSpeed));
+    std::shared_ptr<WsSession> session;
+    std::string path;
+    {
+        std::lock_guard lock(m_stateMutex);
+        m_subscriptions[stream] = std::move(cb);
+        session = m_session;
+        if (session) path = buildStreamPathLocked();
+    }
+    refreshSessionPath(session, path);
+    if (session) session->send(controlFrame("SUBSCRIBE", stream));
 }
 
 void WsClient::subscribeLiquidation(std::string symbol, MarketEventCb cb) {
-    std::lock_guard lock(m_stateMutex);
-    m_subscriptions[lower(symbol) + "@forceorder"] = std::move(cb);
+    const auto stream = lower(std::move(symbol)) + "@forceorder";
+    std::shared_ptr<WsSession> session;
+    std::string path;
+    {
+        std::lock_guard lock(m_stateMutex);
+        m_subscriptions[stream] = std::move(cb);
+        session = m_session;
+        if (session) path = buildStreamPathLocked();
+    }
+    refreshSessionPath(session, path);
+    if (session) session->send(controlFrame("SUBSCRIBE", stream));
 }
 
 void WsClient::subscribeCompositeIndex(std::string symbol, MarketEventCb cb) {
-    std::lock_guard lock(m_stateMutex);
-    m_subscriptions[lower(symbol) + "@compositeindex"] = std::move(cb);
+    const auto stream = lower(std::move(symbol)) + "@compositeindex";
+    std::shared_ptr<WsSession> session;
+    std::string path;
+    {
+        std::lock_guard lock(m_stateMutex);
+        m_subscriptions[stream] = std::move(cb);
+        session = m_session;
+        if (session) path = buildStreamPathLocked();
+    }
+    refreshSessionPath(session, path);
+    if (session) session->send(controlFrame("SUBSCRIBE", stream));
 }
 
 void WsClient::unsubscribe(std::string streamName) {
     streamName = lower(std::move(streamName));
     std::shared_ptr<WsSession> session;
+    std::string path;
+    bool hasSubscriptions = false;
     {
         std::lock_guard lock(m_stateMutex);
         m_subscriptions.erase(streamName);
         m_lastBookTickerUpdateIds.erase(streamName);
         session = m_session;
+        hasSubscriptions = !m_subscriptions.empty();
+        if (session && hasSubscriptions) path = buildStreamPathLocked();
     }
     if (session) {
-        session->send("{\"method\":\"UNSUBSCRIBE\",\"params\":[\"" + streamName + "\"],\"id\":1}");
+        session->send(controlFrame("UNSUBSCRIBE", streamName));
+        if (hasSubscriptions) {
+            refreshSessionPath(session, path);
+        } else {
+            disconnect();
+        }
     }
 }
 
@@ -226,8 +303,9 @@ void WsClient::unsubscribeAll() {
         return;
     }
     for (const auto& stream : streams) {
-        session->send("{\"method\":\"UNSUBSCRIBE\",\"params\":[\"" + stream + "\"],\"id\":1}");
+        session->send(controlFrame("UNSUBSCRIBE", stream));
     }
+    disconnect();
 }
 
 void WsClient::setOnDisconnect(std::function<void()> cb) {
@@ -242,6 +320,10 @@ void WsClient::setOnReconnect(std::function<void()> cb) {
 
 std::string WsClient::buildStreamPath() const {
     std::lock_guard lock(m_stateMutex);
+    return buildStreamPathLocked();
+}
+
+std::string WsClient::buildStreamPathLocked() const {
     std::ostringstream out;
     out << "/stream?streams=";
     bool first = true;
@@ -251,6 +333,12 @@ std::string WsClient::buildStreamPath() const {
         out << stream;
     }
     return out.str();
+}
+
+void WsClient::refreshSessionPath(const std::shared_ptr<WsSession>& session, const std::string& path) const {
+    if (session && !path.empty()) {
+        session->updatePath(path);
+    }
 }
 
 void WsClient::connect() {

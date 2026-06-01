@@ -686,6 +686,7 @@ boost::asio::awaitable<OrdersResult<OrderFillSummary>> NormalOrderService::query
     bool hasParseError = false;
     bool hasCommissionValue = false;
     bool hasPnlValue = false;
+    bool reducedPosition = false;
     int64_t firstTime = std::numeric_limits<int64_t>::max();
     int64_t lastTime = 0;
 
@@ -706,6 +707,9 @@ boost::asio::awaitable<OrdersResult<OrderFillSummary>> NormalOrderService::query
         if (tryParseDecimal(t.realizedPnl, tradePnl)) {
             totalPnl += tradePnl;
             hasPnlValue = true;
+            if (tradePnl != Decimal50(0)) {
+                reducedPosition = true;
+            }
         } else {
             hasParseError = true;
         }
@@ -744,17 +748,30 @@ boost::asio::awaitable<OrdersResult<OrderFillSummary>> NormalOrderService::query
     summary.executedQty = formatDecimal(totalQty);
 
     if (totalQty > Decimal50(0)) {
-        summary.avgEntryPrice = formatDecimal(totalQuoteQty / totalQty);
-        summary.avgExitPrice = summary.avgEntryPrice;
+        // All fills for a single order share one side, so this VWAP is either an
+        // entry or an exit price — never both. Classify the order as reducing
+        // (exit) when any fill realized PnL (Binance attaches realizedPnl only to
+        // closing fills); otherwise treat it as opening (entry). Only the
+        // matching field is populated so a consumer cannot mistake one order's
+        // VWAP for both an entry and an exit.
+        const std::string vwap = formatDecimal(totalQuoteQty / totalQty);
+        if (reducedPosition) {
+            summary.avgExitPrice = vwap;
+        } else {
+            summary.avgEntryPrice = vwap;
+        }
     }
 
-    if (hasPnlValue) {
+    // Suppress aggregate PnL/commission entirely on any parse failure: a partial
+    // sum reported as a concrete value would be silently undercounted by a
+    // consumer that ignores `completeness`.
+    if (!hasParseError && hasPnlValue) {
         summary.realizedPnl = formatDecimal(totalPnl);
     }
-    if (hasCommissionValue) {
+    if (!hasParseError && hasCommissionValue) {
         summary.commission = formatDecimal(totalCommission);
+        summary.commissionAsset = commissionAsset;
     }
-    summary.commissionAsset = commissionAsset;
     if (firstTime != std::numeric_limits<int64_t>::max()) {
         summary.firstTradeTime = firstTime;
         summary.lastTradeTime = lastTime;

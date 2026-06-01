@@ -3,7 +3,9 @@
 #include <boost/asio/error.hpp>
 #include <simdjson.h>
 
+#include <algorithm>
 #include <sstream>
+#include <string>
 
 namespace {
 
@@ -16,6 +18,28 @@ std::string categoryName(ErrorCategory category) {
         case ErrorCategory::Parse: return "Parse";
     }
     return "Unknown";
+}
+
+std::string sanitizeRawHttpBody(std::string_view body) {
+    constexpr size_t kMaxBodyMessage = 1024;
+    std::string out;
+    out.reserve(std::min(body.size(), kMaxBodyMessage) + 16);
+    for (unsigned char ch : body) {
+        if (out.size() >= kMaxBodyMessage) {
+            out += "...[truncated]";
+            break;
+        }
+        if (ch == '\r' || ch == '\n' || ch == '\t') {
+            out.push_back(' ');
+            continue;
+        }
+        if (ch < 0x20 || ch == 0x7f) {
+            out.push_back('?');
+            continue;
+        }
+        out.push_back(static_cast<char>(ch));
+    }
+    return out;
 }
 
 } // namespace
@@ -53,7 +77,7 @@ BinanceError BinanceError::fromNetwork(boost::system::error_code ec, NetworkErro
 
 BinanceError BinanceError::fromHttp(int httpStatus, std::string_view body) {
     if (httpStatus == 429 || httpStatus == 418) {
-        return {ErrorCategory::RateLimit, httpStatus, std::string(body)};
+        return {ErrorCategory::RateLimit, httpStatus, sanitizeRawHttpBody(body)};
     }
 
     simdjson::dom::parser parser;
@@ -68,10 +92,10 @@ BinanceError BinanceError::fromHttp(int httpStatus, std::string_view body) {
     }
 
     if (httpStatus == 401 || httpStatus == 403) {
-        return {ErrorCategory::Auth, httpStatus, std::string(body)};
+        return {ErrorCategory::Auth, httpStatus, sanitizeRawHttpBody(body)};
     }
 
-    return {ErrorCategory::Api, httpStatus, std::string(body)};
+    return {ErrorCategory::Api, httpStatus, sanitizeRawHttpBody(body)};
 }
 
 BinanceError BinanceError::fromParse(std::string_view detail) {

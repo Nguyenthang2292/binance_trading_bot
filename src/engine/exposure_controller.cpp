@@ -117,7 +117,10 @@ double ExposureController::getPositionNotional(
             if (p.symbol != symbol) {
                 continue;
             }
-            if (std::abs(p.positionAmt) <= 0.0) {
+            // WR-34: never test a money double for exact zero; a dust residual
+            // would otherwise be treated as an open position. Use the shared
+            // epsilon-based flat check.
+            if (isFlatPositionQuantity(p.positionAmt)) {
                 continue;
             }
             if (std::abs(p.notional) > 0.0) {

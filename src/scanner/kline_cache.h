@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace scanner {
@@ -47,6 +48,35 @@ public:
      * symbol or interval is not present.
      */
     std::optional<std::vector<Kline>> snapshot(std::string_view symbol, std::string_view interval) const;
+
+    /**
+     * Invoke `fn` with a read-locked, const reference to the bucket's klines for
+     * `symbol`/`interval` without copying. Returns `true` if the bucket exists
+     * (and `fn` was invoked); `false` otherwise.
+     *
+     * This is the zero-copy alternative to `snapshot()` for read-only consumers
+     * on the hot path (per-cycle ATR/beta/trailing/signature computations) that
+     * would otherwise deep-copy the entire bucket on every call.
+     *
+     * Thread-safety: holds a shared/read lock for the duration of `fn`. Keep
+     * `fn` short and non-blocking; the referenced container is valid only for
+     * the duration of the call (do not retain it), and `fn` must not call back
+     * into the cache (would deadlock / recurse the shared lock).
+     */
+    template <class Fn>
+    bool read(std::string_view symbol, std::string_view interval, Fn&& fn) const {
+        std::shared_lock lock(m_mutex);
+        const auto itSymbol = m_data.find(std::string(symbol));
+        if (itSymbol == m_data.end()) {
+            return false;
+        }
+        const auto itInterval = itSymbol->second.find(std::string(interval));
+        if (itInterval == itSymbol->second.end()) {
+            return false;
+        }
+        std::forward<Fn>(fn)(itInterval->second);
+        return true;
+    }
 
     /**
      * Get a list of symbols currently stored in the cache.

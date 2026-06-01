@@ -29,6 +29,20 @@ TEST(ErrorTypesTest, HttpAuthJsonPreservesBinanceCodeAndMessage) {
     EXPECT_EQ(err.message, "Invalid API-key, IP, or permissions for action.");
 }
 
+TEST(ErrorTypesTest, HttpRawBodyMessageIsSanitizedAndCapped) {
+    std::string body = "line1\nline2\t";
+    body.push_back('\x01');
+    body.append(1100, 'x');
+
+    const auto err = BinanceError::fromHttp(500, body);
+    EXPECT_EQ(err.category, ErrorCategory::Api);
+    EXPECT_EQ(err.message.find('\n'), std::string::npos);
+    EXPECT_EQ(err.message.find('\t'), std::string::npos);
+    EXPECT_NE(err.message.find('?'), std::string::npos);
+    EXPECT_NE(err.message.find("[truncated]"), std::string::npos);
+    EXPECT_LE(err.message.size(), 1040U);
+}
+
 TEST(TypesTest, KlineKeepsLegacyFieldAliases) {
     Kline k;
     k.quoteVolume = 123.4;

@@ -124,6 +124,7 @@ QlibStateStore::QlibStateStore(QlibStateStoreConfig config)
 
 QlibStateStore::~QlibStateStore() {
     stopReloadLoop();
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (m_db) {
         sqlite3_close(m_db);
         m_db = nullptr;

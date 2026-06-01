@@ -43,6 +43,8 @@ public:
 
 private:
     std::string buildStreamPath() const;
+    std::string buildStreamPathLocked() const;
+    void refreshSessionPath(const std::shared_ptr<WsSession>& session, const std::string& path) const;
     void onRawMessage(boost::system::error_code ec, std::string raw);
     std::map<std::string, MarketEventCb> snapshotSubscriptions() const;
     bool shouldDispatchMarketEvent(const std::string& stream, const MarketEvent& event);

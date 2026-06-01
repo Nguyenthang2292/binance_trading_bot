@@ -73,7 +73,11 @@ std::string metadataJson(const std::optional<OrderMetadata>& metadata) {
 }
 
 void configureConnection(sqlite3* db) {
-    sqlite3_busy_timeout(db, 5000);
+    // WR-2: SQLite now runs on a dedicated off-io thread, so a busy wait no
+    // longer freezes the io_context; keep the timeout modest so a contended
+    // connection fails closed reasonably quickly instead of occupying the DB
+    // pool worker for several seconds.
+    sqlite3_busy_timeout(db, 2000);
     orchestration::sqlite_helpers::execOrThrow(db, "PRAGMA journal_mode = WAL;");
     orchestration::sqlite_helpers::execOrThrow(db, "PRAGMA foreign_keys = ON;");
     orchestration::sqlite_helpers::execOrThrow(db, "PRAGMA synchronous = NORMAL;");
@@ -340,30 +344,52 @@ QlibExecutionPlanner::QlibExecutionPlanner(const std::string& dbPath, IExecution
 QlibExecutionPlanner::~QlibExecutionPlanner() = default;
 
 boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner::executeMarket(MarketOrderDraft draft) {
+    // WR-2: every SQLite touch below is wrapped in runOnDbPool(...) so the
+    // blocking calls (and their multi-second busy_timeout) execute on the
+    // dedicated DB pool thread, never on an io_context worker. Timers and the
+    // native order placement remain on the io executor (the coroutine resumes
+    // there after each pool hop).
     sqlite3* rawDb = nullptr;
-    const int openRc = sqlite3_open_v2(m_dbPath.c_str(), &rawDb, SQLITE_OPEN_READWRITE, nullptr);
+    const int openRc = co_await runOnDbPool([this, &rawDb]() -> int {
+        return sqlite3_open_v2(m_dbPath.c_str(), &rawDb, SQLITE_OPEN_READWRITE, nullptr);
+    });
     if (openRc != SQLITE_OK || rawDb == nullptr) {
         if (rawDb) {
-            sqlite3_close(rawDb);
+            co_await runOnDbPool([rawDb]() -> int {
+                sqlite3_close(rawDb);
+                return 0;
+            });
         }
         co_return compat::unexpected(BinanceError::fromApiResponse(-92000, "qlib execution db open failed"));
     }
     std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(rawDb, sqlite3_close);
 
+    std::string failureMessage;
     try {
-        configureConnection(db.get());
-        ensureExecutionSchema(db.get());
-        const int64_t createdAtMs = orchestration::sqlite_helpers::nowMs();
-        const int64_t deadlineMs = createdAtMs + kPlanPollTimeoutMs;
-        const std::string requestId = makeRequestId(draft.symbol);
+        struct SetupResult {
+            std::string requestId;
+            int64_t deadlineMs{0};
+        };
+        const SetupResult setup = co_await runOnDbPool([this, &db, &draft]() -> SetupResult {
+            configureConnection(db.get());
+            ensureExecutionSchema(db.get());
+            const int64_t createdAtMs = orchestration::sqlite_helpers::nowMs();
+            const int64_t deadlineMs = createdAtMs + kPlanPollTimeoutMs;
+            const std::string requestId = makeRequestId(draft.symbol);
 
-        orchestration::sqlite_helpers::execOrThrow(db.get(), "BEGIN IMMEDIATE;");
-        insertRequest(db.get(), requestId, draft, createdAtMs, deadlineMs);
-        orchestration::sqlite_helpers::execOrThrow(db.get(), "COMMIT;");
+            orchestration::sqlite_helpers::execOrThrow(db.get(), "BEGIN IMMEDIATE;");
+            insertRequest(db.get(), requestId, draft, createdAtMs, deadlineMs);
+            orchestration::sqlite_helpers::execOrThrow(db.get(), "COMMIT;");
+            return SetupResult{requestId, deadlineMs};
+        });
+        const std::string requestId = setup.requestId;
+        const int64_t deadlineMs = setup.deadlineMs;
 
         std::string reason = "plan not ready";
         while (orchestration::sqlite_helpers::nowMs() < deadlineMs) {
-            auto readyPlan = fetchReadyPlan(db.get(), requestId, reason);
+            auto readyPlan = co_await runOnDbPool([this, &db, &requestId, &reason]() -> std::optional<ReadyPlan> {
+                return fetchReadyPlan(db.get(), requestId, reason);
+            });
             if (readyPlan.has_value()) {
                 Logger::instance().log(
                     LogLevel::Info,
@@ -371,7 +397,10 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                         " plan_id=" + readyPlan->planId +
                         " slices=" + std::to_string(readyPlan->slices.size()));
                 if (m_nativeFallback == nullptr) {
-                    markRequest(db.get(), requestId, "failed", "slice executor fallback is not configured");
+                    co_await runOnDbPool([this, &db, &requestId]() -> int {
+                        markRequest(db.get(), requestId, "failed", "slice executor fallback is not configured");
+                        return 0;
+                    });
                     co_return compat::unexpected(BinanceError::fromApiResponse(
                         -92002,
                         "qlib plan ready but slice executor fallback is not configured"));
@@ -389,23 +418,33 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                 const double approvedQuantity = draft.quantity.toDouble();
                 const std::string expectedSide = sideToDb(draft.side);
 
+                const std::string planId = readyPlan->planId;
                 for (const auto& slice : readyPlan->slices) {
                     if (slice.side != expectedSide) {
-                        markSlice(db.get(), slice.sliceId, "failed", "side mismatch");
-                        markRequest(db.get(), requestId, "failed", "slice side mismatch");
+                        co_await runOnDbPool([this, &db, &requestId, &slice]() -> int {
+                            markSlice(db.get(), slice.sliceId, "failed", "side mismatch");
+                            markRequest(db.get(), requestId, "failed", "slice side mismatch");
+                            return 0;
+                        });
                         co_return compat::unexpected(BinanceError::fromApiResponse(-92005, "qlib slice side mismatch"));
                     }
                     auto sliceQty = DecimalString::parse(slice.quantity);
                     if (!sliceQty) {
-                        markSlice(db.get(), slice.sliceId, "failed", "invalid quantity");
-                        markRequest(db.get(), requestId, "failed", "invalid slice quantity");
+                        co_await runOnDbPool([this, &db, &requestId, &slice]() -> int {
+                            markSlice(db.get(), slice.sliceId, "failed", "invalid quantity");
+                            markRequest(db.get(), requestId, "failed", "invalid slice quantity");
+                            return 0;
+                        });
                         co_return compat::unexpected(sliceQty.error());
                     }
                     cumulativeQuantity += sliceQty->toDouble();
                     if (cumulativeQuantity > approvedQuantity + 1e-12) {
-                        markSlice(db.get(), slice.sliceId, "failed", "quantity exceeds parent");
-                        revokePendingSlices(db.get(), readyPlan->planId, "quantity exceeds parent");
-                        markRequest(db.get(), requestId, "failed", "slice quantity exceeds parent");
+                        co_await runOnDbPool([this, &db, &requestId, &slice, &planId]() -> int {
+                            markSlice(db.get(), slice.sliceId, "failed", "quantity exceeds parent");
+                            revokePendingSlices(db.get(), planId, "quantity exceeds parent");
+                            markRequest(db.get(), requestId, "failed", "slice quantity exceeds parent");
+                            return 0;
+                        });
                         co_return compat::unexpected(BinanceError::fromApiResponse(-92006, "qlib slice quantity exceeds parent"));
                     }
 
@@ -417,12 +456,18 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                     }
 
                     std::string revokeReason;
-                    if (latestDecisionContradicts(db.get(), draft, revokeReason)) {
+                    const bool contradicts = co_await runOnDbPool([this, &db, &draft, &revokeReason]() -> bool {
+                        return latestDecisionContradicts(db.get(), draft, revokeReason);
+                    });
+                    if (contradicts) {
                         if (revokeReason.empty()) {
                             revokeReason = "latest decision unavailable";
                         }
-                        revokePendingSlices(db.get(), readyPlan->planId, revokeReason);
-                        markRequest(db.get(), requestId, "failed", revokeReason);
+                        co_await runOnDbPool([this, &db, &requestId, &planId, &revokeReason]() -> int {
+                            revokePendingSlices(db.get(), planId, revokeReason);
+                            markRequest(db.get(), requestId, "failed", revokeReason);
+                            return 0;
+                        });
                         Logger::instance().log(
                             LogLevel::Warning,
                             "[QLIB_EXEC][SLICE_REVOKED] request=" + requestId +
@@ -433,7 +478,10 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
 
                     MarketOrderDraft sliceDraft = draft;
                     sliceDraft.quantity = *sliceQty;
-                    markSlice(db.get(), slice.sliceId, "submitted", "");
+                    co_await runOnDbPool([this, &db, &slice]() -> int {
+                        markSlice(db.get(), slice.sliceId, "submitted", "");
+                        return 0;
+                    });
                     Logger::instance().log(
                         LogLevel::Info,
                         "[QLIB_EXEC][SLICE_SUBMITTED] request=" + requestId +
@@ -441,15 +489,22 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                             " qty=" + slice.quantity);
                     lastResult = co_await m_nativeFallback->executeMarket(std::move(sliceDraft));
                     if (!lastResult) {
-                        markSlice(db.get(), slice.sliceId, "failed", lastResult.error().toString());
-                        revokePendingSlices(db.get(), readyPlan->planId, "slice submission failed");
-                        markRequest(db.get(), requestId, "failed", "slice submission failed");
+                        const std::string submitError = lastResult.error().toString();
+                        co_await runOnDbPool([this, &db, &requestId, &slice, &planId, &submitError]() -> int {
+                            markSlice(db.get(), slice.sliceId, "failed", submitError);
+                            revokePendingSlices(db.get(), planId, "slice submission failed");
+                            markRequest(db.get(), requestId, "failed", "slice submission failed");
+                            return 0;
+                        });
                         co_return lastResult;
                     }
                     if (lastResult->state != PlacementState::Accepted) {
-                        markSlice(db.get(), slice.sliceId, "failed", "placement not accepted");
-                        revokePendingSlices(db.get(), readyPlan->planId, "slice placement not accepted");
-                        markRequest(db.get(), requestId, "failed", "slice placement not accepted");
+                        co_await runOnDbPool([this, &db, &requestId, &slice, &planId]() -> int {
+                            markSlice(db.get(), slice.sliceId, "failed", "placement not accepted");
+                            revokePendingSlices(db.get(), planId, "slice placement not accepted");
+                            markRequest(db.get(), requestId, "failed", "slice placement not accepted");
+                            return 0;
+                        });
                         co_return lastResult;
                     }
                     if (lastResult->executedQty.has_value()) {
@@ -458,7 +513,10 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                             anyExecutedQtyReported = true;
                         }
                     }
-                    markSlice(db.get(), slice.sliceId, "filled", "");
+                    co_await runOnDbPool([this, &db, &slice]() -> int {
+                        markSlice(db.get(), slice.sliceId, "filled", "");
+                        return 0;
+                    });
                 }
                 // CR-8: stamp the aggregate executed quantity across all slices so the
                 // caller sizes protection orders against the true total fill rather than
@@ -468,14 +526,20 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                     qtyOut << std::fixed << std::setprecision(8) << aggregateExecutedQty;
                     lastResult->executedQty = qtyOut.str();
                 }
-                markRequest(db.get(), requestId, "succeeded", "");
+                co_await runOnDbPool([this, &db, &requestId]() -> int {
+                    markRequest(db.get(), requestId, "succeeded", "");
+                    return 0;
+                });
                 co_return lastResult;
             }
             boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor);
             timer.expires_after(std::chrono::milliseconds(25));
             co_await timer.async_wait(boost::asio::use_awaitable);
         }
-        markRequest(db.get(), requestId, "expired", reason);
+        co_await runOnDbPool([this, &db, &requestId, &reason]() -> int {
+            markRequest(db.get(), requestId, "expired", reason);
+            return 0;
+        });
         if (m_nativeFallback != nullptr) {
             Logger::instance().log(
                 LogLevel::Warning,
@@ -487,11 +551,19 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
             -92001,
             "qlib execution plan not ready: " + reason));
     } catch (const std::exception& e) {
+        // co_await is not permitted inside a handler, so record the failure and
+        // perform the (off-thread) rollback after leaving the catch block. Every
+        // non-throwing path above co_returns, so reaching here implies an error.
+        failureMessage = e.what();
+    }
+
+    co_await runOnDbPool([&db]() -> int {
         std::string ignored;
         (void)orchestration::sqlite_helpers::execSql(db.get(), "ROLLBACK;", ignored);
-        Logger::instance().log(LogLevel::Warning, std::string("[QlibExecutionPlanner] fail closed: ") + e.what());
-        co_return compat::unexpected(BinanceError::fromApiResponse(-92003, e.what()));
-    }
+        return 0;
+    });
+    Logger::instance().log(LogLevel::Warning, std::string("[QlibExecutionPlanner] fail closed: ") + failureMessage);
+    co_return compat::unexpected(BinanceError::fromApiResponse(-92003, failureMessage));
 }
 
 } // namespace engine

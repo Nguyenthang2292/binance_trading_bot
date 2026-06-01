@@ -1791,6 +1791,37 @@ TEST(SignalEngineTest, TimeExitCancelsExitsClosesPositionAndRemovesTracker) {
     EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
 }
 
+TEST(SignalEngineTest, TimeExitFormatsSmallQuantityWithoutScientificNotation) {
+    boost::asio::io_context ioc;
+    MockScannerPort scanner(ioc);
+    MockAccountPort account;
+    account::AccountSnapshot liveSnapshot;
+    Position livePosition;
+    livePosition.symbol = "BTCUSDT";
+    livePosition.positionAmt = 0.00001;
+    liveSnapshot.positions = std::vector<Position>{livePosition};
+    account.nextSnapshot = liveSnapshot;
+    MockOrdersPort orders;
+    strategy::StrategyRegistry registry;
+    MockExposurePort exposure;
+    engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
+
+    engine::TrackedPosition pos;
+    pos.symbol = "BTCUSDT";
+    pos.direction = strategy::Signal::Direction::Long;
+    pos.openedAt = std::chrono::system_clock::now() - std::chrono::hours(2);
+    pos.maxHoldDuration = std::chrono::hours(1);
+    pos.quantity = 0.00001;
+    engine.tracker().add(pos);
+
+    runAwaitable(ioc, engine.processExpiredPositions(std::chrono::system_clock::now()));
+
+    ASSERT_TRUE(orders.lastCloseDraft.has_value());
+    EXPECT_EQ(orders.lastCloseDraft->quantity.value(), "0.00001");
+    EXPECT_EQ(orders.closeCalls, 1);
+    EXPECT_FALSE(engine.tracker().has("BTCUSDT"));
+}
+
 TEST(SignalEngineTest, TimeExitCloseFailureKeepsProtectionsAndTracker) {
     boost::asio::io_context ioc;
     MockScannerPort scanner(ioc);

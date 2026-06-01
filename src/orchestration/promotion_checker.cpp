@@ -92,12 +92,17 @@ PromotionChecker::Stats PromotionChecker::computeStats(
     returns.reserve(static_cast<size_t>(config.lookbackCandles));
     int hitCount = 0;
     double sum = 0.0;
-    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    int rc = SQLITE_ROW;
+    while ((rc = sqlite3_step(stmt.get())) == SQLITE_ROW) {
         const double netReturn = sqlite3_column_double(stmt.get(), 0);
         const int hit = sqlite3_column_int(stmt.get(), 1);
         returns.push_back(netReturn);
         sum += netReturn;
         hitCount += (hit != 0 ? 1 : 0);
+    }
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error(
+            std::string("PromotionChecker step stats query failed: ") + sqlite3_errmsg(db.get()));
     }
 
     out.outcomes = static_cast<int>(returns.size());

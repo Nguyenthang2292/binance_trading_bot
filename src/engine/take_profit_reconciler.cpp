@@ -519,7 +519,7 @@ boost::asio::awaitable<void> TakeProfitReconciler::reconcileOnce(const account::
         const auto tpRounding = direction == strategy::Signal::Direction::Long
             ? PriceRounding::Down
             : PriceRounding::Up;
-        const auto tpPrice = priceToTickDecimal(tpPriceValue, symbolMeta->tickSize, tpRounding);
+        const auto tpPrice = priceToTickDecimal(tpPriceValue, symbolMeta->tickSize, symbolMeta->tickSizeRaw, tpRounding);
         if (!tpPrice.has_value()) {
             Logger::instance().log(
                 LogLevel::Warning,
@@ -528,7 +528,7 @@ boost::asio::awaitable<void> TakeProfitReconciler::reconcileOnce(const account::
             continue;
         }
 
-        const auto tpQty = quantityToStepDecimal(std::abs(position.positionAmt), symbolMeta->stepSize);
+        const auto tpQty = quantityToStepDecimal(std::abs(position.positionAmt), symbolMeta->stepSize, symbolMeta->stepSizeRaw);
         if (!tpQty.has_value()) {
             Logger::instance().log(
                 LogLevel::Warning,

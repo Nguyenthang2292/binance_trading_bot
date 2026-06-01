@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <deque>
 #include <limits>
 #include <vector>
 
@@ -23,18 +24,15 @@ std::optional<TrailingStopDecision> TrailingStopController::evaluate(
         return std::nullopt;
     }
 
-    const auto klines = cache.snapshot(position.symbol, position.trailingInterval);
-    if (!klines || klines->empty()) {
-        return std::nullopt;
-    }
-
     std::vector<Kline> closedKlines;
-    closedKlines.reserve(klines->size());
-    for (const auto& kline : *klines) {
-        if (kline.isClosed) {
-            closedKlines.push_back(kline);
+    cache.read(position.symbol, position.trailingInterval, [&closedKlines](const std::deque<Kline>& klines) {
+        closedKlines.reserve(klines.size());
+        for (const auto& kline : klines) {
+            if (kline.isClosed) {
+                closedKlines.push_back(kline);
+            }
         }
-    }
+    });
     if (closedKlines.empty()) {
         return std::nullopt;
     }

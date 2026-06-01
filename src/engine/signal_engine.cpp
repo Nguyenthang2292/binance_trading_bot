@@ -41,9 +41,25 @@ struct BacktestEvalOutcome {
 };
 
 std::optional<DecimalString> toDecimal(double value) {
+    if (!std::isfinite(value) || value < 0.0) {
+        return std::nullopt;
+    }
     std::ostringstream out;
-    out << std::setprecision(16) << value;
-    auto parsed = DecimalString::parse(out.str());
+    out << std::fixed << std::setprecision(16) << value;
+    std::string text = out.str();
+    const auto dot = text.find('.');
+    if (dot != std::string::npos) {
+        while (text.size() > dot + 1 && text.back() == '0') {
+            text.pop_back();
+        }
+        if (text.back() == '.') {
+            text.pop_back();
+        }
+    }
+    if (text.empty()) {
+        text = "0";
+    }
+    auto parsed = DecimalString::parse(text);
     if (!parsed) {
         return std::nullopt;
     }
@@ -283,16 +299,16 @@ std::optional<int64_t> latestClosedCandleOpenTime(
     const scanner::KlineCache& cache,
     std::string_view symbol,
     std::string_view interval) {
-    const auto klines = cache.snapshot(symbol, interval);
-    if (!klines) {
-        return std::nullopt;
-    }
-    for (auto it = klines->rbegin(); it != klines->rend(); ++it) {
-        if (it->isClosed) {
-            return it->openTime;
+    std::optional<int64_t> result;
+    cache.read(symbol, interval, [&result](const std::deque<Kline>& klines) {
+        for (auto it = klines.rbegin(); it != klines.rend(); ++it) {
+            if (it->isClosed) {
+                result = it->openTime;
+                return;
+            }
         }
-    }
-    return std::nullopt;
+    });
+    return result;
 }
 
 } // namespace
@@ -1642,7 +1658,8 @@ boost::asio::awaitable<Result<std::optional<SignalEngine::OpenPositionPreflight>
         }
     }
 
-    const auto qty = quantityToStepDecimal(size.quantity, stepSize);
+    const auto qty = quantityToStepDecimal(
+        size.quantity, stepSize, symbolMeta.has_value() ? symbolMeta->stepSizeRaw : std::string{});
     if (!qty) {
         m_lastOpenDecision.blockedStage = "qty_decimal";
         co_return compat::unexpected(BinanceError::fromParse("invalid quantity decimal"));
@@ -1678,6 +1695,9 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
     const bool placeOrders = request.placeOrders;
     const double stepSize = preflight.stepSize;
     const double tickSize = preflight.tickSize;
+    // WR-34: exact tick string (when known) for precise tick-decimal counting.
+    const std::string tickSizeRaw =
+        preflight.symbolMeta.has_value() ? preflight.symbolMeta->tickSizeRaw : std::string{};
     const auto size = preflight.size;
     auto qty = std::move(preflight.quantity);
     if (!qty) {
@@ -1963,7 +1983,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
         const auto tpRounding = direction == strategy::Signal::Direction::Long
             ? PriceRounding::Down
             : PriceRounding::Up;
-        const auto tpPrice = priceToTickDecimal(tpPriceValue, tickSize, tpRounding);
+        const auto tpPrice = priceToTickDecimal(tpPriceValue, tickSize, tickSizeRaw, tpRounding);
         if (!tpPrice) {
             m_lastOpenDecision.blockedStage = "tp_decimal";
             const bool closed = co_await closeAndVerifyFlat("tp_decimal");
@@ -2025,7 +2045,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
         const auto slRounding = direction == strategy::Signal::Direction::Long
             ? (customStop ? PriceRounding::Down : PriceRounding::Up)
             : (customStop ? PriceRounding::Up : PriceRounding::Down);
-        const auto slPrice = priceToTickDecimal(initialStopLevel, tickSize, slRounding);
+        const auto slPrice = priceToTickDecimal(initialStopLevel, tickSize, tickSizeRaw, slRounding);
         if (!slPrice) {
             m_lastOpenDecision.blockedStage = "sl_decimal";
             if (tpResult) {
@@ -2520,12 +2540,14 @@ boost::asio::awaitable<void> SignalEngine::processTrailingStops() {
 
         const auto symbolMeta = m_scanner.symbolInfo(pos.symbol);
         const double stepSize = symbolMeta.has_value() && symbolMeta->stepSize > 0.0 ? symbolMeta->stepSize : 0.0;
-        const auto qty = quantityToStepDecimal(pos.quantity, stepSize);
+        const std::string stepSizeRaw = symbolMeta.has_value() ? symbolMeta->stepSizeRaw : std::string{};
+        const std::string tickSizeRaw = symbolMeta.has_value() ? symbolMeta->tickSizeRaw : std::string{};
+        const auto qty = quantityToStepDecimal(pos.quantity, stepSize, stepSizeRaw);
         const double tickSize = symbolMeta.has_value() ? symbolMeta->tickSize : 0.0;
         const auto triggerRounding = pos.direction == strategy::Signal::Direction::Long
             ? PriceRounding::Up
             : PriceRounding::Down;
-        const auto trigger = priceToTickDecimal(decision->newLevel, tickSize, triggerRounding);
+        const auto trigger = priceToTickDecimal(decision->newLevel, tickSize, tickSizeRaw, triggerRounding);
         if (!qty || !trigger) {
             Logger::instance().log(
                 LogLevel::Warning,

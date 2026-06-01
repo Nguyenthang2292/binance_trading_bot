@@ -72,7 +72,8 @@ OrderCapResult TotalNotionalGuard::check(
 }
 
 double TotalNotionalGuard::remotePositionNotional(const Position& pos) {
-    if (std::abs(pos.positionAmt) <= 0.0) {
+    // WR-34: epsilon-based flat check rather than exact-zero on a money double.
+    if (isFlatPositionQuantity(pos.positionAmt)) {
         return 0.0;
     }
     if (std::abs(pos.notional) > 0.0) {

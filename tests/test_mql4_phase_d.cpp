@@ -78,8 +78,11 @@ TEST(Mql4PhaseDTest, QueryOrderFillSummaryAggregatesTrades) {
     double execQty = std::stod(result->executedQty);
     EXPECT_NEAR(execQty, 0.03, 0.0001);
     
-    ASSERT_TRUE(result->avgEntryPrice.has_value());
-    double avgPrice = std::stod(*result->avgEntryPrice);
+    // This order realized PnL (t2 rp=5.0), so it reduced a position: the VWAP is
+    // an exit price, reported in avgExitPrice — never duplicated into entry.
+    EXPECT_FALSE(result->avgEntryPrice.has_value());
+    ASSERT_TRUE(result->avgExitPrice.has_value());
+    double avgPrice = std::stod(*result->avgExitPrice);
     EXPECT_NEAR(avgPrice, 60666.66666, 0.1);
 
     EXPECT_EQ(result->commissionAsset, "USDT");
@@ -167,4 +170,47 @@ TEST(Mql4PhaseDTest, QueryOrderFillSummaryMarksPartialWhenTradeHasInvalidNumbers
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->completeness, FillSummaryCompleteness::Partial);
     EXPECT_EQ(result->executedQty, "0.01");
+    // On any parse failure, aggregate PnL/commission must be suppressed entirely
+    // rather than emitted as a silently-undercounted partial sum.
+    EXPECT_FALSE(result->realizedPnl.has_value());
+    EXPECT_FALSE(result->commission.has_value());
+}
+
+TEST(Mql4PhaseDTest, QueryOrderFillSummarySuppressesPnlWhenRealizedPnlUnparseable) {
+    StubRestClient rest;
+
+    UserTrade t1;
+    t1.symbol = "BTCUSDT";
+    t1.orderId = 9999;
+    t1.qty = "0.01";
+    t1.price = "50000";
+    t1.realizedPnl = "1.5";
+    t1.commission = "0.2";
+    t1.commissionAsset = "USDT";
+    t1.time = 1000;
+
+    UserTrade t2;
+    t2.symbol = "BTCUSDT";
+    t2.orderId = 9999;
+    t2.qty = "0.02";
+    t2.price = "50100";
+    t2.realizedPnl = "not-a-number";
+    t2.commission = "0.4";
+    t2.commissionAsset = "USDT";
+    t2.time = 2000;
+
+    rest.userTradesResult = {t1, t2};
+
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    Orders orders(rest, cfg);
+
+    auto result = runAwaitable(orders.queryOrderFillSummary("BTCUSDT", 9999));
+
+    ASSERT_TRUE(result.has_value());
+    // qty/price parsed for both trades, so executedQty is complete, but the
+    // unparseable realizedPnl flags a parse error and suppresses PnL/commission.
+    EXPECT_EQ(result->completeness, FillSummaryCompleteness::Partial);
+    EXPECT_FALSE(result->realizedPnl.has_value());
+    EXPECT_FALSE(result->commission.has_value());
 }

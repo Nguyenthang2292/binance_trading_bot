@@ -207,6 +207,8 @@ boost::asio::awaitable<bool> LossManager::applyBreakEvenTakeProfit(
     const auto symbolInfo = m_symbolInfoResolver ? m_symbolInfoResolver(tracked.symbol) : std::nullopt;
     const double tickSize = symbolInfo.has_value() ? symbolInfo->tickSize : 0.0;
     const double stepSize = symbolInfo.has_value() ? symbolInfo->stepSize : 0.0;
+    const std::string tickSizeRaw = symbolInfo.has_value() ? symbolInfo->tickSizeRaw : std::string{};
+    const std::string stepSizeRaw = symbolInfo.has_value() ? symbolInfo->stepSizeRaw : std::string{};
 
     const auto be = resolveBreakEvenPrice(livePosition);
     if (!be.has_value() || *be <= 0.0) {
@@ -216,7 +218,7 @@ boost::asio::awaitable<bool> LossManager::applyBreakEvenTakeProfit(
         co_return false;
     }
 
-    const auto closeQty = quantityToStepDecimal(std::abs(livePosition.positionAmt), stepSize);
+    const auto closeQty = quantityToStepDecimal(std::abs(livePosition.positionAmt), stepSize, stepSizeRaw);
     if (!closeQty) {
         Logger::instance().log(
             LogLevel::Warning,
@@ -225,7 +227,7 @@ boost::asio::awaitable<bool> LossManager::applyBreakEvenTakeProfit(
     }
 
     const auto beRounding = livePosition.positionAmt > 0.0 ? PriceRounding::Up : PriceRounding::Down;
-    const auto bePrice = priceToTickDecimal(*be, tickSize, beRounding);
+    const auto bePrice = priceToTickDecimal(*be, tickSize, tickSizeRaw, beRounding);
     if (!bePrice) {
         Logger::instance().log(
             LogLevel::Warning,
@@ -331,8 +333,9 @@ boost::asio::awaitable<bool> LossManager::placeDca(
     LossManagerState& state) {
     const auto symbolInfo = m_symbolInfoResolver ? m_symbolInfoResolver(tracked.symbol) : std::nullopt;
     const double stepSize = symbolInfo.has_value() ? symbolInfo->stepSize : 0.0;
+    const std::string stepSizeRaw = symbolInfo.has_value() ? symbolInfo->stepSizeRaw : std::string{};
 
-    const auto dcaQty = quantityToStepDecimal(state.originalQuantity, stepSize);
+    const auto dcaQty = quantityToStepDecimal(state.originalQuantity, stepSize, stepSizeRaw);
     if (!dcaQty) {
         Logger::instance().log(
             LogLevel::Warning,
@@ -468,10 +471,13 @@ boost::asio::awaitable<bool> LossManager::refreshStopLossAfterDca(
     const auto symbolInfo = m_symbolInfoResolver ? m_symbolInfoResolver(tracked.symbol) : std::nullopt;
     const double tickSize = symbolInfo.has_value() ? symbolInfo->tickSize : 0.0;
     const double stepSize = symbolInfo.has_value() ? symbolInfo->stepSize : 0.0;
-    const auto closeQty = quantityToStepDecimal(std::abs(livePosition.positionAmt), stepSize);
+    const std::string tickSizeRaw = symbolInfo.has_value() ? symbolInfo->tickSizeRaw : std::string{};
+    const std::string stepSizeRaw = symbolInfo.has_value() ? symbolInfo->stepSizeRaw : std::string{};
+    const auto closeQty = quantityToStepDecimal(std::abs(livePosition.positionAmt), stepSize, stepSizeRaw);
     const auto trigger = priceToTickDecimal(
         nextStopLevel,
         tickSize,
+        tickSizeRaw,
         isLong ? PriceRounding::Up : PriceRounding::Down);
     if (!closeQty || !trigger) {
         Logger::instance().log(

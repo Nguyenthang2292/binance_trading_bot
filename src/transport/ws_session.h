@@ -46,6 +46,8 @@ public:
     void stop();
     /** Queues a text frame for serialized async send. */
     void send(std::string message);
+    /** Updates the stream path used by the next reconnect. */
+    void updatePath(std::string path);
 
 private:
     using WebSocket = boost::beast::websocket::stream<

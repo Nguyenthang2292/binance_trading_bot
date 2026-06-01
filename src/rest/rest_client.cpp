@@ -726,56 +726,105 @@ asio::awaitable<Result<std::vector<ExchangeSymbol>>> RestClient::exchangeInfo() 
             s.pricePrecision = static_cast<int>(intField(item, "pricePrecision"));
             s.quantityPrecision = static_cast<int>(intField(item, "quantityPrecision"));
             s.baseAssetPrecision = static_cast<int>(intField(item, "baseAssetPrecision"));
+            // WR-34: read each exchange-filter increment as the exact decimal
+            // string the exchange sent, then derive the double from that same
+            // string (simdjson ondemand fields cannot be read twice). The raw
+            // string is preserved on the struct so tick-decimal counting at
+            // order-formatting time is exact rather than reconstructed from a
+            // lossy double.
+            auto toNum = [](const std::string& s) -> double {
+                if (s.empty()) {
+                    return 0.0;
+                }
+                try {
+                    return std::stod(s);
+                } catch (...) {
+                    return 0.0;
+                }
+            };
             auto filters = item.find_field_unordered("filters").get_array().value();
             for (auto filterValue : filters) {
                 auto filter = filterValue.get_object().value();
                 const auto type = stringField(filter, "filterType");
                 if (type == "PRICE_FILTER") {
+                    const std::string minPriceRaw = decimalField(filter, "minPrice");
+                    const std::string maxPriceRaw = decimalField(filter, "maxPrice");
+                    const std::string tickSizeRaw = decimalField(filter, "tickSize");
                     s.priceFilter = ExchangePriceFilter{
-                        .minPrice = doubleField(filter, "minPrice"),
-                        .maxPrice = doubleField(filter, "maxPrice"),
-                        .tickSize = doubleField(filter, "tickSize"),
+                        .minPrice = toNum(minPriceRaw),
+                        .maxPrice = toNum(maxPriceRaw),
+                        .tickSize = toNum(tickSizeRaw),
+                        .minPriceRaw = minPriceRaw,
+                        .maxPriceRaw = maxPriceRaw,
+                        .tickSizeRaw = tickSizeRaw,
                     };
                     s.tickSize = s.priceFilter->tickSize;
+                    s.tickSizeRaw = tickSizeRaw;
                 } else if (type == "LOT_SIZE") {
+                    const std::string minQtyRaw = decimalField(filter, "minQty");
+                    const std::string maxQtyRaw = decimalField(filter, "maxQty");
+                    const std::string stepSizeRaw = decimalField(filter, "stepSize");
                     s.lotSize = ExchangeLotSizeFilter{
-                        .minQty = doubleField(filter, "minQty"),
-                        .maxQty = doubleField(filter, "maxQty"),
-                        .stepSize = doubleField(filter, "stepSize"),
+                        .minQty = toNum(minQtyRaw),
+                        .maxQty = toNum(maxQtyRaw),
+                        .stepSize = toNum(stepSizeRaw),
+                        .minQtyRaw = minQtyRaw,
+                        .maxQtyRaw = maxQtyRaw,
+                        .stepSizeRaw = stepSizeRaw,
                     };
                     s.stepSize = s.lotSize->stepSize;
                     s.minQty = s.lotSize->minQty;
                     s.maxQty = s.lotSize->maxQty;
+                    s.stepSizeRaw = stepSizeRaw;
+                    s.minQtyRaw = minQtyRaw;
+                    s.maxQtyRaw = maxQtyRaw;
                 } else if (type == "MARKET_LOT_SIZE") {
+                    const std::string minQtyRaw = decimalField(filter, "minQty");
+                    const std::string maxQtyRaw = decimalField(filter, "maxQty");
+                    const std::string stepSizeRaw = decimalField(filter, "stepSize");
                     s.marketLotSize = ExchangeLotSizeFilter{
-                        .minQty = doubleField(filter, "minQty"),
-                        .maxQty = doubleField(filter, "maxQty"),
-                        .stepSize = doubleField(filter, "stepSize"),
+                        .minQty = toNum(minQtyRaw),
+                        .maxQty = toNum(maxQtyRaw),
+                        .stepSize = toNum(stepSizeRaw),
+                        .minQtyRaw = minQtyRaw,
+                        .maxQtyRaw = maxQtyRaw,
+                        .stepSizeRaw = stepSizeRaw,
                     };
                     if (!s.lotSize.has_value()) {
                         s.stepSize = s.marketLotSize->stepSize;
                         s.minQty = s.marketLotSize->minQty;
                         s.maxQty = s.marketLotSize->maxQty;
+                        s.stepSizeRaw = stepSizeRaw;
+                        s.minQtyRaw = minQtyRaw;
+                        s.maxQtyRaw = maxQtyRaw;
                     }
                 } else if (type == "MIN_NOTIONAL") {
+                    const std::string minNotionalRaw = decimalField(filter, "notional");
                     s.minNotionalFilter = ExchangeNotionalFilter{
-                        .minNotional = doubleField(filter, "notional"),
+                        .minNotional = toNum(minNotionalRaw),
                         .maxNotional = 0.0,
                         .applyMinToMarket = boolField(filter, "applyToMarket"),
                         .applyMaxToMarket = false,
                         .avgPriceMins = static_cast<int>(intField(filter, "avgPriceMins")),
+                        .minNotionalRaw = minNotionalRaw,
                     };
                     s.minNotional = s.minNotionalFilter->minNotional;
+                    s.minNotionalRaw = minNotionalRaw;
                 } else if (type == "NOTIONAL") {
+                    const std::string minNotionalRaw = decimalField(filter, "minNotional");
+                    const std::string maxNotionalRaw = decimalField(filter, "maxNotional");
                     s.notionalFilter = ExchangeNotionalFilter{
-                        .minNotional = doubleField(filter, "minNotional"),
-                        .maxNotional = doubleField(filter, "maxNotional"),
+                        .minNotional = toNum(minNotionalRaw),
+                        .maxNotional = toNum(maxNotionalRaw),
                         .applyMinToMarket = boolField(filter, "applyMinToMarket"),
                         .applyMaxToMarket = boolField(filter, "applyMaxToMarket"),
                         .avgPriceMins = static_cast<int>(intField(filter, "avgPriceMins")),
+                        .minNotionalRaw = minNotionalRaw,
+                        .maxNotionalRaw = maxNotionalRaw,
                     };
                     if (s.minNotional <= 0.0) {
                         s.minNotional = s.notionalFilter->minNotional;
+                        s.minNotionalRaw = minNotionalRaw;
                     }
                 }
             }
