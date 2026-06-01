@@ -58,3 +58,20 @@ TEST(StrategyInterfaceTest, RegistryIgnoresNullStrategies) {
     EXPECT_TRUE(registry.forInterval("1h").empty());
 }
 
+TEST(StrategyInterfaceTest, SharedSnapshotSurvivesRegistryClear) {
+    strategy::StrategyRegistry registry;
+
+    strategy::StrategyConfig cfg;
+    cfg.name = "snapshot";
+    cfg.intervals = {"15m"};
+    registry.add(std::make_unique<MockStrategy>(cfg));
+
+    const auto snapshot = registry.allShared();
+    ASSERT_EQ(snapshot.size(), 1u);
+    registry.clear();
+
+    EXPECT_TRUE(registry.all().empty());
+    ASSERT_NE(snapshot[0], nullptr);
+    EXPECT_EQ(snapshot[0]->config().name, "snapshot");
+}
+

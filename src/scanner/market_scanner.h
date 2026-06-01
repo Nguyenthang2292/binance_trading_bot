@@ -38,6 +38,7 @@ public:
         bool betaDailyKlinesEnabled{false};
         std::string betaDailyInterval{"1d"};
         int betaDailyLimit{31};
+        std::chrono::seconds streamReadyTimeout{10};
     };
 
     MarketScanner(RestClient& rest, BinanceContext& ctx, Config config);
@@ -54,6 +55,11 @@ public:
 
     static std::vector<std::string> tradableUsdtPerpetualSymbols(const std::vector<ExchangeSymbol>& exchangeInfo);
     static size_t streamConnectionCount(size_t symbolCount, size_t intervalCount, size_t maxStreamsPerConnection);
+    // Waits until every websocket connection has observed at least one kline event or timeout elapses.
+    static boost::asio::awaitable<Result<void>> waitForConnectionsReady(
+        boost::asio::io_context& ioc,
+        const std::vector<std::shared_ptr<std::atomic_bool>>& readyFlags,
+        std::chrono::milliseconds timeout);
 
     using KlineClosedCb = std::function<void(
         std::string_view symbol,
@@ -70,7 +76,7 @@ private:
         std::future<void> done;
     };
 
-    boost::asio::awaitable<void> subscribeStreams(const std::vector<std::string>& symbols);
+    boost::asio::awaitable<Result<void>> subscribeStreams(const std::vector<std::string>& symbols);
     boost::asio::awaitable<void> backgroundBackfill(
         std::vector<std::string> symbols,
         std::shared_ptr<BackfillState> state);
@@ -85,6 +91,7 @@ private:
     std::vector<std::unique_ptr<WsClient>> m_wsClients;
     KlineClosedCb m_onKlineClosed;
     std::unordered_map<std::string, ExchangeSymbol> m_symbolInfo;
+    mutable std::mutex m_stateMutex;
     std::mutex m_backfillMutex;
     std::shared_ptr<BackfillState> m_backfillState;
 };

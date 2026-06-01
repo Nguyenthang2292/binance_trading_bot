@@ -4,6 +4,7 @@
 
 #include <simdjson.h>
 
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -23,9 +24,23 @@ inline std::string stringField(simdjson::dom::element object, std::string_view f
 }
 
 inline int64_t intField(simdjson::dom::element object, std::string_view field, int64_t fallback = 0) {
+    simdjson::dom::element value;
+    if (object[field].get(value)) {
+        return fallback;
+    }
     int64_t out = fallback;
-    (void)object[field].get(out);
-    return out;
+    if (!value.get(out)) {
+        return out;
+    }
+    auto s = asString(value);
+    if (s.empty()) {
+        return fallback;
+    }
+    try {
+        return std::stoll(std::string(s));
+    } catch (...) {
+        return fallback;
+    }
 }
 
 inline bool boolField(simdjson::dom::element object, std::string_view field, bool fallback = false) {
@@ -50,7 +65,15 @@ inline double doubleField(simdjson::dom::element object, std::string_view field,
     return toDouble(value, fallback);
 }
 
-inline OrderSide parseSide(std::string_view value) { return value == "SELL" ? OrderSide::Sell : OrderSide::Buy; }
+inline OrderSide parseSide(std::string_view value) {
+    if (value == "SELL") {
+        return OrderSide::Sell;
+    }
+    if (value == "BUY") {
+        return OrderSide::Buy;
+    }
+    throw std::invalid_argument("unknown order side in websocket payload");
+}
 
 inline OrderType parseOrderType(std::string_view value) {
     if (value == "LIMIT") return OrderType::Limit;

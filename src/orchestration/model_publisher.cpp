@@ -98,6 +98,45 @@ std::string sha256File(const std::filesystem::path& path) {
     return digestToHex(digest.data(), digestLen);
 }
 
+bool isSafePublishId(std::string_view value) {
+    if (value.empty() || value.size() > 128) {
+        return false;
+    }
+    for (const char ch : value) {
+        const bool keep = (ch >= 'a' && ch <= 'z') ||
+            (ch >= 'A' && ch <= 'Z') ||
+            (ch >= '0' && ch <= '9') ||
+            ch == '_' || ch == '-';
+        if (!keep) {
+            return false;
+        }
+    }
+    return value != "." && value != "..";
+}
+
+bool pathIsContainedIn(const std::filesystem::path& root, const std::filesystem::path& candidate) {
+    std::error_code ec;
+    const auto rootPath = std::filesystem::weakly_canonical(std::filesystem::absolute(root), ec);
+    if (ec) {
+        return false;
+    }
+    ec.clear();
+    const auto candidatePath = std::filesystem::weakly_canonical(std::filesystem::absolute(candidate), ec);
+    if (ec) {
+        return false;
+    }
+    const auto rel = candidatePath.lexically_relative(rootPath);
+    if (rel.empty() || rel.is_absolute()) {
+        return false;
+    }
+    for (const auto& part : rel) {
+        if (part == "..") {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool ensureRuntimeStateExists(
     sqlite3* db,
     const std::string& modelId,
@@ -180,8 +219,20 @@ void removeBestEffort(const std::filesystem::path& path) {
 
 bool ModelPublisher::publish(const ModelPublishRequest& request, std::string& error) {
     try {
+        if (!isSafePublishId(request.runId)) {
+            error = "unsafe run_id";
+            return false;
+        }
+        if (!isSafePublishId(request.modelId)) {
+            error = "unsafe model_id";
+            return false;
+        }
         const std::filesystem::path stagingRoot(request.stagingDir);
         const std::filesystem::path runStaging = stagingRoot / request.runId;
+        if (!pathIsContainedIn(stagingRoot, runStaging)) {
+            error = "staging run path escapes staging dir";
+            return false;
+        }
         const std::filesystem::path modelPath = runStaging / "model.txt";
         const std::filesystem::path reportPath = runStaging / "report.json";
         if (!std::filesystem::exists(modelPath)) {
@@ -218,6 +269,10 @@ bool ModelPublisher::publish(const ModelPublishRequest& request, std::string& er
 
         const std::filesystem::path artifactRunDir =
             std::filesystem::path(request.artifactsDir) / request.modelId / request.runId;
+        if (!pathIsContainedIn(request.artifactsDir, artifactRunDir)) {
+            error = "artifact run path escapes artifacts dir";
+            return false;
+        }
         const std::filesystem::path publishedModelPath = artifactRunDir / "model.txt";
         const std::filesystem::path publishedReportPath = artifactRunDir / "report.json";
 

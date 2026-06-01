@@ -40,6 +40,7 @@ protected:
         AccountSnapshot snapshot;
         snapshot.capturedAt = std::chrono::system_clock::now();
         snapshot.account = std::move(acc);
+        snapshot.multiAssetsMargin = false;
         snapshot.compatibility = std::move(cfg);
         return snapshot;
     }
@@ -188,6 +189,23 @@ TEST_F(Mql4AccountAdapterTest, UsesDisplayAssetValueInsteadOfAccountTotals) {
     EXPECT_DOUBLE_EQ(*adapter.accountProfit(), 500.0);
 }
 
+TEST_F(Mql4AccountAdapterTest, PrefersAccountAssetsOverBalanceSnapshotForMarginFields) {
+    auto snapshot = createBasicSnapshot();
+    Balance staleBalanceRow = snapshot.account.assets.front();
+    staleBalanceRow.marginBalance = 1.0;
+    staleBalanceRow.initialMargin = 1.0;
+    staleBalanceRow.unrealizedProfit = 1.0;
+    staleBalanceRow.walletBalance = 1.0;
+    snapshot.balances = std::vector<Balance>{staleBalanceRow};
+
+    Mql4AccountAdapter adapter(std::move(snapshot));
+    EXPECT_DOUBLE_EQ(*adapter.accountBalance(), 10000.0);
+    EXPECT_DOUBLE_EQ(*adapter.accountEquity(), 10500.0);
+    EXPECT_DOUBLE_EQ(*adapter.accountMargin(), 1000.0);
+    EXPECT_DOUBLE_EQ(*adapter.accountFreeMargin(), 9500.0);
+    EXPECT_DOUBLE_EQ(*adapter.accountProfit(), 500.0);
+}
+
 TEST_F(Mql4AccountAdapterTest, FreeMarginIgnoresAvailableBalanceReserveWhenNoPositions) {
     auto snapshot = createBasicSnapshot();
     snapshot.account.positions.clear();
@@ -238,6 +256,7 @@ TEST_F(Mql4AccountAdapterTest, MultiAssetMode) {
     
     AccountSnapshot snapshot;
     snapshot.account = std::move(acc);
+    snapshot.multiAssetsMargin = false;
     snapshot.compatibility = std::move(cfg);
     
     Mql4AccountAdapter adapter(std::move(snapshot));
@@ -257,6 +276,16 @@ TEST_F(Mql4AccountAdapterTest, MultiAssetsMarginIsUnsupportedForSingleAssetMappi
     auto freeMargin = adapter.accountFreeMargin();
     EXPECT_FALSE(freeMargin.has_value());
     EXPECT_EQ(freeMargin.error(), AccountMappingError::Unsupported);
+}
+
+TEST_F(Mql4AccountAdapterTest, UnknownMultiAssetsMarginIsUnsupportedForSingleAssetMappings) {
+    auto snapshot = createBasicSnapshot();
+    snapshot.multiAssetsMargin.reset();
+    Mql4AccountAdapter adapter(std::move(snapshot));
+
+    auto balance = adapter.accountBalance();
+    EXPECT_FALSE(balance.has_value());
+    EXPECT_EQ(balance.error(), AccountMappingError::Unsupported);
 }
 
 TEST_F(Mql4AccountAdapterTest, CapturedAtAccessorReturnsSnapshotTimestamp) {

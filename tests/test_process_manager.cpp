@@ -3,6 +3,7 @@
 #include "orchestration/process_manager.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -49,6 +50,70 @@ std::vector<std::string> cmdLongRunning() {
 #else
     return {"/bin/sh", "-c", "sleep 30"};
 #endif
+}
+
+std::vector<std::string> cmdPrintSecretEnv() {
+#if defined(_WIN32)
+    return {"cmd.exe", "/c", "if defined BINANCE_API_SECRET (echo leaked) else (echo missing)"};
+#else
+    return {"/bin/sh", "-c", "if [ -n \"$BINANCE_API_SECRET\" ]; then echo leaked; else echo missing; fi"};
+#endif
+}
+
+std::vector<std::string> cmdEchoSecretLikeOutput() {
+#if defined(_WIN32)
+    return {"cmd.exe", "/c", "echo BINANCE_API_SECRET=supersecret"};
+#else
+    return {"/bin/sh", "-c", "echo BINANCE_API_SECRET=supersecret"};
+#endif
+}
+
+void setEnvVar(const char* name, const std::string& value) {
+#if defined(_WIN32)
+    _putenv_s(name, value.c_str());
+#else
+    setenv(name, value.c_str(), 1);
+#endif
+}
+
+void unsetEnvVar(const char* name) {
+#if defined(_WIN32)
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
+class EnvVarGuard {
+public:
+    EnvVarGuard(const char* name, const std::string& value)
+        : m_name(name) {
+        if (const char* previous = std::getenv(name)) {
+            m_hadPrevious = true;
+            m_previous = previous;
+        }
+        setEnvVar(name, value);
+    }
+
+    ~EnvVarGuard() {
+        if (m_hadPrevious) {
+            setEnvVar(m_name.c_str(), m_previous);
+        } else {
+            unsetEnvVar(m_name.c_str());
+        }
+    }
+
+private:
+    std::string m_name;
+    bool m_hadPrevious{false};
+    std::string m_previous;
+};
+
+std::string readFile(const std::string& path) {
+    std::ifstream input(path);
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    return contents.str();
 }
 
 } // namespace
@@ -137,6 +202,42 @@ TEST(ProcessManagerTest, LogFileCreated) {
     EXPECT_TRUE(std::filesystem::exists(result.logPath));
 }
 
+TEST(ProcessManagerTest, SpawnUsesSanitizedEnvironment) {
+    const auto tmp = makeTempDir();
+    TempDirGuard guard{tmp};
+    EnvVarGuard secret("BINANCE_API_SECRET", "do-not-inherit");
+
+    orchestration::ProcessManager pm(orchestration::ProcessManagerConfig{
+        .maxAttempts = 1,
+        .backoffBaseSeconds = 0,
+        .timeoutSeconds = 10,
+        .logDir = tmp.string(),
+    });
+
+    const auto result = pm.spawnWithRetry(cmdPrintSecretEnv());
+    EXPECT_TRUE(result.succeeded);
+    EXPECT_NE(readFile(result.logPath).find("missing"), std::string::npos);
+    EXPECT_EQ(readFile(result.logPath).find("leaked"), std::string::npos);
+}
+
+TEST(ProcessManagerTest, SpawnRedactsSecretLikeOutput) {
+    const auto tmp = makeTempDir();
+    TempDirGuard guard{tmp};
+
+    orchestration::ProcessManager pm(orchestration::ProcessManagerConfig{
+        .maxAttempts = 1,
+        .backoffBaseSeconds = 0,
+        .timeoutSeconds = 10,
+        .logDir = tmp.string(),
+    });
+
+    const auto result = pm.spawnWithRetry(cmdEchoSecretLikeOutput());
+    EXPECT_TRUE(result.succeeded);
+    const std::string logText = readFile(result.logPath);
+    EXPECT_EQ(logText.find("supersecret"), std::string::npos);
+    EXPECT_NE(logText.find("[REDACTED]"), std::string::npos);
+}
+
 #if !defined(_WIN32)
 TEST(ProcessManagerTest, PosixExecFailureWritesDiagnosticToLog) {
     const auto tmp = makeTempDir();
@@ -154,10 +255,9 @@ TEST(ProcessManagerTest, PosixExecFailureWritesDiagnosticToLog) {
     EXPECT_FALSE(result.timedOut);
     EXPECT_EQ(result.exitCode, 127);
 
-    std::ifstream input(result.logPath);
-    std::ostringstream contents;
-    contents << input.rdbuf();
-    EXPECT_NE(contents.str().find("execvp failed errno="), std::string::npos);
-    EXPECT_NE(contents.str().find("cmd=/definitely/not/a/real/executable"), std::string::npos);
+    std::istringstream contents(readFile(result.logPath));
+    const auto logText = contents.str();
+    EXPECT_NE(logText.find("execvp failed errno="), std::string::npos);
+    EXPECT_NE(logText.find("cmd=/definitely/not/a/real/executable"), std::string::npos);
 }
 #endif

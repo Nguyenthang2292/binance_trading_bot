@@ -6,6 +6,17 @@
 
 namespace scanner {
 
+namespace {
+
+bool shouldReplaceCachedKline(const Kline& existing, const Kline& incoming) {
+    if (existing.isClosed && !incoming.isClosed) {
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
 /**
  * KlineCache constructor.
  *
@@ -41,7 +52,9 @@ void KlineCache::update(std::string_view symbol, std::string_view interval, cons
     std::unique_lock lock(m_mutex);
     auto& bucket = m_data[std::string(symbol)][std::string(interval)];
     if (!bucket.empty() && bucket.back().openTime == kline.openTime) {
-        bucket.back() = kline;
+        if (shouldReplaceCachedKline(bucket.back(), kline)) {
+            bucket.back() = kline;
+        }
         return;
     }
     if (!bucket.empty() && kline.openTime < bucket.back().openTime) {
@@ -87,11 +100,17 @@ void KlineCache::merge(std::string_view symbol, std::string_view interval, std::
 
     std::unordered_map<int64_t, Kline> mergedByOpenTime;
     mergedByOpenTime.reserve(bucket.size() + klines.size());
+    auto insertFreshest = [&mergedByOpenTime](const Kline& kline) {
+        auto [it, inserted] = mergedByOpenTime.emplace(kline.openTime, kline);
+        if (!inserted && shouldReplaceCachedKline(it->second, kline)) {
+            it->second = kline;
+        }
+    };
     for (const auto& kline : bucket) {
-        mergedByOpenTime[kline.openTime] = kline;
+        insertFreshest(kline);
     }
     for (const auto& kline : klines) {
-        mergedByOpenTime[kline.openTime] = kline;
+        insertFreshest(kline);
     }
 
     std::vector<Kline> ordered;

@@ -4,6 +4,7 @@
 #include "risk/irisk_port.h"
 #include "risk/risk_metrics.h"
 
+#include <atomic>
 #include <shared_mutex>
 #include <utility>
 
@@ -43,6 +44,7 @@ private:
     RiskMetricsResult m_latest;
     RiskStatus m_status{RiskStatus::OK};
     int64_t m_lastComputeMs{0};
+    std::atomic<bool> m_recomputeInFlight{false};
 };
 
 } // namespace engine

@@ -5,6 +5,9 @@
 
 #include <algorithm>
 #include <sstream>
+#include <stdexcept>
+#include <variant>
+#include <vector>
 
 namespace {
 
@@ -37,8 +40,9 @@ std::vector<std::pair<double, double>> parseLevels(simdjson::dom::element levels
 }
 
 MarketEvent parseMarketEvent(std::string_view stream, simdjson::dom::element data) {
+    const std::string streamLower = lower(std::string(stream));
     const auto eventType = ws_parse::stringField(data, "e");
-    if (eventType == "aggTrade" || stream.find("@aggTrade") != std::string_view::npos) {
+    if (eventType == "aggTrade" || streamLower.find("@aggtrade") != std::string::npos) {
         AggTradeEvent e;
         e.symbol = ws_parse::stringField(data, "s");
         e.aggTradeId = ws_parse::intField(data, "a");
@@ -48,7 +52,7 @@ MarketEvent parseMarketEvent(std::string_view stream, simdjson::dom::element dat
         e.isBuyerMaker = ws_parse::boolField(data, "m");
         return e;
     }
-    if (eventType == "kline" || stream.find("@kline_") != std::string_view::npos) {
+    if (eventType == "kline" || streamLower.find("@kline_") != std::string::npos) {
         KlineEvent e;
         e.symbol = ws_parse::stringField(data, "s");
         simdjson::dom::element k;
@@ -68,7 +72,7 @@ MarketEvent parseMarketEvent(std::string_view stream, simdjson::dom::element dat
         e.kline.isClosed = ws_parse::boolField(k, "x");
         return e;
     }
-    if (eventType == "markPriceUpdate" || stream.find("@markPrice") != std::string_view::npos) {
+    if (eventType == "markPriceUpdate" || streamLower.find("@markprice") != std::string::npos) {
         MarkPriceEvent e;
         e.symbol = ws_parse::stringField(data, "s");
         e.markPrice = ws_parse::doubleField(data, "p");
@@ -79,17 +83,19 @@ MarketEvent parseMarketEvent(std::string_view stream, simdjson::dom::element dat
         e.time = ws_parse::intField(data, "E");
         return e;
     }
-    if (eventType == "bookTicker" || stream.find("@bookTicker") != std::string_view::npos) {
+    if (eventType == "bookTicker" || streamLower.find("@bookticker") != std::string::npos) {
         BookTickerEvent e;
         e.symbol = ws_parse::stringField(data, "s");
+        e.updateId = ws_parse::intField(data, "u");
         e.bidPrice = ws_parse::doubleField(data, "b");
         e.bidQty = ws_parse::doubleField(data, "B");
         e.askPrice = ws_parse::doubleField(data, "a");
         e.askQty = ws_parse::doubleField(data, "A");
+        e.eventTime = ws_parse::intField(data, "E");
         e.transactTime = ws_parse::intField(data, "T");
         return e;
     }
-    if (eventType == "depthUpdate" || stream.find("@depth") != std::string_view::npos) {
+    if (eventType == "depthUpdate" || streamLower.find("@depth") != std::string::npos) {
         DepthEvent e;
         e.symbol = ws_parse::stringField(data, "s");
         e.firstUpdateId = ws_parse::intField(data, "U");
@@ -101,7 +107,7 @@ MarketEvent parseMarketEvent(std::string_view stream, simdjson::dom::element dat
         if (!data["a"].get(asks)) e.asks = parseLevels(asks);
         return e;
     }
-    if (eventType == "forceOrder" || stream.find("@forceOrder") != std::string_view::npos) {
+    if (eventType == "forceOrder" || streamLower.find("@forceorder") != std::string::npos) {
         LiquidationEvent e;
         simdjson::dom::element o;
         if (data["o"].get(o)) return e;
@@ -110,81 +116,132 @@ MarketEvent parseMarketEvent(std::string_view stream, simdjson::dom::element dat
         e.type = ws_parse::parseOrderType(ws_parse::stringField(o, "o"));
         e.timeInForce = ws_parse::parseTimeInForce(ws_parse::stringField(o, "f"));
         e.status = ws_parse::stringField(o, "X");
-        e.price = ws_parse::doubleField(o, "p");
-        e.origQty = ws_parse::doubleField(o, "q");
-        e.lastFilledQty = ws_parse::doubleField(o, "l");
-        e.avgPrice = ws_parse::doubleField(o, "ap");
-        e.cumFilledQty = ws_parse::doubleField(o, "z");
+        e.price = ws_parse::stringField(o, "p", "0");
+        e.origQty = ws_parse::stringField(o, "q", "0");
+        e.lastFilledQty = ws_parse::stringField(o, "l", "0");
+        e.avgPrice = ws_parse::stringField(o, "ap", "0");
+        e.cumFilledQty = ws_parse::stringField(o, "z", "0");
         e.time = ws_parse::intField(o, "T");
         return e;
     }
 
-    CompositeIndexEvent e;
-    e.symbol = ws_parse::stringField(data, "s");
-    e.price = ws_parse::doubleField(data, "p");
-    e.time = ws_parse::intField(data, "E");
-    return e;
+    if (eventType == "compositeIndex" || streamLower.find("@compositeindex") != std::string::npos) {
+        CompositeIndexEvent e;
+        e.symbol = ws_parse::stringField(data, "s");
+        e.price = ws_parse::doubleField(data, "p");
+        e.time = ws_parse::intField(data, "E");
+        return e;
+    }
+
+    return UnknownMarketEvent{
+        .stream = std::string(stream),
+        .eventType = eventType,
+    };
 }
 
 } // namespace
 
 WsClient::WsClient(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl, ContextConfig cfg)
-    : m_ioc(ioc), m_ssl(ssl), m_cfg(std::move(cfg)) {}
+    : m_ioc(ioc), m_ssl(ssl), m_cfg(std::move(cfg)) {
+    m_cfg.clearSecretKey();
+}
+
+WsClient::~WsClient() {
+    // Block new callbacks and wait for any in-flight callback to finish before
+    // member state is destroyed (see CallbackGuard docs). Holding the lock here
+    // is safe because WsClient is destroyed off the io_context threads that run
+    // the callbacks, so there is no reentrancy/deadlock.
+    {
+        std::lock_guard<std::mutex> lock(m_callbackGuard->mutex);
+        m_callbackGuard->alive = false;
+    }
+    disconnect();
+}
 
 void WsClient::subscribeAggTrade(std::string symbol, MarketEventCb cb) {
-    m_subscriptions[lower(symbol) + "@aggTrade"] = std::move(cb);
+    std::lock_guard lock(m_stateMutex);
+    m_subscriptions[lower(symbol) + "@aggtrade"] = std::move(cb);
 }
 
 void WsClient::subscribeKline(std::string symbol, std::string interval, MarketEventCb cb) {
-    m_subscriptions[lower(symbol) + "@kline_" + interval] = std::move(cb);
+    std::lock_guard lock(m_stateMutex);
+    m_subscriptions[lower(symbol) + "@kline_" + lower(interval)] = std::move(cb);
 }
 
 void WsClient::subscribeMarkPrice(std::string symbol, MarketEventCb cb) {
-    m_subscriptions[lower(symbol) + "@markPrice"] = std::move(cb);
+    std::lock_guard lock(m_stateMutex);
+    m_subscriptions[lower(symbol) + "@markprice"] = std::move(cb);
 }
 
 void WsClient::subscribeBookTicker(std::string symbol, MarketEventCb cb) {
-    m_subscriptions[lower(symbol) + "@bookTicker"] = std::move(cb);
+    std::lock_guard lock(m_stateMutex);
+    const auto stream = lower(symbol) + "@bookticker";
+    m_lastBookTickerUpdateIds.erase(stream);
+    m_subscriptions[stream] = std::move(cb);
 }
 
 void WsClient::subscribeDepth(std::string symbol, int levels, std::string updateSpeed, MarketEventCb cb) {
-    m_subscriptions[lower(symbol) + "@depth" + std::to_string(levels) + "@" + updateSpeed] = std::move(cb);
+    std::lock_guard lock(m_stateMutex);
+    m_subscriptions[lower(symbol) + "@depth" + std::to_string(levels) + "@" + lower(updateSpeed)] = std::move(cb);
 }
 
 void WsClient::subscribeLiquidation(std::string symbol, MarketEventCb cb) {
-    m_subscriptions[lower(symbol) + "@forceOrder"] = std::move(cb);
+    std::lock_guard lock(m_stateMutex);
+    m_subscriptions[lower(symbol) + "@forceorder"] = std::move(cb);
 }
 
 void WsClient::subscribeCompositeIndex(std::string symbol, MarketEventCb cb) {
-    m_subscriptions[lower(symbol) + "@compositeIndex"] = std::move(cb);
+    std::lock_guard lock(m_stateMutex);
+    m_subscriptions[lower(symbol) + "@compositeindex"] = std::move(cb);
 }
 
 void WsClient::unsubscribe(std::string streamName) {
     streamName = lower(std::move(streamName));
-    m_subscriptions.erase(streamName);
-    if (m_session) {
-        m_session->send("{\"method\":\"UNSUBSCRIBE\",\"params\":[\"" + streamName + "\"],\"id\":1}");
+    std::shared_ptr<WsSession> session;
+    {
+        std::lock_guard lock(m_stateMutex);
+        m_subscriptions.erase(streamName);
+        m_lastBookTickerUpdateIds.erase(streamName);
+        session = m_session;
+    }
+    if (session) {
+        session->send("{\"method\":\"UNSUBSCRIBE\",\"params\":[\"" + streamName + "\"],\"id\":1}");
     }
 }
 
 void WsClient::unsubscribeAll() {
-    for (const auto& [stream, _] : m_subscriptions) {
-        if (m_session) {
-            m_session->send("{\"method\":\"UNSUBSCRIBE\",\"params\":[\"" + stream + "\"],\"id\":1}");
+    std::vector<std::string> streams;
+    std::shared_ptr<WsSession> session;
+    {
+        std::lock_guard lock(m_stateMutex);
+        streams.reserve(m_subscriptions.size());
+        for (const auto& [stream, _] : m_subscriptions) {
+            streams.push_back(stream);
         }
+        m_subscriptions.clear();
+        m_lastBookTickerUpdateIds.clear();
+        session = m_session;
     }
-    m_subscriptions.clear();
+    if (!session) {
+        return;
+    }
+    for (const auto& stream : streams) {
+        session->send("{\"method\":\"UNSUBSCRIBE\",\"params\":[\"" + stream + "\"],\"id\":1}");
+    }
 }
 
 void WsClient::setOnDisconnect(std::function<void()> cb) {
+    std::lock_guard lock(m_stateMutex);
     m_onDisconnect = std::move(cb);
 }
 
 void WsClient::setOnReconnect(std::function<void()> cb) {
+    std::lock_guard lock(m_stateMutex);
     m_onReconnect = std::move(cb);
 }
 
 std::string WsClient::buildStreamPath() const {
+    std::lock_guard lock(m_stateMutex);
     std::ostringstream out;
     out << "/stream?streams=";
     bool first = true;
@@ -197,58 +254,153 @@ std::string WsClient::buildStreamPath() const {
 }
 
 void WsClient::connect() {
-    if (m_subscriptions.empty()) {
+    std::string path;
+    std::shared_ptr<WsSession> oldSession;
+    {
+        std::lock_guard lock(m_stateMutex);
+        if (m_subscriptions.empty()) {
+            return;
+        }
+        oldSession = std::move(m_session);
+        m_session = std::make_shared<WsSession>(m_ioc, m_ssl, wsHost(m_cfg.testnet), m_cfg.socks5Proxy);
+    }
+    path = buildStreamPath();
+
+    if (oldSession) {
+        oldSession->stop();
+    }
+
+    std::shared_ptr<WsSession> session;
+    {
+        std::lock_guard lock(m_stateMutex);
+        session = m_session;
+    }
+    if (!session) {
         return;
     }
-    if (m_session) {
-        m_session->stop();
-    }
-    m_session = std::make_shared<WsSession>(m_ioc, m_ssl, wsHost(m_cfg.testnet), m_cfg.socks5Proxy);
-    m_session->start(buildStreamPath(),
-                     [this](auto ec, auto raw) { onRawMessage(ec, raw); },
-                     m_onDisconnect,
-                     [this] {
-                         connect();
-                         if (m_onReconnect) {
-                             m_onReconnect();
-                         }
-                     });
+    auto guard = m_callbackGuard;
+    session->start(
+        path,
+        [this, guard](auto ec, auto raw) mutable {
+            std::lock_guard<std::mutex> lock(guard->mutex);
+            if (!guard->alive) {
+                return;
+            }
+            onRawMessage(ec, std::move(raw));
+        },
+        [this, guard] {
+            std::lock_guard<std::mutex> lock(guard->mutex);
+            if (!guard->alive) {
+                return;
+            }
+            std::function<void()> onDisconnect;
+            {
+                std::lock_guard stateLock(m_stateMutex);
+                onDisconnect = m_onDisconnect;
+            }
+            if (onDisconnect) {
+                onDisconnect();
+            }
+        },
+        [this, guard] {
+            std::lock_guard<std::mutex> lock(guard->mutex);
+            if (!guard->alive) {
+                return;
+            }
+            std::function<void()> onReconnect;
+            {
+                std::lock_guard stateLock(m_stateMutex);
+                onReconnect = m_onReconnect;
+            }
+            if (onReconnect) {
+                onReconnect();
+            }
+        });
 }
 
 void WsClient::disconnect() {
-    if (m_session) {
-        m_session->stop();
+    std::shared_ptr<WsSession> session;
+    {
+        std::lock_guard lock(m_stateMutex);
+        session = std::move(m_session);
+    }
+    if (session) {
+        session->stop();
     }
 }
 
-void WsClient::onRawMessage(boost::system::error_code ec, std::string_view raw) {
+void WsClient::onRawMessage(boost::system::error_code ec, std::string raw) {
+    const auto subscriptions = snapshotSubscriptions();
     if (ec) {
-        for (const auto& [_, cb] : m_subscriptions) {
+        for (const auto& [_, cb] : subscriptions) {
             cb(ec, MarketEvent{AggTradeEvent{}});
         }
         return;
     }
 
-    std::scoped_lock lock(m_parserMutex);
-    simdjson::padded_string padded(raw);
-    simdjson::dom::element doc;
-    auto parseError = m_parser.parse(padded).get(doc);
-    if (parseError) {
-        for (const auto& [_, cb] : m_subscriptions) {
-            cb(boost::asio::error::invalid_argument, MarketEvent{AggTradeEvent{}});
+    std::string stream;
+    MarketEvent parsedEvent;
+    boost::system::error_code callbackError{};
+    bool hasEvent = false;
+
+    {
+        std::scoped_lock lock(m_parserMutex);
+        simdjson::padded_string padded(raw);
+        simdjson::dom::element doc;
+        auto parseError = m_parser.parse(padded).get(doc);
+        if (parseError) {
+            callbackError = boost::asio::error::invalid_argument;
+        } else {
+            stream = lower(ws_parse::stringField(doc, "stream"));
+            simdjson::dom::element data;
+            if (doc["data"].get(data)) {
+                callbackError = boost::asio::error::invalid_argument;
+            } else {
+                try {
+                    parsedEvent = parseMarketEvent(stream, data);
+                    hasEvent = true;
+                } catch (const std::exception&) {
+                    callbackError = boost::asio::error::invalid_argument;
+                }
+            }
+        }
+    }
+
+    if (callbackError) {
+        for (const auto& [_, cb] : subscriptions) {
+            cb(callbackError, MarketEvent{AggTradeEvent{}});
         }
         return;
     }
 
-    const auto stream = ws_parse::stringField(doc, "stream");
-    const auto it = m_subscriptions.find(stream);
-    if (it == m_subscriptions.end()) {
+    const auto it = subscriptions.find(stream);
+    if (it == subscriptions.end()) {
         return;
     }
-    simdjson::dom::element data;
-    if (doc["data"].get(data)) {
-        it->second(boost::asio::error::invalid_argument, MarketEvent{AggTradeEvent{}});
-        return;
+    if (hasEvent) {
+        if (!shouldDispatchMarketEvent(stream, parsedEvent)) {
+            return;
+        }
+        it->second({}, std::move(parsedEvent));
     }
-    it->second({}, parseMarketEvent(stream, data));
+}
+
+std::map<std::string, MarketEventCb> WsClient::snapshotSubscriptions() const {
+    std::lock_guard lock(m_stateMutex);
+    return m_subscriptions;
+}
+
+bool WsClient::shouldDispatchMarketEvent(const std::string& stream, const MarketEvent& event) {
+    const auto* bookTicker = std::get_if<BookTickerEvent>(&event);
+    if (bookTicker == nullptr || bookTicker->updateId <= 0) {
+        return true;
+    }
+
+    std::lock_guard lock(m_stateMutex);
+    auto& lastUpdateId = m_lastBookTickerUpdateIds[stream];
+    if (lastUpdateId >= bookTicker->updateId) {
+        return false;
+    }
+    lastUpdateId = bookTicker->updateId;
+    return true;
 }

@@ -380,12 +380,15 @@ strategy::Signal GartleyDayCrossoverAdapter::evaluateWith(
     // input bar is treated as "forming" (and skipped). To mirror that and remain
     // useful for backtest (where all bars are closed), we pass the same input
     // through unchanged — the formula naturally uses index n-2 as evalIdx.
+    const bool tailClosed = !klines.empty() && klines.back().isClosed;
+    const int evalShift = tailClosed ? 1 : 2;
     const auto minCandles = static_cast<std::size_t>(
-        std::max({fastPeriod + 1, 1 + offset + slowPeriod, atrPeriod + 2}));
+        std::max({fastPeriod + evalShift - 1, offset + slowPeriod + evalShift, atrPeriod + evalShift}));
     if (klines.size() < minCandles) return {};
 
     const int n       = static_cast<int>(klines.size());
-    const int evalIdx = n - 2;
+    const int evalIdx = n - evalShift;
+    if (evalIdx < 0) return {};
 
     const std::vector<Kline> closedForAtr(klines.begin(), klines.begin() + evalIdx + 1);
     const double atr = strategy::indicators::lastAtr(closedForAtr, atrPeriod);

@@ -138,66 +138,76 @@ BacktestStats BacktestEngine::runFold(
     double maxDrawdown = 0.0;
     int wins = 0;
 
+    auto exitPriceForBar = [maxHoldMs](const OpenPosition& openPos, const Kline& bar) -> std::optional<double> {
+        bool slHit = false;
+        bool tpHit = false;
+
+        if (openPos.direction == strategy::Signal::Direction::Long) {
+            if (bar.low <= openPos.sl) slHit = true;
+            if (bar.high >= openPos.tp) tpHit = true;
+        } else {
+            if (bar.high >= openPos.sl) slHit = true;
+            if (bar.low <= openPos.tp) tpHit = true;
+        }
+
+        if (slHit) return openPos.sl;
+        if (tpHit) return openPos.tp;
+        if (maxHoldMs > 0 && (bar.closeTime - openPos.openTimeMs) >= maxHoldMs) return bar.close;
+        return std::nullopt;
+    };
+
+    auto recordExit = [&](const OpenPosition& openPos, double exitPrice) {
+        if (!std::isfinite(openPos.entryPrice) || openPos.entryPrice <= 0.0 ||
+            !std::isfinite(exitPrice) || exitPrice <= 0.0) {
+            return;
+        }
+
+        if (openPos.direction == strategy::Signal::Direction::Long) {
+            exitPrice *= (1.0 - m_cfg.slippageBps / 10000.0);
+        } else {
+            exitPrice *= (1.0 + m_cfg.slippageBps / 10000.0);
+        }
+        if (!std::isfinite(exitPrice) || exitPrice <= 0.0) {
+            return;
+        }
+
+        double raw = (openPos.direction == strategy::Signal::Direction::Long)
+            ? (exitPrice - openPos.entryPrice) / openPos.entryPrice
+            : (openPos.entryPrice - exitPrice) / openPos.entryPrice;
+
+        double pnlPct = raw * leverage - m_cfg.takerFeeRate * leverage * 2.0;
+        if (!std::isfinite(pnlPct)) {
+            return;
+        }
+
+        pnlPcts.push_back(pnlPct);
+        stats.numTrades++;
+        if (pnlPct > 0.0) { wins++; grossProfit += pnlPct; }
+        else              { grossLoss   += -pnlPct; }
+
+        equity *= (1.0 + pnlPct);
+        if (equity > peakEquity) peakEquity = equity;
+        const double dd = peakEquity > 0.0 ? (peakEquity - equity) / peakEquity : 0.0;
+        if (dd > maxDrawdown) maxDrawdown = dd;
+    };
+
     for (std::size_t i = 0; i + 1 < foldKlines.size(); ++i) {
         growingWindow.push_back(foldKlines[i]);
 
         // ----- exit logic on next bar -----
         if (pos) {
             const auto& nextBar = foldKlines[i + 1];
-            bool slHit = false, tpHit = false;
-
-            if (pos->direction == strategy::Signal::Direction::Long) {
-                if (nextBar.low  <= pos->sl) slHit = true;
-                if (nextBar.high >= pos->tp) tpHit = true;
-            } else {
-                if (nextBar.high >= pos->sl) slHit = true;
-                if (nextBar.low  <= pos->tp) tpHit = true;
-            }
-
-            bool exit = false;
-            double exitPrice = 0.0;
-            if (slHit) {                       // conservative: stop wins on collision
-                exit = true;
-                exitPrice = pos->sl;
-            } else if (tpHit) {
-                exit = true;
-                exitPrice = pos->tp;
-            } else if (maxHoldMs > 0 && (nextBar.closeTime - pos->openTimeMs) >= maxHoldMs) {
-                exit = true;
-                exitPrice = nextBar.close;
-            }
-
-            if (exit) {
-                // Slippage on exit
-                if (pos->direction == strategy::Signal::Direction::Long) {
-                    exitPrice *= (1.0 - m_cfg.slippageBps / 10000.0);
-                } else {
-                    exitPrice *= (1.0 + m_cfg.slippageBps / 10000.0);
-                }
-
-                double raw = (pos->direction == strategy::Signal::Direction::Long)
-                    ? (exitPrice - pos->entryPrice) / pos->entryPrice
-                    : (pos->entryPrice - exitPrice) / pos->entryPrice;
-
-                // Leverage + round-trip fees (entry + exit)
-                double pnlPct = raw * leverage - m_cfg.takerFeeRate * leverage * 2.0;
-
-                pnlPcts.push_back(pnlPct);
-                stats.numTrades++;
-                if (pnlPct > 0.0) { wins++; grossProfit += pnlPct; }
-                else              { grossLoss   += -pnlPct; }
-
-                equity *= (1.0 + pnlPct);
-                if (equity > peakEquity) peakEquity = equity;
-                const double dd = peakEquity > 0.0 ? (peakEquity - equity) / peakEquity : 0.0;
-                if (dd > maxDrawdown) maxDrawdown = dd;
-
+            if (const auto exitPrice = exitPriceForBar(*pos, nextBar)) {
+                recordExit(*pos, *exitPrice);
                 pos.reset();
             }
         }
 
         // ----- entry logic at next bar open -----
         if (!pos) {
+            if (i + 2 >= foldKlines.size()) {
+                continue;
+            }
             const auto sig = adapter.evaluateWith(symbol, interval, growingWindow, params, baseConfig);
             if (sig.direction == strategy::Signal::Direction::None) continue;
             if (sig.confidence < baseConfig.minConfidence) continue;
@@ -230,8 +240,20 @@ BacktestStats BacktestEngine::runFold(
                     : entry - tpMult * sig.atr;
                 p.tp = roundToTick(p.tp, tickSize, TickRounding::Up);
             }
-            pos = p;
+            if (!std::isfinite(p.sl) || p.sl <= 0.0 || !std::isfinite(p.tp) || p.tp <= 0.0) {
+                continue;
+            }
+            if (const auto entryBarExit = exitPriceForBar(p, nextBar)) {
+                recordExit(p, *entryBarExit);
+            } else {
+                pos = p;
+            }
         }
+    }
+
+    if (pos) {
+        recordExit(*pos, foldKlines.back().close);
+        pos.reset();
     }
 
     stats.sortino      = calculateSortino(pnlPcts);
@@ -247,8 +269,8 @@ BacktestStats BacktestEngine::runFold(
  * @brief Calculate the Sortino ratio for a series of P&L percentages.
  *
  * The Sortino ratio uses only downside volatility in the denominator. When
- * there are no downside observations a large positive mean maps to
- * +infinity while a non-positive mean yields 0.0.
+ * there are no downside observations the result remains finite to avoid
+ * poisoning aggregate combo scores.
  *
  * @param pnlPcts Vector of trade P&L percentages (fractional, e.g. 0.05 = 5%).
  * @return The Sortino ratio or `0.0`/`infinity` for degenerate cases.
@@ -264,9 +286,9 @@ double BacktestEngine::calculateSortino(const std::vector<double>& pnlPcts) {
     for (double p : pnlPcts) {
         if (p < 0.0) { downsideSumSq += p * p; downsideN++; }
     }
-    if (downsideN == 0) return mean > 0.0 ? std::numeric_limits<double>::infinity() : 0.0;
+    if (downsideN == 0) return mean > 0.0 ? 0.0 : mean;
     const double downsideStd = std::sqrt(downsideSumSq / static_cast<double>(downsideN));
-    if (downsideStd == 0.0) return mean > 0.0 ? std::numeric_limits<double>::infinity() : 0.0;
+    if (downsideStd == 0.0) return mean > 0.0 ? 0.0 : mean;
     return mean / downsideStd;
 }
 
@@ -274,8 +296,8 @@ double BacktestEngine::calculateSortino(const std::vector<double>& pnlPcts) {
  * @brief Calculate the (sample) Sharpe-like ratio for a series of P&L percentages.
  *
  * This implementation computes mean / standard-deviation using the population
- * denominator (N). For degenerate cases where std == 0.0, a positive mean
- * maps to +infinity and non-positive mean yields 0.0.
+ * denominator (N). Degenerate cases remain finite to avoid poisoning aggregate
+ * combo scores.
  *
  * @param pnlPcts Vector of trade P&L percentages (fractional, e.g. 0.02 = 2%).
  * @return The Sharpe-like ratio or `0.0`/`infinity` for degenerate cases.
@@ -288,7 +310,7 @@ double BacktestEngine::calculateSharpe(const std::vector<double>& pnlPcts) {
     double sumSq = 0.0;
     for (double p : pnlPcts) sumSq += (p - mean) * (p - mean);
     const double std = std::sqrt(sumSq / static_cast<double>(pnlPcts.size()));
-    if (std == 0.0) return mean > 0.0 ? std::numeric_limits<double>::infinity() : 0.0;
+    if (std == 0.0) return mean > 0.0 ? 0.0 : mean;
     return mean / std;
 }
 

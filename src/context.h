@@ -29,6 +29,15 @@ struct Socks5ProxyConfig {
 };
 
 struct ContextConfig {
+    ContextConfig() = default;
+    ContextConfig(const ContextConfig& other);
+    ContextConfig& operator=(const ContextConfig& other);
+    ContextConfig(ContextConfig&& other) noexcept;
+    ContextConfig& operator=(ContextConfig&& other) noexcept;
+    ~ContextConfig();
+
+    void clearSecretKey() noexcept;
+
     std::string apiKey;
     std::string secretKey;
     bool testnet = false;

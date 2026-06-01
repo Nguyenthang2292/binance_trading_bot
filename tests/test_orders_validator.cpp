@@ -3,6 +3,7 @@
 #include "orders/order_types.h"
 #include "orders/order_validator.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace {
@@ -13,6 +14,20 @@ Quantity qty(std::string_view v) {
         throw std::runtime_error("invalid test quantity");
     }
     return *parsed;
+}
+
+Price price(std::string_view v) {
+    auto parsed = Price::parse(v);
+    if (!parsed) {
+        throw std::runtime_error("invalid test price");
+    }
+    return *parsed;
+}
+
+bool hasIssueCode(const ValidationReport& report, std::string_view code) {
+    return std::any_of(report.issues.begin(), report.issues.end(), [code](const ValidationIssue& issue) {
+        return issue.code == code;
+    });
 }
 
 } // namespace
@@ -112,7 +127,7 @@ TEST(OrderValidatorTest, BatchValidatesEachDraftContent) {
     EXPECT_TRUE(report.hasErrors());
 }
 
-TEST(OrderValidatorTest, RawTimestampAndSignatureAllowedWhenOverrideEnabled) {
+TEST(OrderValidatorTest, RawTimestampOverrideDoesNotAllowSignatureBypass) {
     OrdersConfig cfg;
     cfg.clientIdNamespace = "test";
     cfg.positionMode = PositionMode::OneWay;
@@ -131,7 +146,7 @@ TEST(OrderValidatorTest, RawTimestampAndSignatureAllowedWhenOverrideEnabled) {
     };
 
     auto report = validator.validateMarket(draft);
-    EXPECT_FALSE(report.hasErrors());
+    EXPECT_TRUE(report.hasErrors());
 }
 
 TEST(OrderValidatorTest, RawParamKeyMustBeConservativeAscii) {
@@ -199,4 +214,83 @@ TEST(OrderValidatorTest, ValidatorAddsWarningAndSkippedAdvisories) {
     EXPECT_TRUE(foundWarning);
     EXPECT_TRUE(foundSkipped);
     EXPECT_FALSE(report.hasErrors());
+}
+
+TEST(OrderValidatorTest, RequiresExchangeInfoWhenConfigured) {
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.positionMode = PositionMode::OneWay;
+    cfg.requireExchangeInfo = true;
+    OrderValidator validator(cfg);
+
+    MarketOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .side = OrderSide::Buy,
+        .quantity = qty("0.01"),
+    };
+
+    const auto report = validator.validateMarket(draft);
+    EXPECT_TRUE(report.hasErrors());
+    EXPECT_TRUE(hasIssueCode(report, "exchange_info_unavailable"));
+}
+
+TEST(OrderValidatorTest, RejectsOrdersOutsideExchangeFilters) {
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.positionMode = PositionMode::OneWay;
+    cfg.requireExchangeInfo = true;
+    cfg.exchangeInfoBySymbol.emplace(
+        "BTCUSDT",
+        ExchangeSymbol{
+            .symbol = "BTCUSDT",
+            .tickSize = 0.10,
+            .stepSize = 0.001,
+            .minNotional = 5.0,
+            .maxQty = 100.0,
+            .minQty = 0.001,
+        });
+    OrderValidator validator(cfg);
+
+    LimitOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .side = OrderSide::Buy,
+        .quantity = qty("0.0015"),
+        .price = price("100.05"),
+    };
+
+    const auto report = validator.validateLimit(draft);
+    EXPECT_TRUE(report.hasErrors());
+    EXPECT_TRUE(hasIssueCode(report, "quantity_step_size_mismatch"));
+    EXPECT_TRUE(hasIssueCode(report, "limit_price_tick_size_mismatch"));
+    EXPECT_TRUE(hasIssueCode(report, "notional_below_min_notional"));
+}
+
+TEST(OrderValidatorTest, RejectsStaleExchangeInfoWhenRequired) {
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.positionMode = PositionMode::OneWay;
+    cfg.requireExchangeInfo = true;
+    cfg.exchangeInfoBySymbol.emplace(
+        "BTCUSDT",
+        ExchangeSymbol{
+            .symbol = "BTCUSDT",
+            .tickSize = 0.10,
+            .stepSize = 0.001,
+            .minNotional = 5.0,
+            .maxQty = 100.0,
+            .minQty = 0.001,
+        });
+    cfg.exchangeInfoUpdatedAt = std::chrono::system_clock::now() - std::chrono::hours{2};
+    cfg.exchangeInfoMaxAge = std::chrono::minutes{30};
+    OrderValidator validator(cfg);
+
+    MarketOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .side = OrderSide::Buy,
+        .quantity = qty("0.01"),
+    };
+
+    const auto report = validator.validateMarket(draft);
+    EXPECT_TRUE(report.hasErrors());
+    EXPECT_TRUE(hasIssueCode(report, "exchange_info_stale"));
 }

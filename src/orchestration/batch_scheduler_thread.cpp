@@ -23,19 +23,19 @@ int64_t nowMs() {
     return sqlite_helpers::nowMs();
 }
 
-std::tm localTime(std::time_t t) {
+std::tm utcTime(std::time_t t) {
     std::tm out{};
 #if defined(_WIN32)
-    localtime_s(&out, &t);
+    gmtime_s(&out, &t);
 #else
-    localtime_r(&t, &out);
+    gmtime_r(&t, &out);
 #endif
     return out;
 }
 
 std::string isoNowCompact() {
     const auto now = std::time(nullptr);
-    const std::tm tmNow = localTime(now);
+    const std::tm tmNow = utcTime(now);
     std::ostringstream out;
     out << std::put_time(&tmNow, "%Y%m%dT%H%M%S");
     return out.str();
@@ -139,7 +139,7 @@ BatchSchedulerThread::BatchSchedulerThread(BatchSchedulerConfig config, IProcess
 
 bool BatchSchedulerThread::shouldRunToday(std::chrono::system_clock::time_point now) const {
     const auto nowT = std::chrono::system_clock::to_time_t(now);
-    const std::tm tmNow = localTime(nowT);
+    const std::tm tmNow = utcTime(nowT);
     const int monZeroWeekday = (tmNow.tm_wday + 6) % 7;
     if (!containsWeekday(m_config.batchWeekdays, monZeroWeekday)) {
         return false;
@@ -155,7 +155,7 @@ bool BatchSchedulerThread::shouldRunToday(std::chrono::system_clock::time_point 
 
 std::string BatchSchedulerThread::todayDateStr(std::chrono::system_clock::time_point now) const {
     const auto nowT = std::chrono::system_clock::to_time_t(now);
-    const std::tm tmNow = localTime(nowT);
+    const std::tm tmNow = utcTime(nowT);
     std::ostringstream out;
     out << std::put_time(&tmNow, "%Y-%m-%d");
     return out.str();
@@ -299,7 +299,9 @@ bool BatchSchedulerThread::runScheduledCycleAt(std::chrono::system_clock::time_p
         return false;
     }
     const bool ok = runOnce();
-    m_lastRunDate = today;
+    if (ok) {
+        m_lastRunDate = today;
+    }
     if (!ok) {
         Logger::instance().log(LogLevel::Warning, "[BATCH] cycle failed");
     }
@@ -309,7 +311,7 @@ bool BatchSchedulerThread::runScheduledCycleAt(std::chrono::system_clock::time_p
 std::chrono::system_clock::time_point BatchSchedulerThread::nextWakeTime(
     std::chrono::system_clock::time_point now) const {
     const auto nowT = std::chrono::system_clock::to_time_t(now);
-    const std::tm base = localTime(nowT);
+    const std::tm base = utcTime(nowT);
 
     for (int dayOffset = 0; dayOffset < 14; ++dayOffset) {
         std::tm candidateTm = base;
@@ -318,11 +320,15 @@ std::chrono::system_clock::time_point BatchSchedulerThread::nextWakeTime(
         candidateTm.tm_min = m_config.batchMinute;
         candidateTm.tm_sec = 0;
         candidateTm.tm_isdst = -1;
-        const std::time_t candidateT = std::mktime(&candidateTm);
+#if defined(_WIN32)
+        const std::time_t candidateT = _mkgmtime(&candidateTm);
+#else
+        const std::time_t candidateT = timegm(&candidateTm);
+#endif
         if (candidateT == static_cast<std::time_t>(-1)) {
             continue;
         }
-        const std::tm normalized = localTime(candidateT);
+        const std::tm normalized = utcTime(candidateT);
         const int monZeroWeekday = (normalized.tm_wday + 6) % 7;
         if (!containsWeekday(m_config.batchWeekdays, monZeroWeekday)) {
             continue;

@@ -18,10 +18,10 @@ namespace {
 
 class StubRestClient final : public IRestClient {
 public:
-    RestResult<Order> newOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
-    RestResult<Order> newAlgoOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
-    RestResult<Order> cancelOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
-    RestResult<Order> queryOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> newOrderResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> newAlgoOrderResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> cancelOrderResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> queryOrderResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
     RestResult<void> cancelAllOrdersResult = RestResult<void>{};
     RestResult<std::vector<Order>> openOrdersResult = std::vector<Order>{};
     RestResult<std::vector<Order>> allOrdersResult = std::vector<Order>{};
@@ -129,20 +129,48 @@ class CaptureJournal final : public OrderJournal {
 public:
     std::optional<JournalEntry> lastEntry;
 
-    std::expected<void, BinanceError> recordIntent(JournalEntry entry) override {
+    compat::expected<void, BinanceError> recordIntent(JournalEntry entry) override {
         lastEntry = entry;
         return {};
     }
 
-    std::expected<void, BinanceError> updateState(CorrelationId, PlacementState, std::optional<int64_t>) override {
+    compat::expected<void, BinanceError> updateState(CorrelationId, PlacementState, std::optional<int64_t>) override {
         return {};
     }
 
-    std::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override {
+    compat::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override {
         return std::vector<JournalEntry>{};
     }
 
-    std::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(const ClientOrderId&) override {
+    compat::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(const ClientOrderId&) override {
+        return std::optional<JournalEntry>{};
+    }
+};
+
+class PendingReconcileJournal final : public OrderJournal {
+public:
+    std::vector<JournalEntry> pendingEntries;
+    int updateCalls{0};
+    std::optional<int64_t> lastUpdatedOrderId;
+
+    compat::expected<void, BinanceError> recordIntent(JournalEntry) override {
+        return {};
+    }
+
+    compat::expected<void, BinanceError> updateState(
+        CorrelationId,
+        PlacementState,
+        std::optional<int64_t> binanceOrderId) override {
+        ++updateCalls;
+        lastUpdatedOrderId = binanceOrderId;
+        return {};
+    }
+
+    compat::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override {
+        return pendingEntries;
+    }
+
+    compat::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(const ClientOrderId&) override {
         return std::optional<JournalEntry>{};
     }
 };
@@ -175,7 +203,7 @@ TriggerPrice trigger(std::string_view v) {
 
 TEST(OrdersTest, MarketTreatsHttp500AsUnknownPendingReconcile) {
     StubRestClient rest;
-    rest.newOrderResult = std::unexpected(BinanceError{
+    rest.newOrderResult = compat::unexpected(BinanceError{
         .category = ErrorCategory::Api,
         .code = 500,
         .message = "internal",
@@ -223,6 +251,20 @@ TEST(OrdersTest, SetLeverageDelegatesToRestClient) {
     EXPECT_EQ(result->leverage, 13);
 }
 
+TEST(OrdersTest, SetLeverageRejectsOutOfConfiguredRange) {
+    StubRestClient rest;
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.minLeverage = 2;
+    cfg.maxLeverage = 50;
+    Orders orders(rest, cfg);
+
+    auto result = runAwaitable(orders.setLeverage("BTCUSDT", 100));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, -90015);
+    EXPECT_EQ(rest.setLeverageCalls, 0);
+}
+
 TEST(OrdersTest, ProtectionUsesAlgoRestEndpoint) {
     StubRestClient rest;
     Order placed;
@@ -258,6 +300,86 @@ TEST(OrdersTest, ProtectionUsesAlgoRestEndpoint) {
     EXPECT_EQ(rest.lastNewAlgoOrderRequest->type, OrderType::StopMarket);
     EXPECT_EQ(rest.lastNewAlgoOrderRequest->stopPrice.value_or(""), "0.1234");
     EXPECT_EQ(rest.lastNewAlgoOrderRequest->newClientOrderId.value_or(""), "cid-sl-1");
+}
+
+TEST(OrdersTest, ProtectionRejectsWhenJournalIsMissingAndBestEffortDisabled) {
+    StubRestClient rest;
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = false;
+    cfg.journalIsDurable = false;
+    Orders orders(rest, cfg);
+
+    ProtectionOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .positionSide = PositionSide::Both,
+        .closeSide = OrderSide::Sell,
+        .kind = ProtectionKind::StopLoss,
+        .triggerPrice = trigger("100.0"),
+        .closeQuantity = qty("0.01"),
+        .clientAlgoId = std::string("cid-sl-required-1"),
+    };
+
+    auto result = runAwaitable(orders.protection(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->state, PlacementState::Rejected);
+    ASSERT_TRUE(result->errorCategory.has_value());
+    EXPECT_EQ(*result->errorCategory, OrderErrorCategory::Journal);
+    EXPECT_EQ(rest.newAlgoOrderCalls, 0);
+}
+
+TEST(OrdersTest, ProtectionRejectsInvalidCloseSideForLongPosition) {
+    StubRestClient rest;
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
+    Orders orders(rest, cfg);
+
+    ProtectionOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .positionSide = PositionSide::Long,
+        .closeSide = OrderSide::Buy,
+        .kind = ProtectionKind::StopLoss,
+        .triggerPrice = trigger("100.0"),
+        .closeQuantity = qty("0.01"),
+    };
+
+    auto result = runAwaitable(orders.protection(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->state, PlacementState::Rejected);
+    ASSERT_TRUE(result->errorCategory.has_value());
+    EXPECT_EQ(*result->errorCategory, OrderErrorCategory::Validation);
+    EXPECT_EQ(rest.newAlgoOrderCalls, 0);
+}
+
+TEST(OrdersTest, ProtectionInOneWayQuantityModeForcesReduceOnly) {
+    StubRestClient rest;
+    Order placed;
+    placed.symbol = "BTCUSDT";
+    placed.orderId = 1234;
+    placed.status = "NEW";
+    rest.newAlgoOrderResult = placed;
+
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
+    Orders orders(rest, cfg);
+
+    ProtectionOrderDraft draft{
+        .symbol = "BTCUSDT",
+        .positionSide = PositionSide::Both,
+        .closeSide = OrderSide::Sell,
+        .kind = ProtectionKind::StopLoss,
+        .triggerPrice = trigger("100.0"),
+        .closeQuantity = qty("0.01"),
+    };
+
+    auto result = runAwaitable(orders.protection(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->state, PlacementState::Accepted);
+    ASSERT_TRUE(rest.lastNewAlgoOrderRequest.has_value());
+    ASSERT_TRUE(rest.lastNewAlgoOrderRequest->reduceOnly.has_value());
+    EXPECT_TRUE(*rest.lastNewAlgoOrderRequest->reduceOnly);
 }
 
 TEST(OrdersTest, QuerySnapshotPreservesDecimalStrings) {
@@ -300,7 +422,7 @@ TEST(OrdersTest, QuerySnapshotPreservesDecimalStrings) {
 
 TEST(OrdersTest, MarketMapsMinus1007ToTimeoutCategory) {
     StubRestClient rest;
-    rest.newOrderResult = std::unexpected(BinanceError{
+    rest.newOrderResult = compat::unexpected(BinanceError{
         .category = ErrorCategory::Api,
         .code = -1007,
         .message = "timeout",
@@ -427,28 +549,18 @@ TEST(OrdersTest, DurableJournalWriteFailureBlocksPlacement) {
     cfg.clientIdNamespace = "test";
     cfg.journalIsDurable = true;
     cfg.journalPath = journalDirectory.string();
-    Orders orders(rest, cfg);
-
-    MarketOrderDraft draft{
-        .symbol = "BTCUSDT",
-        .side = OrderSide::Buy,
-        .quantity = qty("0.01"),
-        .clientOrderId = std::string("cid-journal-fail-1"),
-    };
-
-    auto result = runAwaitable(orders.market(draft));
-    ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->state, PlacementState::Rejected);
-    ASSERT_TRUE(result->errorCategory.has_value());
-    EXPECT_EQ(*result->errorCategory, OrderErrorCategory::Journal);
-    EXPECT_EQ(rest.newOrderCalls, 0);
+    EXPECT_THROW(
+        {
+            Orders orders(rest, cfg);
+        },
+        std::runtime_error);
 
     std::filesystem::remove_all(journalDirectory);
 }
 
 TEST(OrdersTest, OperationAbortedBeforeSendMapsToCanceledBeforeSend) {
     StubRestClient rest;
-    rest.newOrderResult = std::unexpected(BinanceError::fromNetwork(
+    rest.newOrderResult = compat::unexpected(BinanceError::fromNetwork(
         boost::asio::error::operation_aborted,
         NetworkErrorPhase::BeforeSend));
 
@@ -473,7 +585,7 @@ TEST(OrdersTest, OperationAbortedBeforeSendMapsToCanceledBeforeSend) {
 
 TEST(OrdersTest, NetworkErrorMessageAloneDoesNotMapToCanceledBeforeSend) {
     StubRestClient rest;
-    rest.newOrderResult = std::unexpected(BinanceError{
+    rest.newOrderResult = compat::unexpected(BinanceError{
         .category = ErrorCategory::Network,
         .code = 0,
         .message = "operation aborted",
@@ -576,7 +688,7 @@ TEST(OrdersTest, QueryAllNormalPassesValidWindowAndLimitToRest) {
 
 TEST(OrdersTest, ReconcilePrimitiveCanQueryClientIdThenHistory) {
     StubRestClient rest;
-    rest.queryOrderResult = std::unexpected(BinanceError::fromApiResponse(-2013, "Order does not exist"));
+    rest.queryOrderResult = compat::unexpected(BinanceError::fromApiResponse(-2013, "Order does not exist"));
 
     Order historical;
     historical.symbol = "BTCUSDT";
@@ -600,6 +712,46 @@ TEST(OrdersTest, ReconcilePrimitiveCanQueryClientIdThenHistory) {
     ASSERT_EQ(history->size(), 1);
     EXPECT_EQ((*history)[0].clientOrderId, "cid-reconcile-1");
     EXPECT_EQ((*history)[0].orderId, 987);
+}
+
+TEST(OrdersTest, ReconcilesPendingJournalEntriesOnFirstPlacement) {
+    StubRestClient rest;
+    Order reconciledOrder;
+    reconciledOrder.symbol = "BTCUSDT";
+    reconciledOrder.orderId = 4567;
+    reconciledOrder.clientOrderId = "cid-pending-1";
+    reconciledOrder.status = "NEW";
+    rest.queryOrderResult = reconciledOrder;
+
+    auto journal = std::make_shared<PendingReconcileJournal>();
+    JournalEntry pending;
+    pending.correlationId = "corr-pending-1";
+    pending.symbol = "BTCUSDT";
+    pending.clientOrderId = "cid-pending-1";
+    pending.state = PlacementState::UnknownPendingReconcile;
+    pending.sendTimestampMs = 1700000000000;
+    journal->pendingEntries.push_back(pending);
+
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.journal = journal;
+    cfg.journalIsDurable = true;
+    Orders orders(rest, cfg);
+
+    MarketOrderDraft draft{
+        .symbol = "",
+        .side = OrderSide::Buy,
+        .quantity = qty("0.01"),
+        .clientOrderId = std::string("cid-market-reject-1"),
+    };
+
+    auto result = runAwaitable(orders.market(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->state, PlacementState::Rejected);
+    EXPECT_EQ(rest.queryOrderByClientOrderIdCalls, 1);
+    EXPECT_EQ(journal->updateCalls, 1);
+    ASSERT_TRUE(journal->lastUpdatedOrderId.has_value());
+    EXPECT_EQ(*journal->lastUpdatedOrderId, 4567);
 }
 
 TEST(OrdersTest, PlacementResultCarriesValidationReportOnSuccessAndFailure) {

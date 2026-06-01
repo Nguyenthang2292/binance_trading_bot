@@ -9,7 +9,9 @@
 #include <exception>
 #include <fstream>
 #include <iomanip>
+#include <optional>
 #include <sstream>
+#include <unordered_set>
 
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -187,16 +189,20 @@ PluginLoader::PluginLoader(Config config, EnumerateFn enumerateFn, LoadFn loadFn
 std::vector<PluginLoadResult> PluginLoader::loadAll() {
     m_results.clear();
     m_handles.clear();
+    std::unordered_set<std::string> loadedTypes;
 
     const auto candidates = m_enumerateFn(m_config.pluginsDir);
     for (const auto& path : candidates) {
         PluginLoadResult result;
         result.path = path;
+        std::optional<std::string> preLoadHash;
         if (auto integrity = verifyIntegrity(path); !integrity) {
             result.success = false;
             result.error = integrity.error();
             m_results.push_back(std::move(result));
             continue;
+        } else if (!integrity->empty()) {
+            preLoadHash = *integrity;
         }
         auto loaded = m_loadFn(path);
         if (!loaded) {
@@ -205,45 +211,80 @@ std::vector<PluginLoadResult> PluginLoader::loadAll() {
             m_results.push_back(std::move(result));
             continue;
         }
+        if (preLoadHash.has_value()) {
+            auto postLoadHash = calculateSha256(path);
+            if (!postLoadHash) {
+                result.success = false;
+                result.error = postLoadHash.error();
+                m_results.push_back(std::move(result));
+                continue;
+            }
+            if (*postLoadHash != *preLoadHash) {
+                result.success = false;
+                result.error = "plugin changed between integrity check and load: " + path.string();
+                m_results.push_back(std::move(result));
+                continue;
+            }
+        }
 
         result.success = true;
         result.type = std::string(loaded->type());
         result.version = std::string(loaded->version());
-        m_handles.push_back(std::move(*loaded));
+        result.abiVersion = loaded->abiVersion();
+        if (!loadedTypes.insert(result.type).second) {
+            result.success = false;
+            result.error = "duplicate strategy type exported by plugins: " + result.type;
+            m_results.push_back(std::move(result));
+            continue;
+        }
+        m_handles.push_back(std::make_shared<PluginHandle>(std::move(*loaded)));
         m_results.push_back(std::move(result));
     }
     return m_results;
 }
 
-std::unique_ptr<strategy::IStrategy, void (*)(strategy::IStrategy*)> PluginLoader::createStrategy(
+std::shared_ptr<strategy::IStrategy> PluginLoader::createStrategy(
     std::string_view strategyType,
     const char* configJson) {
-    const auto it = std::find_if(m_handles.begin(), m_handles.end(), [strategyType](const PluginHandle& handle) {
-        return handle.type() == strategyType;
-    });
-    if (it == m_handles.end() || !it->hasFactory()) {
-        return {nullptr, &noopDestroy};
+    const auto it = std::find_if(
+        m_handles.begin(),
+        m_handles.end(),
+        [strategyType](const std::shared_ptr<PluginHandle>& handle) {
+            return handle && handle->type() == strategyType;
+        });
+    if (it == m_handles.end() || !(*it) || !(*it)->hasFactory()) {
+        return {};
     }
+    const auto lease = *it;
 
     strategy::IStrategy* instance = nullptr;
     try {
-        instance = it->create(configJson);
+        instance = lease->create(configJson);
     } catch (const std::exception& e) {
         Logger::instance().log(
             LogLevel::Error,
             "catalog plugin factory exception type=" + std::string(strategyType) + " error=" + e.what());
-        return {nullptr, &noopDestroy};
+        return {};
     } catch (...) {
         Logger::instance().log(
             LogLevel::Error,
             "catalog plugin factory unknown exception type=" + std::string(strategyType));
-        return {nullptr, &noopDestroy};
+        return {};
     }
     if (!instance) {
-        return {nullptr, &noopDestroy};
+        return {};
     }
-
-    return {instance, it->destroyFunction()};
+    const auto destroy = lease->destroyFunction();
+    if (!destroy) {
+        return {};
+    }
+    return std::shared_ptr<strategy::IStrategy>(
+        instance,
+        [lease, destroy](strategy::IStrategy* ptr) {
+            if (ptr) {
+                destroy(ptr);
+            }
+        });
 }
 
 std::vector<std::filesystem::path> PluginLoader::defaultEnumerate(const std::filesystem::path& pluginsDir) {
@@ -271,9 +312,12 @@ std::vector<std::filesystem::path> PluginLoader::defaultEnumerate(const std::fil
             }
             continue;
         }
-        const auto ext = entry.path().extension().string();
+        auto ext = entry.path().extension().string();
 #if defined(_WIN32)
-        if (ext == ".dll" || ext == ".DLL")
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        if (ext == ".dll")
 #else
         if (ext == ".so" || ext == ".dylib")
 #endif
@@ -293,15 +337,15 @@ std::vector<std::filesystem::path> PluginLoader::defaultEnumerate(const std::fil
     return out;
 }
 
-std::expected<PluginHandle, std::string> PluginLoader::defaultLoad(const std::filesystem::path& path) {
+compat::expected<PluginHandle, std::string> PluginLoader::defaultLoad(const std::filesystem::path& path) {
     return PluginHandle::load(path);
 }
 
-std::expected<PluginLoader::HashAllowlist, std::string> PluginLoader::loadSha256Allowlist(
+compat::expected<PluginLoader::HashAllowlist, std::string> PluginLoader::loadSha256Allowlist(
     const std::filesystem::path& allowlistPath) {
     std::ifstream input(allowlistPath);
     if (!input) {
-        return std::unexpected("failed to open sha256 allowlist file: " + allowlistPath.string());
+        return compat::unexpected("failed to open sha256 allowlist file: " + allowlistPath.string());
     }
 
     HashAllowlist hashes;
@@ -318,31 +362,31 @@ std::expected<PluginLoader::HashAllowlist, std::string> PluginLoader::loadSha256
         std::string hashToken;
         iss >> hashToken;
         if (!isHexSha256(hashToken)) {
-            return std::unexpected(
+            return compat::unexpected(
                 "invalid sha256 allowlist entry at line " + std::to_string(lineNo) + ": " + cleaned);
         }
         hashes.insert(toLowerHex(hashToken));
     }
     if (hashes.empty()) {
-        return std::unexpected("sha256 allowlist file is empty: " + allowlistPath.string());
+        return compat::unexpected("sha256 allowlist file is empty: " + allowlistPath.string());
     }
     return hashes;
 }
 
-std::expected<std::string, std::string> PluginLoader::calculateSha256(const std::filesystem::path& filePath) {
+compat::expected<std::string, std::string> PluginLoader::calculateSha256(const std::filesystem::path& filePath) {
     std::ifstream input(filePath, std::ios::binary);
     if (!input) {
-        return std::unexpected("failed to open plugin for hashing: " + filePath.string());
+        return compat::unexpected("failed to open plugin for hashing: " + filePath.string());
     }
 
     EVP_MD_CTX* rawCtx = EVP_MD_CTX_new();
     if (!rawCtx) {
-        return std::unexpected("failed to allocate digest context");
+        return compat::unexpected("failed to allocate digest context");
     }
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(rawCtx, &EVP_MD_CTX_free);
 
     if (EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1) {
-        return std::unexpected("failed to initialize sha256 digest: " + opensslError());
+        return compat::unexpected("failed to initialize sha256 digest: " + opensslError());
     }
 
     std::array<char, 8192> buffer{};
@@ -351,17 +395,17 @@ std::expected<std::string, std::string> PluginLoader::calculateSha256(const std:
         const std::streamsize bytesRead = input.gcount();
         if (bytesRead > 0 &&
             EVP_DigestUpdate(ctx.get(), buffer.data(), static_cast<size_t>(bytesRead)) != 1) {
-            return std::unexpected("failed to update sha256 digest: " + opensslError());
+            return compat::unexpected("failed to update sha256 digest: " + opensslError());
         }
     }
     if (!input.eof()) {
-        return std::unexpected("failed while reading plugin for hashing: " + filePath.string());
+        return compat::unexpected("failed while reading plugin for hashing: " + filePath.string());
     }
 
     std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
     unsigned int digestLen = 0;
     if (EVP_DigestFinal_ex(ctx.get(), digest.data(), &digestLen) != 1) {
-        return std::unexpected("failed to finalize sha256 digest: " + opensslError());
+        return compat::unexpected("failed to finalize sha256 digest: " + opensslError());
     }
 
     std::ostringstream oss;
@@ -372,24 +416,22 @@ std::expected<std::string, std::string> PluginLoader::calculateSha256(const std:
     return oss.str();
 }
 
-std::expected<void, std::string> PluginLoader::verifyIntegrity(const std::filesystem::path& filePath) const {
+compat::expected<std::string, std::string> PluginLoader::verifyIntegrity(const std::filesystem::path& filePath) const {
     if (!m_config.enforceSha256Allowlist) {
-        return {};
+        return std::string{};
     }
     if (!m_allowlistLoadError.empty()) {
-        return std::unexpected(m_allowlistLoadError);
+        return compat::unexpected(m_allowlistLoadError);
     }
     auto computedHash = calculateSha256(filePath);
     if (!computedHash) {
-        return std::unexpected(computedHash.error());
+        return compat::unexpected(computedHash.error());
     }
     if (m_sha256Allowlist.find(*computedHash) == m_sha256Allowlist.end()) {
-        return std::unexpected("sha256 not allowlisted for plugin: " + filePath.string());
+        return compat::unexpected("sha256 not allowlisted for plugin: " + filePath.string());
     }
-    return {};
+    return *computedHash;
 }
-
-void PluginLoader::noopDestroy(strategy::IStrategy*) {}
 
 } // namespace catalog
 

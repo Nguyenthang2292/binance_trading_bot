@@ -212,3 +212,35 @@ TEST(GeminiFilterControllerIntegrationTest, AutotuneTimeoutDoesNotBlockEvaluateF
     EXPECT_FALSE(fs::exists(runtimeBase / "cache" / "autotune" / "completed.txt"));
     EXPECT_TRUE(fs::exists(runtimeBase / "cache" / "autotune" / "controller.lock"));
 }
+
+TEST(GeminiFilterControllerIntegrationTest, ControllerDestructionWaitsForAutotuneWorker) {
+    TempDirGuard temp{makeTempDir()};
+    const fs::path workingDir = temp.path / "work";
+    const fs::path runtimeBase = temp.path / "runtime";
+    fs::create_directories(workingDir);
+    fs::create_directories(runtimeBase);
+    writeFakeEvalModule(workingDir);
+    writeAutotuneConfig(workingDir / "config.json", runtimeBase, "apply");
+    writeSleepingAutotuneModule(workingDir, 2);
+
+    auto cfg = makeBaseConfig(workingDir, runtimeBase);
+    cfg.autotuneControllerTimeoutSeconds = 10;
+    cfg.timeoutSeconds = 5;
+
+    scanner::KlineCache cache(200);
+    seedCache(cache);
+
+    std::chrono::steady_clock::time_point destroyStarted;
+    {
+        engine::GeminiFilterController controller(cfg);
+        const auto result = controller.evaluate("BTCUSDT", strategy::Signal::Direction::Long, "1h", cache);
+        EXPECT_EQ(result.decision, engine::GeminiDecision::Allow);
+        EXPECT_FALSE(result.hasError);
+        destroyStarted = std::chrono::steady_clock::now();
+    }
+    const auto destroyWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - destroyStarted).count();
+
+    EXPECT_GE(destroyWaitMs, 1500);
+    EXPECT_TRUE(fs::exists(runtimeBase / "cache" / "autotune" / "completed.txt"));
+}

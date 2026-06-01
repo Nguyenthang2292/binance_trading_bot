@@ -30,23 +30,23 @@ class OrderJournal {
 public:
     virtual ~OrderJournal() = default;
 
-    virtual std::expected<void, BinanceError> recordIntent(JournalEntry entry) = 0;
-    virtual std::expected<void, BinanceError> updateState(CorrelationId id,
+    virtual compat::expected<void, BinanceError> recordIntent(JournalEntry entry) = 0;
+    virtual compat::expected<void, BinanceError> updateState(CorrelationId id,
                                                           PlacementState state,
                                                           std::optional<int64_t> binanceOrderId = std::nullopt) = 0;
-    virtual std::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() = 0;
-    virtual std::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(
+    virtual compat::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() = 0;
+    virtual compat::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(
         const ClientOrderId& clientOrderId) = 0;
 };
 
 class InMemoryOrderJournal final : public OrderJournal {
 public:
-    std::expected<void, BinanceError> recordIntent(JournalEntry entry) override;
-    std::expected<void, BinanceError> updateState(CorrelationId id,
+    compat::expected<void, BinanceError> recordIntent(JournalEntry entry) override;
+    compat::expected<void, BinanceError> updateState(CorrelationId id,
                                                   PlacementState state,
                                                   std::optional<int64_t> binanceOrderId) override;
-    std::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override;
-    std::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(
+    compat::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override;
+    compat::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(
         const ClientOrderId& clientOrderId) override;
 
 private:
@@ -59,12 +59,12 @@ class DurableOrderJournal final : public OrderJournal {
 public:
     explicit DurableOrderJournal(std::string path);
 
-    std::expected<void, BinanceError> recordIntent(JournalEntry entry) override;
-    std::expected<void, BinanceError> updateState(CorrelationId id,
+    compat::expected<void, BinanceError> recordIntent(JournalEntry entry) override;
+    compat::expected<void, BinanceError> updateState(CorrelationId id,
                                                   PlacementState state,
                                                   std::optional<int64_t> binanceOrderId) override;
-    std::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override;
-    std::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(
+    compat::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override;
+    compat::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(
         const ClientOrderId& clientOrderId) override;
 
 private:
@@ -73,10 +73,10 @@ private:
     std::unordered_map<CorrelationId, JournalEntry> m_entriesByCorrelationId;
     std::unordered_map<ClientOrderId, CorrelationId> m_correlationByClientId;
 
-    std::expected<void, BinanceError> appendRecord(const std::string& op,
+    compat::expected<void, BinanceError> appendRecord(const std::string& op,
                                                    const CorrelationId& correlationId,
                                                    PlacementState state,
                                                    std::optional<int64_t> binanceOrderId,
                                                    const JournalEntry* entry);
-    std::expected<void, BinanceError> loadFromFile();
+    compat::expected<void, BinanceError> loadFromFile();
 };

@@ -14,7 +14,7 @@ class StubRestClient final : public IRestClient {
 public:
     Order lastNewOrderRequest;
     std::vector<Order> capturedNewOrderRequests;
-    RestResult<Order> newOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> newOrderResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
 
     boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest req) override {
         lastNewOrderRequest.symbol = req.symbol;
@@ -116,6 +116,7 @@ TEST(Mql4PhaseETest, OrderSendAttachesStopLossAndTakeProfitAsSeparateAlgoOrders)
     placed.symbol = "BTCUSDT";
     placed.orderId = 12345;
     placed.status = "NEW";
+    placed.executedQty = "0.1";
     rest.newOrderResult = placed;
 
     OrdersConfig cfg;
@@ -143,6 +144,43 @@ TEST(Mql4PhaseETest, OrderSendAttachesStopLossAndTakeProfitAsSeparateAlgoOrders)
     EXPECT_EQ(rest.capturedNewOrderRequests[2].side, OrderSide::Sell);
     EXPECT_EQ(rest.capturedNewOrderRequests[1].positionSide, PositionSide::Long);
     EXPECT_EQ(rest.capturedNewOrderRequests[2].positionSide, PositionSide::Long);
+}
+
+TEST(Mql4PhaseETest, OrderSendSkipsProtectionWhenExecutedQuantityIsNotConfirmed) {
+    StubRestClient rest;
+    Order placed;
+    placed.symbol = "BTCUSDT";
+    placed.orderId = 12345;
+    placed.status = "NEW";
+    placed.executedQty = "0";
+    rest.newOrderResult = placed;
+
+    OrdersConfig cfg;
+    cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
+    Orders orders(rest, cfg);
+    orders::mql4::Mql4Adapter adapter(orders);
+
+    orders::mql4::MappedOrderSendDraft draft{
+        .symbol = "BTCUSDT",
+        .operation = orders::mql4::TradeOperation::Buy,
+        .quantity = Quantity::parse("0.1").value(),
+        .stopLoss = TriggerPrice::parse("59000").value(),
+    };
+
+    auto result = runAwaitable(adapter.orderSend(std::move(draft)));
+
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(rest.capturedNewOrderRequests.size(), 1U);
+    ASSERT_FALSE(result->validation.issues.empty());
+    bool foundProtectionSkipIssue = false;
+    for (const auto& issue : result->validation.issues) {
+        if (issue.code == "mql4_protection_qty_unconfirmed") {
+            foundProtectionSkipIssue = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(foundProtectionSkipIssue);
 }
 
 TEST(Mql4PhaseETest, OrderSendBuyStopCanMapOptionalLimitPriceToStopLimit) {

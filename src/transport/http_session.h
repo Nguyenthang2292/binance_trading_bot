@@ -13,6 +13,7 @@
 #include <boost/beast/ssl.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -25,7 +26,7 @@
  */
 class HttpSession : public std::enable_shared_from_this<HttpSession> {
 public:
-    using Result = std::expected<std::string, BinanceError>;
+    using Result = compat::expected<std::string, BinanceError>;
 
     /**
      * Creates a session bound to the given I/O context, TLS context, and exchange host.
@@ -61,6 +62,16 @@ private:
 
     class RequestGate {
     public:
+        struct Waiter {
+            explicit Waiter(boost::asio::io_context& ioc)
+                : timer(ioc) {
+                timer.expires_at(boost::asio::steady_timer::time_point::max());
+            }
+
+            boost::asio::steady_timer timer;
+            bool granted{false};
+        };
+
         class Lock {
         public:
             Lock() = default;
@@ -96,11 +107,11 @@ private:
 
         std::mutex m_mutex;
         bool m_locked{false};
-        std::deque<std::shared_ptr<boost::asio::steady_timer>> m_waiters;
+        std::deque<std::shared_ptr<Waiter>> m_waiters;
     };
 
     /** Establishes or re-establishes the TLS connection before sending a request. */
-    boost::asio::awaitable<std::expected<void, BinanceError>> ensureConnected();
+    boost::asio::awaitable<compat::expected<void, BinanceError>> ensureConnected();
     /** Runs the full request/response exchange and maps transport errors into BinanceError. */
     boost::asio::awaitable<Result> execute(boost::beast::http::request<boost::beast::http::string_body> req);
     /** Recreates the SSL stream and marks the session disconnected. */
@@ -116,4 +127,5 @@ private:
     std::atomic<int> m_lastUsedWeight{0};
     std::atomic<int> m_lastUsedOrders{0};
     std::atomic<int> m_lastUsedOrders10s{0};
+    std::chrono::seconds m_requestIoTimeout{30};
 };

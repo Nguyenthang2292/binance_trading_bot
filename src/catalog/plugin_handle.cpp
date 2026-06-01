@@ -42,7 +42,7 @@ std::string windowsErrorMessage(DWORD code) {
 
 } // namespace
 
-std::expected<PluginHandle, std::string> PluginHandle::load(const std::filesystem::path& dllPath) {
+compat::expected<PluginHandle, std::string> PluginHandle::load(const std::filesystem::path& dllPath) {
 #if defined(_WIN32)
     HMODULE module = LoadLibraryExW(
         dllPath.wstring().c_str(),
@@ -55,10 +55,10 @@ std::expected<PluginHandle, std::string> PluginHandle::load(const std::filesyste
     if (!rawHandle) {
 #if defined(_WIN32)
         const DWORD lastError = GetLastError();
-        return std::unexpected("failed to load library: " + windowsErrorMessage(lastError));
+        return compat::unexpected("failed to load library: " + windowsErrorMessage(lastError));
 #else
         const char* err = dlerror();
-        return std::unexpected(std::string("failed to load library: ") + (err ? err : "unknown error"));
+        return compat::unexpected(std::string("failed to load library: ") + (err ? err : "unknown error"));
 #endif
     }
 
@@ -68,16 +68,30 @@ std::expected<PluginHandle, std::string> PluginHandle::load(const std::filesyste
     out.m_destroyFn = reinterpret_cast<DestroyFn>(loadSymbol(rawHandle, "destroyStrategy"));
     out.m_typeFn = reinterpret_cast<TypeFn>(loadSymbol(rawHandle, "strategyType"));
     out.m_versionFn = reinterpret_cast<VersionFn>(loadSymbol(rawHandle, "pluginVersion"));
+    auto abiVersionFn = reinterpret_cast<AbiVersionFn>(loadSymbol(rawHandle, "strategyPluginAbiVersion"));
     if (!out.m_createFn || !out.m_destroyFn || !out.m_typeFn || !out.m_versionFn) {
         unloadHandle(rawHandle);
-        return std::unexpected("missing required exports");
+        return compat::unexpected("missing required exports");
     }
+    if (!abiVersionFn) {
+        unloadHandle(rawHandle);
+        return compat::unexpected("missing strategyPluginAbiVersion export");
+    }
+
+    const int abiVersion = abiVersionFn();
+    if (abiVersion != strategy::kStrategyPluginAbiVersion) {
+        unloadHandle(rawHandle);
+        return compat::unexpected(
+            "unsupported strategy plugin ABI version: " + std::to_string(abiVersion) +
+            " expected: " + std::to_string(strategy::kStrategyPluginAbiVersion));
+    }
+    out.m_abiVersion = abiVersion;
 
     const char* type = out.m_typeFn();
     const char* version = out.m_versionFn();
     if (!type || !version) {
         unloadHandle(rawHandle);
-        return std::unexpected("invalid plugin metadata");
+        return compat::unexpected("invalid plugin metadata");
     }
     out.m_type = type;
     out.m_version = version;
@@ -91,11 +105,13 @@ PluginHandle PluginHandle::fromExports(
     TypeFn typeFnValue,
     VersionFn versionFnValue,
     std::string typeValue,
-    std::string versionValue) {
+    std::string versionValue,
+    int abiVersionValue) {
     PluginHandle out;
     out.m_path = std::move(path);
     out.m_type = std::move(typeValue);
     out.m_version = std::move(versionValue);
+    out.m_abiVersion = abiVersionValue;
     out.m_createFn = createFnValue;
     out.m_destroyFn = destroyFnValue;
     out.m_typeFn = typeFnValue;
@@ -107,6 +123,7 @@ PluginHandle::PluginHandle(PluginHandle&& other) noexcept
     : m_path(std::move(other.m_path)),
       m_type(std::move(other.m_type)),
       m_version(std::move(other.m_version)),
+      m_abiVersion(other.m_abiVersion),
       m_createFn(other.m_createFn),
       m_destroyFn(other.m_destroyFn),
       m_typeFn(other.m_typeFn),
@@ -117,6 +134,7 @@ PluginHandle::PluginHandle(PluginHandle&& other) noexcept
     other.m_destroyFn = nullptr;
     other.m_typeFn = nullptr;
     other.m_versionFn = nullptr;
+    other.m_abiVersion = 0;
 }
 
 PluginHandle& PluginHandle::operator=(PluginHandle&& other) noexcept {
@@ -131,12 +149,14 @@ PluginHandle& PluginHandle::operator=(PluginHandle&& other) noexcept {
     m_path = std::move(other.m_path);
     m_type = std::move(other.m_type);
     m_version = std::move(other.m_version);
+    m_abiVersion = other.m_abiVersion;
     m_handle = other.m_handle;
     other.m_handle = nullptr;
     other.m_createFn = nullptr;
     other.m_destroyFn = nullptr;
     other.m_typeFn = nullptr;
     other.m_versionFn = nullptr;
+    other.m_abiVersion = 0;
     return *this;
 }
 
@@ -154,6 +174,10 @@ std::string_view PluginHandle::type() const noexcept {
 
 std::string_view PluginHandle::version() const noexcept {
     return m_version;
+}
+
+int PluginHandle::abiVersion() const noexcept {
+    return m_abiVersion;
 }
 
 bool PluginHandle::hasFactory() const {

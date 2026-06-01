@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 
 TEST(OrderJournalTest, DurableJournalPersistsEntryAcrossInstances) {
     const auto path = std::filesystem::temp_directory_path() / "orders_journal_test.log";
@@ -62,6 +63,44 @@ TEST(OrderJournalTest, LoadsLegacyMetadataAndDerivesTimeframeFromComment) {
     EXPECT_EQ(found->value().metadata->comment, "tf=15m reason=legacy");
     EXPECT_EQ(found->value().metadata->strategyTag, "legacy-tag");
     EXPECT_EQ(found->value().metadata->timeframe, "15m");
+
+    std::filesystem::remove(path);
+}
+
+TEST(OrderJournalTest, ConstructorThrowsWhenPathIsNotWritableFile) {
+    const auto path = std::filesystem::temp_directory_path() / "orders_journal_ctor_directory";
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    EXPECT_THROW(
+        {
+            DurableOrderJournal journal(path.string());
+        },
+        std::runtime_error);
+
+    std::filesystem::remove_all(path);
+}
+
+TEST(OrderJournalTest, IgnoresCorruptLinesButLoadsValidEntries) {
+    const auto path = std::filesystem::temp_directory_path() / "orders_journal_corrupt_lines_test.log";
+    std::filesystem::remove(path);
+
+    {
+        std::ofstream out(path.string(), std::ios::trunc);
+        ASSERT_TRUE(out.is_open());
+        out << "R\tcorr-good\tBTCUSDT\tcid-good\tnormal\t0\t1\t0\t0.01\t0\tsymbol=BTCUSDT\t1700000000000\t2\t\n";
+        out << "R\tcorr-bad\tBTCUSDT\tcid-bad\tnormal\tINVALID_INT\t1\t0\t0.01\t0\tsymbol=BTCUSDT\t1700000000000\t2\t\n";
+    }
+
+    DurableOrderJournal journal(path.string());
+    auto foundGood = journal.findByClientOrderId("cid-good");
+    ASSERT_TRUE(foundGood.has_value());
+    ASSERT_TRUE(foundGood->has_value());
+    EXPECT_EQ(foundGood->value().correlationId, "corr-good");
+
+    auto foundBad = journal.findByClientOrderId("cid-bad");
+    ASSERT_TRUE(foundBad.has_value());
+    EXPECT_FALSE(foundBad->has_value());
 
     std::filesystem::remove(path);
 }

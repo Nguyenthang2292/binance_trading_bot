@@ -222,3 +222,48 @@ TEST(RestBackfillingHistoricalWindowProviderTest, ReturnsSignalBarMissingWhenRes
     EXPECT_EQ(result.source, "rest");
     EXPECT_EQ(result.errorReason, "signal_bar_missing");
 }
+
+TEST(RestBackfillingHistoricalWindowProviderTest, RejectsMalformedRestOhlcWindow) {
+    scanner::KlineCache cache(200);
+
+    auto inner = std::make_unique<StubInnerProvider>();
+    inner->next.sufficient = false;
+
+    auto rest = std::make_unique<StubRestClient>();
+    rest->next.success = true;
+    rest->next.bars = {makeBar(0, 100.0), makeBar(60'000, 101.0)};
+    rest->next.bars.back().high = 99.0;  // high must not be below open/close.
+
+    BacktestGateDataConfig cfg;
+    cfg.runtimeRestFetchEnabled = true;
+
+    RestBackfillingHistoricalWindowProvider provider(
+        std::move(inner), std::move(rest), cache, cfg);
+
+    const auto result = provider.closedWindow("BTCUSDT", "1m", 2, tpFromMs(60'000));
+    EXPECT_FALSE(result.sufficient);
+    EXPECT_EQ(result.source, "rest");
+    EXPECT_EQ(result.errorReason, "invalid_history");
+}
+
+TEST(RestBackfillingHistoricalWindowProviderTest, RejectsGapInRestWindow) {
+    scanner::KlineCache cache(200);
+
+    auto inner = std::make_unique<StubInnerProvider>();
+    inner->next.sufficient = false;
+
+    auto rest = std::make_unique<StubRestClient>();
+    rest->next.success = true;
+    rest->next.bars = {makeBar(0, 100.0), makeBar(120'000, 101.0), makeBar(180'000, 102.0)};
+
+    BacktestGateDataConfig cfg;
+    cfg.runtimeRestFetchEnabled = true;
+
+    RestBackfillingHistoricalWindowProvider provider(
+        std::move(inner), std::move(rest), cache, cfg);
+
+    const auto result = provider.closedWindow("BTCUSDT", "1m", 3, tpFromMs(180'000));
+    EXPECT_FALSE(result.sufficient);
+    EXPECT_EQ(result.source, "rest");
+    EXPECT_EQ(result.errorReason, "invalid_history");
+}

@@ -71,6 +71,7 @@ set(LIB_SOURCES
     src/ws/user_data_stream.cpp
     src/scanner/kline_cache.cpp
     src/scanner/market_scanner.cpp
+    src/strategy/strategy_config.cpp
     src/strategy/strategy_registry.cpp
     src/strategy/indicators/atr.cpp
     src/engine/position_tracker.cpp
@@ -266,7 +267,7 @@ FetchContent_MakeAvailable(googletest)
 
 enable_testing()
 
-file(GLOB TEST_SOURCES tests/*.cpp)
+file(GLOB TEST_SOURCES CONFIGURE_DEPENDS tests/*.cpp)
 
 add_executable(${PROJECT_NAME}_tests ${TEST_SOURCES})
 target_link_libraries(${PROJECT_NAME}_tests PRIVATE

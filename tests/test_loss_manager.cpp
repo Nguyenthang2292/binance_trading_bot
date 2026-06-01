@@ -320,7 +320,7 @@ TEST(LossManagerTest, FallsBackToPlaceWhenAmendOrderNotFound) {
     live.leverage = 10;
 
     MockOrdersPort orders;
-    orders.amendResult = std::unexpected(BinanceError::fromApiResponse(-2013, "Order does not exist"));
+    orders.amendResult = compat::unexpected(BinanceError::fromApiResponse(-2013, "Order does not exist"));
     MockOrderCapPort orderCap;
     MockExposurePort exposure;
     engine::LossManagerConfig cfg;

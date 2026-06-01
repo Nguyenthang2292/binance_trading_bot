@@ -24,8 +24,10 @@ public:
     explicit RateLimiter(Limits limits);
 
     static int klineWeight(int limit);
+    static int depthWeight(int limit);
 
     boost::asio::awaitable<void> acquire(Cost cost);
+    void release(Cost cost);
     void updateFromHeaders(int usedWeight, int usedOrders1m, int usedOrders10s);
     void penalize(std::chrono::milliseconds delay);
 

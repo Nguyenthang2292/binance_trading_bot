@@ -24,12 +24,15 @@ using sqlite_helpers::execOrThrow;
 
 std::string makeShadowId(
     std::string_view modelId,
+    std::string_view adapterId,
     std::string_view symbol,
     std::string_view interval,
     int64_t asofOpenMs,
-    int64_t capturedAtMs) {
+    int horizonBars,
+    std::string_view direction) {
     std::ostringstream out;
-    out << modelId << "|" << symbol << "|" << interval << "|" << asofOpenMs << "|" << capturedAtMs;
+    out << modelId << "|" << adapterId << "|" << symbol << "|" << interval << "|" << asofOpenMs << "|" << horizonBars
+        << "|" << direction;
     return out.str();
 }
 
@@ -138,6 +141,7 @@ void ShadowMetricsRecorder::initializeSchema() {
         "direction_return REAL NOT NULL,"
         "net_return REAL NOT NULL,"
         "hit INTEGER NOT NULL,"
+        "cost_model_version TEXT,"
         "matured_at_ms INTEGER NOT NULL,"
         "FOREIGN KEY (shadow_id) REFERENCES qlib_shadow_signals(shadow_id)"
         ");");
@@ -185,6 +189,9 @@ void ShadowMetricsRecorder::initializeSchema() {
     }
     if (!hasColumn("qlib_shadow_signals", "adapter_id")) {
         execOrThrow(m_db, "ALTER TABLE qlib_shadow_signals ADD COLUMN adapter_id TEXT;");
+    }
+    if (!hasColumn("qlib_shadow_outcomes", "cost_model_version")) {
+        execOrThrow(m_db, "ALTER TABLE qlib_shadow_outcomes ADD COLUMN cost_model_version TEXT;");
     }
 }
 
@@ -248,12 +255,15 @@ void ShadowMetricsRecorder::recordShadowSignal(const ShadowSignalRecord& record)
         horizonBars = m_config.horizonBars;
     }
 
+    const std::string directionText = directionToDb(record.direction);
     const std::string shadowId = makeShadowId(
         record.modelId.empty() ? m_config.modelId : record.modelId,
+        record.adapterId,
         record.symbol,
         record.interval,
         asofOpenMs,
-        record.capturedAtMs);
+        horizonBars,
+        directionText);
 
     sqlite3_stmt* insertStmt = insertShadowSignalStmtLocked();
     sqlite3_reset(insertStmt);
@@ -277,7 +287,7 @@ void ShadowMetricsRecorder::recordShadowSignal(const ShadowSignalRecord& record)
     } else {
         sqlite3_bind_null(insertStmt, 11);
     }
-    bindText(insertStmt, 12, directionToDb(record.direction));
+    bindText(insertStmt, 12, directionText);
     sqlite3_bind_double(insertStmt, 13, record.confidence);
     bindText(insertStmt, 14, modeToDb(record.executionMode));
     if (record.blockedStage.empty()) {
@@ -533,7 +543,11 @@ void ShadowMetricsRecorder::upsertShadowOutcomesLocked(std::string_view interval
         " AND x.interval = s.interval "
         " AND x.open_time_ms = s.asof_open_time_ms + (CAST(s.horizon_bars AS INTEGER) * ?) "
         "LEFT JOIN qlib_shadow_outcomes o ON o.shadow_id = s.shadow_id "
-        "WHERE s.interval = ? AND o.shadow_id IS NULL AND s.would_place_order = 1;";
+        "WHERE s.interval = ? "
+        "  AND s.model_id = ? "
+        "  AND (s.adapter_id IS NULL OR s.adapter_id = '' OR s.adapter_id = ?) "
+        "  AND o.shadow_id IS NULL "
+        "  AND s.would_place_order = 1;";
     sqlite3_stmt* selectRaw = nullptr;
     if (sqlite3_prepare_v2(m_db, selectSql, -1, &selectRaw, nullptr) != SQLITE_OK || selectRaw == nullptr) {
         throw std::runtime_error("ShadowMetricsRecorder prepare select shadow outcomes failed");
@@ -541,11 +555,13 @@ void ShadowMetricsRecorder::upsertShadowOutcomesLocked(std::string_view interval
     std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> selectStmt(selectRaw, sqlite3_finalize);
     sqlite3_bind_int64(selectStmt.get(), 1, stepMs);
     bindText(selectStmt.get(), 2, interval);
+    bindText(selectStmt.get(), 3, m_config.modelId);
+    bindText(selectStmt.get(), 4, m_config.modelId);
 
     const char* insertSql =
         "INSERT OR IGNORE INTO qlib_shadow_outcomes("
-        "shadow_id, raw_return, direction_return, net_return, hit, matured_at_ms"
-        ") VALUES(?, ?, ?, ?, ?, ?);";
+        "shadow_id, raw_return, direction_return, net_return, hit, cost_model_version, matured_at_ms"
+        ") VALUES(?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* insertRaw = nullptr;
     if (sqlite3_prepare_v2(m_db, insertSql, -1, &insertRaw, nullptr) != SQLITE_OK || insertRaw == nullptr) {
         throw std::runtime_error("ShadowMetricsRecorder prepare insert shadow outcomes failed");
@@ -586,7 +602,8 @@ void ShadowMetricsRecorder::upsertShadowOutcomesLocked(std::string_view interval
         sqlite3_bind_double(insertStmt.get(), 3, directionReturn);
         sqlite3_bind_double(insertStmt.get(), 4, netReturn);
         sqlite3_bind_int(insertStmt.get(), 5, hit);
-        sqlite3_bind_int64(insertStmt.get(), 6, nowMs());
+        bindText(insertStmt.get(), 6, costModelVersion());
+        sqlite3_bind_int64(insertStmt.get(), 7, nowMs());
         if (sqlite3_step(insertStmt.get()) != SQLITE_DONE) {
             throw std::runtime_error("ShadowMetricsRecorder insert shadow outcome failed");
         }
@@ -602,6 +619,14 @@ double ShadowMetricsRecorder::fundingCost(double durationDays) const {
         return 0.0;
     }
     return (m_config.costModel.estimatedFundingBpsPerDay * durationDays) / 10000.0;
+}
+
+std::string ShadowMetricsRecorder::costModelVersion() const {
+    std::ostringstream out;
+    out << "rtf=" << std::setprecision(12) << m_config.costModel.estimatedRoundTripFeeBps
+        << ";slip=" << m_config.costModel.estimatedSlippageBps
+        << ";fund=" << m_config.costModel.estimatedFundingBpsPerDay;
+    return out.str();
 }
 
 } // namespace orchestration

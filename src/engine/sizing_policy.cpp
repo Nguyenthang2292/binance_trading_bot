@@ -33,6 +33,12 @@ SizingResult calculateSize(const SizingInput& input, double currentPrice, double
         steps = std::ceil((input.minNotional / currentPrice) / stepSize);
         out.quantity = std::max(0.0, steps * stepSize);
     }
+    if (input.maxNotional > 0.0 && out.quantity * currentPrice > input.maxNotional) {
+        out.quantity = 0.0;
+        out.notional = 0.0;
+        out.isMaxCapped = true;
+        return out;
+    }
     out.notional = out.quantity * currentPrice;
     return out;
 }

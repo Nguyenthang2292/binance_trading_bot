@@ -123,6 +123,11 @@ OrderRequest OrderMapper::toOrderRequest(const ProtectionOrderDraft& draft, cons
 
     if (std::holds_alternative<Quantity>(draft.closeQuantity)) {
         req.quantity = std::string(std::get<Quantity>(draft.closeQuantity).value());
+        if (draft.positionSide == PositionSide::Both) {
+            // In one-way mode, quantity-based protection must be reduce-only so
+            // a stale close side cannot increase exposure.
+            req.reduceOnly = true;
+        }
     } else {
         req.closePosition = true;
     }

@@ -11,8 +11,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +27,8 @@ enum class WarmupPhase {
     Regular,
     Beta,
 };
+
+constexpr int kMaxBinanceKlineLimit = 1500;
 
 const char* phaseName(WarmupPhase phase) {
     return phase == WarmupPhase::Regular ? "klines" : "beta";
@@ -68,6 +72,47 @@ void logWarmupProgress(
             " (" + std::to_string(percent) + "%)" +
             " symbol=" + std::string(symbol) +
             " interval=" + std::string(interval));
+}
+
+int clampKlineRequestLimit(size_t requested) {
+    return static_cast<int>(std::clamp<size_t>(requested, 1, kMaxBinanceKlineLimit));
+}
+
+boost::asio::awaitable<Result<std::vector<Kline>>> fetchKlineWindow(
+    RestClient& client,
+    const std::string& symbol,
+    const std::string& interval,
+    size_t requestedLimit) {
+    requestedLimit = std::max<size_t>(1, requestedLimit);
+
+    std::vector<Kline> out;
+    out.reserve(requestedLimit);
+    std::optional<int64_t> endTime;
+
+    while (out.size() < requestedLimit) {
+        const size_t remaining = requestedLimit - out.size();
+        const int pageLimit = clampKlineRequestLimit(remaining);
+        auto page = co_await client.klines(symbol, interval, pageLimit, {}, endTime);
+        if (!page) {
+            co_return compat::unexpected(page.error());
+        }
+        if (page->empty()) {
+            break;
+        }
+
+        const auto pageSize = page->size();
+        out.insert(out.begin(), page->begin(), page->end());
+        const int64_t earliestOpenTime = page->front().openTime;
+        if (pageSize < static_cast<size_t>(pageLimit) || earliestOpenTime <= 0) {
+            break;
+        }
+        endTime = earliestOpenTime - 1;
+    }
+
+    if (out.size() > requestedLimit) {
+        out.erase(out.begin(), out.end() - static_cast<std::ptrdiff_t>(requestedLimit));
+    }
+    co_return out;
 }
 
 class WarmupPool {
@@ -159,7 +204,11 @@ private:
             (void)currentCompleted;
             (void)currentTotal;
 
-            const auto klines = co_await client.klines(item.symbol, item.interval, item.limit);
+            const auto klines = co_await fetchKlineWindow(
+                client,
+                item.symbol,
+                item.interval,
+                static_cast<size_t>(std::max(1, item.limit)));
             if (klines) {
                 cache.merge(item.symbol, item.interval, *klines);
             }
@@ -239,18 +288,58 @@ size_t MarketScanner::streamConnectionCount(size_t symbolCount, size_t intervalC
 size_t MarketScanner::normalizedWarmupInitialLimit() const {
     const size_t cappedBuffer = std::max<size_t>(1, m_config.klineBufferSize);
     const size_t warmupLimit = std::max<size_t>(1, m_config.warmupInitialLimit);
-    return std::min(warmupLimit, cappedBuffer);
+    return std::min({warmupLimit, cappedBuffer, static_cast<size_t>(kMaxBinanceKlineLimit)});
+}
+
+boost::asio::awaitable<Result<void>> MarketScanner::waitForConnectionsReady(
+    boost::asio::io_context& ioc,
+    const std::vector<std::shared_ptr<std::atomic_bool>>& readyFlags,
+    std::chrono::milliseconds timeout) {
+    if (readyFlags.empty()) {
+        co_return Result<void>{};
+    }
+
+    const auto effectiveTimeout = timeout <= std::chrono::milliseconds::zero()
+        ? std::chrono::milliseconds{1}
+        : timeout;
+    const auto deadline = std::chrono::steady_clock::now() + effectiveTimeout;
+    boost::asio::steady_timer timer(ioc);
+    while (true) {
+        const bool allReady = std::all_of(readyFlags.begin(), readyFlags.end(), [](const auto& flag) {
+            return flag && flag->load();
+        });
+        if (allReady) {
+            co_return Result<void>{};
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            co_return compat::unexpected(BinanceError::fromApiResponse(
+                -91004,
+                "market scanner websocket feeds did not become healthy before timeout"));
+        }
+
+        timer.expires_after(std::chrono::milliseconds(100));
+        boost::system::error_code ec;
+        co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+        if (ec) {
+            co_return compat::unexpected(BinanceError::fromApiResponse(
+                -91005,
+                "market scanner startup wait interrupted"));
+        }
+    }
 }
 
 boost::asio::awaitable<Result<void>> MarketScanner::start() {
     stop();
-    m_symbolInfo.clear();
+    {
+        std::lock_guard lock(m_stateMutex);
+        m_symbolInfo.clear();
+    }
 
     const auto warmupStartAt = std::chrono::steady_clock::now();
 
     const auto symbolsResult = co_await m_rest.exchangeInfo();
     if (!symbolsResult) {
-        co_return std::unexpected(symbolsResult.error());
+        co_return compat::unexpected(symbolsResult.error());
     }
 
     std::vector<std::string> symbols;
@@ -259,6 +348,7 @@ boost::asio::awaitable<Result<void>> MarketScanner::start() {
             continue;
         }
         symbols.push_back(symbol.symbol);
+        std::lock_guard lock(m_stateMutex);
         m_symbolInfo[symbol.symbol] = symbol;
     }
 
@@ -318,11 +408,14 @@ boost::asio::awaitable<Result<void>> MarketScanner::start() {
     }
 
     if (warmupResult.regularTotal > 0 && warmupResult.regularSucceeded == 0) {
-        co_return std::unexpected(
+        co_return compat::unexpected(
             BinanceError::fromApiResponse(-91001, "market scanner warmup failed for all regular kline requests"));
     }
 
-    co_await subscribeStreams(symbols);
+    auto subscribeResult = co_await subscribeStreams(symbols);
+    if (!subscribeResult) {
+        co_return compat::unexpected(subscribeResult.error());
+    }
     startBackfill(symbols);
 
     const auto warmupElapsed = std::chrono::duration_cast<std::chrono::seconds>(
@@ -334,9 +427,9 @@ boost::asio::awaitable<Result<void>> MarketScanner::start() {
     co_return Result<void>{};
 }
 
-boost::asio::awaitable<void> MarketScanner::subscribeStreams(const std::vector<std::string>& symbols) {
+boost::asio::awaitable<Result<void>> MarketScanner::subscribeStreams(const std::vector<std::string>& symbols) {
     if (symbols.empty() || (m_config.intervals.empty() && !m_config.betaDailyKlinesEnabled)) {
-        co_return;
+        co_return Result<void>{};
     }
 
     const size_t perConnection = std::max<size_t>(1, m_config.maxStreamsPerConnection);
@@ -364,9 +457,14 @@ boost::asio::awaitable<void> MarketScanner::subscribeStreams(const std::vector<s
         "market_scanner subscribe start streams=" + std::to_string(streams.size()) +
             " max_per_connection=" + std::to_string(perConnection));
 
+    std::vector<std::shared_ptr<std::atomic_bool>> readyFlags;
+    readyFlags.reserve(streamConnectionCount(symbols.size(), m_config.intervals.size(), perConnection));
+
     size_t connectionIndex = 0;
     for (size_t i = 0; i < streams.size();) {
         auto ws = std::make_unique<WsClient>(m_ctx.ioc(), m_ctx.sslContext(), m_ctx.config());
+        auto connectionReady = std::make_shared<std::atomic_bool>(false);
+        readyFlags.push_back(connectionReady);
         ++connectionIndex;
         const size_t end = std::min(streams.size(), i + perConnection);
         Logger::instance().log(
@@ -375,14 +473,20 @@ boost::asio::awaitable<void> MarketScanner::subscribeStreams(const std::vector<s
                 " streams=" + std::to_string(end - i));
         for (; i < end; ++i) {
             const auto [symbol, interval] = streams[i];
-            ws->subscribeKline(symbol, interval, [this](boost::system::error_code ec, MarketEvent event) {
+            ws->subscribeKline(symbol, interval, [this, connectionReady](boost::system::error_code ec, MarketEvent event) {
                 if (ec) {
                     return;
                 }
                 if (const auto* kline = std::get_if<KlineEvent>(&event)) {
+                    connectionReady->store(true);
                     m_cache.update(kline->symbol, kline->interval, kline->kline);
-                    if (kline->kline.isClosed && m_onKlineClosed) {
-                        m_onKlineClosed(
+                    KlineClosedCb onKlineClosed;
+                    {
+                        std::lock_guard lock(m_stateMutex);
+                        onKlineClosed = m_onKlineClosed;
+                    }
+                    if (kline->kline.isClosed && onKlineClosed) {
+                        onKlineClosed(
                             kline->symbol,
                             kline->interval,
                             kline->kline.openTime,
@@ -394,11 +498,19 @@ boost::asio::awaitable<void> MarketScanner::subscribeStreams(const std::vector<s
         ws->connect();
         m_wsClients.push_back(std::move(ws));
     }
+    const auto readyTimeout = std::max(std::chrono::seconds(1), m_config.streamReadyTimeout);
+    auto readyResult = co_await waitForConnectionsReady(
+        m_ctx.ioc(),
+        readyFlags,
+        std::chrono::duration_cast<std::chrono::milliseconds>(readyTimeout));
+    if (!readyResult) {
+        co_return compat::unexpected(readyResult.error());
+    }
     Logger::instance().log(
         LogLevel::Info,
         "market_scanner subscribe complete ws_clients=" + std::to_string(m_wsClients.size()));
 
-    co_return;
+    co_return Result<void>{};
 }
 
 void MarketScanner::startBackfill(const std::vector<std::string>& symbols) {
@@ -439,9 +551,12 @@ void MarketScanner::cancelBackfill() {
             state->timer->cancel(ec);
         }
     }
-    // Block until the coroutine exits. Safe only from non-io_context threads (e.g. main
-    // thread via stop()). Requires io_context thread pool size >= 2 so the coroutine can
-    // finish on another thread while this one waits.
+    // Avoid waiting from an io_context worker thread. Blocking there can deadlock
+    // the coroutine path needed to complete cancellation.
+    if (m_ctx.ioc().get_executor().running_in_this_thread()) {
+        return;
+    }
+    // Block until the coroutine exits when cancellation originates off the io threads.
     if (state->done.valid()) {
         try {
             state->done.wait();
@@ -454,7 +569,7 @@ boost::asio::awaitable<void> MarketScanner::backgroundBackfill(
     std::vector<std::string> symbols,
     std::shared_ptr<BackfillState> state) {
     RestClient backfillRest(m_ctx.ioc(), m_ctx.sslContext(), m_ctx.config(), m_ctx.rateLimiter());
-    const int fullLimit = static_cast<int>(std::max<size_t>(1, m_config.klineBufferSize));
+    const size_t fullLimit = std::max<size_t>(1, m_config.klineBufferSize);
     size_t completed = 0;
     const size_t total = symbols.size() * m_config.intervals.size();
 
@@ -464,7 +579,7 @@ boost::asio::awaitable<void> MarketScanner::backgroundBackfill(
                 co_return;
             }
 
-            const auto klines = co_await backfillRest.klines(symbol, interval, fullLimit);
+            const auto klines = co_await fetchKlineWindow(backfillRest, symbol, interval, fullLimit);
             if (state->cancel.load()) {
                 co_return;
             }
@@ -474,7 +589,7 @@ boost::asio::awaitable<void> MarketScanner::backgroundBackfill(
             } else {
                 Logger::instance().log(
                     LogLevel::Warning,
-                    "market_scanner backfill failed symbol=" + symbol +
+                        "market_scanner backfill failed symbol=" + symbol +
                         " interval=" + interval +
                         " limit=" + std::to_string(fullLimit) +
                         " reason=" + klines.error().toString());
@@ -511,6 +626,10 @@ boost::asio::awaitable<void> MarketScanner::backgroundBackfill(
 
 void MarketScanner::stop() {
     cancelBackfill();
+    {
+        std::lock_guard lock(m_stateMutex);
+        m_onKlineClosed = {};
+    }
     for (auto& ws : m_wsClients) {
         ws->disconnect();
     }
@@ -522,6 +641,7 @@ std::vector<std::string> MarketScanner::symbols() const {
     if (!symbols.empty()) {
         return symbols;
     }
+    std::lock_guard lock(m_stateMutex);
     symbols.reserve(m_symbolInfo.size());
     for (const auto& [symbol, _] : m_symbolInfo) {
         symbols.push_back(symbol);
@@ -530,6 +650,7 @@ std::vector<std::string> MarketScanner::symbols() const {
 }
 
 std::optional<ExchangeSymbol> MarketScanner::symbolInfo(std::string_view symbol) const {
+    std::lock_guard lock(m_stateMutex);
     const auto it = m_symbolInfo.find(std::string(symbol));
     if (it == m_symbolInfo.end()) {
         return std::nullopt;
@@ -538,6 +659,7 @@ std::optional<ExchangeSymbol> MarketScanner::symbolInfo(std::string_view symbol)
 }
 
 void MarketScanner::setOnKlineClosed(KlineClosedCb cb) {
+    std::lock_guard lock(m_stateMutex);
     m_onKlineClosed = std::move(cb);
 }
 

@@ -158,7 +158,7 @@ TEST(AccountServiceTest, SnapshotConfigCanTradeAndAccountCanTradeAreCombinedCons
 
 TEST(AccountServiceTest, SnapshotPropagatesAccountRestFailure) {
     StubAccountRestClient rest;
-    rest.accountResult = std::unexpected(BinanceError::fromApiResponse(-1000, "account unavailable"));
+    rest.accountResult = compat::unexpected(BinanceError::fromApiResponse(-1000, "account unavailable"));
 
     account::AccountCompatibilityConfig cfg;
     account::AccountService service(rest, cfg);
@@ -172,6 +172,33 @@ TEST(AccountServiceTest, SnapshotPropagatesAccountRestFailure) {
     EXPECT_EQ(rest.accountCalls, 1);
     EXPECT_EQ(rest.balanceCalls, 0);
     EXPECT_EQ(rest.positionsCalls, 0);
+}
+
+TEST(AccountServiceTest, SnapshotAllowsPartialOptionalEndpointFailuresWhenRequested) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.canTrade = true;
+    rest.accountResult = account;
+    rest.balanceResult = compat::unexpected(BinanceError::fromApiResponse(-1001, "balance unavailable"));
+    Position position;
+    position.symbol = "BTCUSDT";
+    rest.positionsResult = std::vector<Position>{position};
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::AccountSnapshotRequest request;
+    request.includeBalanceEndpoint = true;
+    request.includePositions = true;
+    request.allowPartialResults = true;
+
+    auto result = runAwaitable(service.snapshot(request));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::AccountSnapshotCompleteness::AccountAndPositions);
+    EXPECT_FALSE(result->balances.has_value());
+    ASSERT_TRUE(result->positions.has_value());
+    ASSERT_EQ(result->partialErrors.size(), 1u);
+    EXPECT_EQ(result->partialErrors.front().code, -1001);
 }
 
 TEST(AccountServiceTest, SnapshotWithPositionsOnlyMarksAccountAndPositions) {
@@ -255,7 +282,9 @@ TEST(AccountServiceTest, CheckFreeMarginValidatesViaTestOrder) {
     account::MarginCheckDraft draft{
         .symbol = "BTCUSDT",
         .side = account::MarginCheckSide::Buy,
+        .positionSide = PositionSide::Long,
         .quantity = qty("0.01"),
+        .reduceOnly = false,
     };
 
     auto result = runAwaitable(service.checkFreeMargin(draft));
@@ -266,17 +295,23 @@ TEST(AccountServiceTest, CheckFreeMarginValidatesViaTestOrder) {
     ASSERT_TRUE(rest.lastTestOrderRequest.has_value());
     EXPECT_EQ(rest.lastTestOrderRequest->symbol, "BTCUSDT");
     EXPECT_EQ(rest.lastTestOrderRequest->type, OrderType::Market);
+    EXPECT_EQ(rest.lastTestOrderRequest->positionSide, PositionSide::Long);
+    ASSERT_TRUE(rest.lastTestOrderRequest->reduceOnly.has_value());
+    EXPECT_FALSE(*rest.lastTestOrderRequest->reduceOnly);
 }
 
 TEST(AccountServiceTest, CheckFreeMarginBothOptionsKeepsServerValidatedOnly) {
     StubAccountRestClient rest;
     FuturesAccount account;
     account.availableBalance = 1000.0;
+    account.availableBalanceRaw = "1000";
     Position position;
     position.symbol = "BTCUSDT";
     position.leverage = 10;
     account.positions.push_back(position);
     rest.accountResult = account;
+    ASSERT_TRUE(rest.accountResult.has_value());
+    EXPECT_EQ(rest.accountResult->availableBalanceRaw, "1000");
 
     account::AccountCompatibilityConfig cfg;
     account::AccountService service(rest, cfg);
@@ -297,6 +332,121 @@ TEST(AccountServiceTest, CheckFreeMarginBothOptionsKeepsServerValidatedOnly) {
     EXPECT_EQ(*result->estimatedRemainingFreeMargin, "990.0");
     EXPECT_EQ(rest.testOrderCalls, 1);
     EXPECT_EQ(rest.accountCalls, 1);
+}
+
+TEST(AccountServiceTest, CheckFreeMarginLocalEstimateUsesAvailableBalanceRawWhenPresent) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.availableBalance = 1000.0;
+    account.availableBalanceRaw = "500";
+    Position position;
+    position.symbol = "BTCUSDT";
+    position.leverage = 10;
+    account.positions.push_back(position);
+    rest.accountResult = account;
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::MarginCheckDraft draft{
+        .symbol = "BTCUSDT",
+        .side = account::MarginCheckSide::Buy,
+        .quantity = qty("1"),
+        .assumedPrice = price("100"),
+        .useServerTestOrder = false,
+    };
+
+    auto result = runAwaitable(service.checkFreeMargin(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::MarginCheckCompleteness::Estimated);
+    ASSERT_TRUE(result->estimatedRemainingFreeMargin.has_value());
+    EXPECT_EQ(*result->estimatedRemainingFreeMargin, "490.0");
+}
+
+TEST(AccountServiceTest, CheckFreeMarginLocalEstimateUnavailableWhenQuantityNonPositive) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.availableBalance = 1000.0;
+    account.availableBalanceRaw = "1000";
+    Position position;
+    position.symbol = "BTCUSDT";
+    position.leverage = 10;
+    account.positions.push_back(position);
+    rest.accountResult = account;
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::MarginCheckDraft draft{
+        .symbol = "BTCUSDT",
+        .side = account::MarginCheckSide::Buy,
+        .quantity = qty("0"),
+        .assumedPrice = price("100"),
+        .useServerTestOrder = false,
+    };
+
+    auto result = runAwaitable(service.checkFreeMargin(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::MarginCheckCompleteness::Unavailable);
+    EXPECT_FALSE(result->estimatedRemainingFreeMargin.has_value());
+    EXPECT_EQ(rest.accountCalls, 0);
+}
+
+TEST(AccountServiceTest, CheckFreeMarginLocalEstimateUnavailableWhenAssumedPriceNonPositive) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.availableBalance = 1000.0;
+    account.availableBalanceRaw = "1000";
+    Position position;
+    position.symbol = "BTCUSDT";
+    position.leverage = 10;
+    account.positions.push_back(position);
+    rest.accountResult = account;
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::MarginCheckDraft draft{
+        .symbol = "BTCUSDT",
+        .side = account::MarginCheckSide::Buy,
+        .quantity = qty("1"),
+        .assumedPrice = price("0"),
+        .useServerTestOrder = false,
+    };
+
+    auto result = runAwaitable(service.checkFreeMargin(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::MarginCheckCompleteness::Unavailable);
+    EXPECT_FALSE(result->estimatedRemainingFreeMargin.has_value());
+    EXPECT_EQ(rest.accountCalls, 0);
+}
+
+TEST(AccountServiceTest, CheckFreeMarginLocalEstimateUnavailableWhenAvailableBalanceRawInvalid) {
+    StubAccountRestClient rest;
+    FuturesAccount account;
+    account.availableBalance = 1000.0;
+    account.availableBalanceRaw = "invalid";
+    Position position;
+    position.symbol = "BTCUSDT";
+    position.leverage = 10;
+    account.positions.push_back(position);
+    rest.accountResult = account;
+
+    account::AccountCompatibilityConfig cfg;
+    account::AccountService service(rest, cfg);
+
+    account::MarginCheckDraft draft{
+        .symbol = "BTCUSDT",
+        .side = account::MarginCheckSide::Buy,
+        .quantity = qty("1"),
+        .assumedPrice = price("100"),
+        .useServerTestOrder = false,
+    };
+
+    auto result = runAwaitable(service.checkFreeMargin(draft));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->completeness, account::MarginCheckCompleteness::Unavailable);
+    EXPECT_FALSE(result->estimatedRemainingFreeMargin.has_value());
 }
 
 TEST(AccountServiceTest, CheckFreeMarginRejectsEmptyOptionsWithUnsupportedError) {
@@ -338,7 +488,7 @@ TEST(AccountServiceTest, LiquidationRiskReturnsPositionOnlyView) {
 
 TEST(AccountServiceTest, LiquidationRiskPropagatesRestFailure) {
     StubAccountRestClient rest;
-    rest.positionsResult = std::unexpected(BinanceError::fromApiResponse(-2011, "position risk unavailable"));
+    rest.positionsResult = compat::unexpected(BinanceError::fromApiResponse(-2011, "position risk unavailable"));
     account::AccountCompatibilityConfig cfg;
     account::AccountService service(rest, cfg);
 

@@ -13,7 +13,7 @@ namespace {
 class StubRestClient final : public IRestClient {
 public:
     Order lastNewOrderRequest;
-    RestResult<Order> newOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> newOrderResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
 
     boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest req) override {
         lastNewOrderRequest.symbol = req.symbol;
@@ -68,6 +68,7 @@ TEST(Mql4PhaseCTest, StopEntryMapsCorrectParams) {
 
     OrdersConfig cfg;
     cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
     Orders orders(rest, cfg);
 
     StopEntryDraft draft{
@@ -99,6 +100,7 @@ TEST(Mql4PhaseCTest, ProtectionMapsCorrectParams) {
 
     OrdersConfig cfg;
     cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
     Orders orders(rest, cfg);
 
     ProtectionOrderDraft draft{
@@ -124,12 +126,13 @@ TEST(Mql4PhaseCTest, ProtectionMapsCorrectParams) {
 
 TEST(Mql4PhaseCTest, StopEntryMapsAmbiguousTransportErrorToUnknownPendingReconcile) {
     StubRestClient rest;
-    rest.newOrderResult = std::unexpected(BinanceError::fromNetwork(
+    rest.newOrderResult = compat::unexpected(BinanceError::fromNetwork(
         boost::asio::error::timed_out,
         NetworkErrorPhase::AfterSend));
 
     OrdersConfig cfg;
     cfg.clientIdNamespace = "test";
+    cfg.allowBestEffortJournal = true;
     Orders orders(rest, cfg);
 
     StopEntryDraft draft{

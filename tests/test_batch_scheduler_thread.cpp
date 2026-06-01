@@ -54,7 +54,7 @@ private:
     std::vector<orchestration::ProcessResult> m_scripted;
 };
 
-std::chrono::system_clock::time_point makeLocalTimePoint(
+std::chrono::system_clock::time_point makeUtcTimePoint(
     int year,
     int month,
     int day,
@@ -67,8 +67,12 @@ std::chrono::system_clock::time_point makeLocalTimePoint(
     tmLocal.tm_hour = hour;
     tmLocal.tm_min = minute;
     tmLocal.tm_sec = 0;
-    tmLocal.tm_isdst = -1;
-    const std::time_t t = std::mktime(&tmLocal);
+    tmLocal.tm_isdst = 0;
+#if defined(_WIN32)
+    const std::time_t t = _mkgmtime(&tmLocal);
+#else
+    const std::time_t t = timegm(&tmLocal);
+#endif
     return std::chrono::system_clock::from_time_t(t);
 }
 
@@ -144,7 +148,7 @@ TEST(BatchSchedulerThreadTest, DoesNotRunOnWeekend) {
     FakeProcessRunner runner({});
     orchestration::BatchSchedulerThread scheduler(makeConfig(), runner);
 
-    const auto saturday0700 = makeLocalTimePoint(2026, 5, 23, 7, 0);
+    const auto saturday0700 = makeUtcTimePoint(2026, 5, 23, 7, 0);
     EXPECT_FALSE(scheduler.shouldRunToday(saturday0700));
 }
 
@@ -152,22 +156,23 @@ TEST(BatchSchedulerThreadTest, DoesNotRunBeforeScheduledHour) {
     FakeProcessRunner runner({});
     orchestration::BatchSchedulerThread scheduler(makeConfig(), runner);
 
-    const auto monday0659 = makeLocalTimePoint(2026, 5, 18, 6, 59);
-    const auto monday0700 = makeLocalTimePoint(2026, 5, 18, 7, 0);
+    const auto monday0659 = makeUtcTimePoint(2026, 5, 18, 6, 59);
+    const auto monday0700 = makeUtcTimePoint(2026, 5, 18, 7, 0);
     EXPECT_FALSE(scheduler.shouldRunToday(monday0659));
     EXPECT_TRUE(scheduler.shouldRunToday(monday0700));
 }
 
-TEST(BatchSchedulerThreadTest, DoesNotRunTwiceOnSameDay) {
+TEST(BatchSchedulerThreadTest, FailedRunDoesNotSuppressSameDayRetry) {
     FakeProcessRunner runner({
         orchestration::ProcessResult{.exitCode = 1, .timedOut = false, .succeeded = false, .logPath = "p1.log"},
+        orchestration::ProcessResult{.exitCode = 1, .timedOut = false, .succeeded = false, .logPath = "p1-retry.log"},
     });
     orchestration::BatchSchedulerThread scheduler(makeConfig(), runner);
 
-    const auto monday0700 = makeLocalTimePoint(2026, 5, 18, 7, 0);
+    const auto monday0700 = makeUtcTimePoint(2026, 5, 18, 7, 0);
     EXPECT_TRUE(scheduler.runScheduledCycleAt(monday0700));
-    EXPECT_FALSE(scheduler.runScheduledCycleAt(monday0700));
-    ASSERT_EQ(runner.calls.size(), 1U);
+    EXPECT_TRUE(scheduler.runScheduledCycleAt(monday0700));
+    ASSERT_EQ(runner.calls.size(), 2U);
 }
 
 TEST(BatchSchedulerThreadTest, Phase2SkippedWhenPhase1Fails) {

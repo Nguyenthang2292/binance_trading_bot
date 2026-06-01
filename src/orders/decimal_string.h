@@ -9,7 +9,7 @@
 
 class DecimalString {
 public:
-    static std::expected<DecimalString, BinanceError> parse(std::string_view value);
+    static compat::expected<DecimalString, BinanceError> parse(std::string_view value);
 
     std::string_view value() const { return m_value; }
     double toDouble() const;

@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -38,9 +39,13 @@ public:
     void run(std::stop_token stopToken);
 
     std::vector<std::string> buildPhase3Cmd(int64_t asofMs) const;
-    void processCandle(int64_t candleOpenTimeMs);
+    bool processCandle(int64_t candleOpenTimeMs);
 
 private:
+    std::vector<std::string> buildPhase3Cmd(int64_t asofMs, std::string_view modelPath) const;
+    std::optional<std::string> resolvePublishedModelPath() const;
+    bool datasetContainsAsofMs(int64_t asofMs) const;
+
     CandleSchedulerConfig m_config;
     IProcessRunner& m_runner;
     QlibStateStore& m_stateStore;

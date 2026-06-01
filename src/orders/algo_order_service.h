@@ -47,8 +47,8 @@ private:
     OrdersResult<ClientOrderId> resolveClientOrderId(const std::optional<ClientOrderId>& provided);
     OrdersResult<PreparedPlacement> prepareStopEntry(StopEntryDraft draft);
     OrdersResult<PreparedPlacement> prepareProtection(ProtectionOrderDraft draft);
-    std::expected<void, BinanceError> recordIntent(const PreparedPlacement& placement);
-    std::expected<void, BinanceError> updateJournal(const CorrelationId& id,
+    compat::expected<void, BinanceError> recordIntent(const PreparedPlacement& placement);
+    compat::expected<void, BinanceError> updateJournal(const CorrelationId& id,
                                                     PlacementState state,
                                                     std::optional<int64_t> orderId = std::nullopt);
     static OrderErrorCategory mapErrorCategory(const BinanceError& error);

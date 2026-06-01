@@ -9,6 +9,8 @@
 
 namespace strategy {
 
+inline constexpr int kStrategyPluginAbiVersion = 1;
+
 struct Signal {
     enum class Direction { Long, Short, None };
     enum class ExitPolicy { Default, SwingTrailing };

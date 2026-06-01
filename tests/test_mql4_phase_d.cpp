@@ -13,13 +13,13 @@ class StubRestClient final : public IRestClient {
 public:
     std::vector<UserTrade> userTradesResult;
 
-    boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest) override { co_return std::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
-    boost::asio::awaitable<RestResult<Order>> modifyOrder(OrderRequest) override { co_return std::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
-    boost::asio::awaitable<RestResult<Order>> cancelOrder(std::string, int64_t) override { co_return std::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
-    boost::asio::awaitable<RestResult<Order>> cancelOrderByClientOrderId(std::string, std::string) override { co_return std::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
+    boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest) override { co_return compat::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
+    boost::asio::awaitable<RestResult<Order>> modifyOrder(OrderRequest) override { co_return compat::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
+    boost::asio::awaitable<RestResult<Order>> cancelOrder(std::string, int64_t) override { co_return compat::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
+    boost::asio::awaitable<RestResult<Order>> cancelOrderByClientOrderId(std::string, std::string) override { co_return compat::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
     boost::asio::awaitable<RestResult<void>> cancelAllOrders(std::string) override { co_return RestResult<void>{}; }
-    boost::asio::awaitable<RestResult<Order>> queryOrder(std::string, int64_t) override { co_return std::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
-    boost::asio::awaitable<RestResult<Order>> queryOrderByClientOrderId(std::string, std::string) override { co_return std::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
+    boost::asio::awaitable<RestResult<Order>> queryOrder(std::string, int64_t) override { co_return compat::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
+    boost::asio::awaitable<RestResult<Order>> queryOrderByClientOrderId(std::string, std::string) override { co_return compat::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
     boost::asio::awaitable<RestResult<std::vector<Order>>> openOrders(std::optional<std::string>) override { co_return std::vector<Order>{}; }
     boost::asio::awaitable<RestResult<std::vector<Order>>> allOrders(std::string, std::optional<int64_t>, std::optional<int64_t>, int) override { co_return std::vector<Order>{}; }
     

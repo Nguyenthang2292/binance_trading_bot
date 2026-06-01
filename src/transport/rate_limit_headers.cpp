@@ -2,6 +2,7 @@
 
 #include <charconv>
 #include <cctype>
+#include <limits>
 #include <system_error>
 
 namespace {
@@ -20,15 +21,38 @@ bool equalsHeaderName(std::string_view lhs, std::string_view rhs) {
     return true;
 }
 
+std::string_view trimAsciiWhitespace(std::string_view value) {
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) {
+        value.remove_prefix(1);
+    }
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) {
+        value.remove_suffix(1);
+    }
+    return value;
+}
+
 bool parseInt(std::string_view value, int& out) {
-    int parsed = 0;
+    value = trimAsciiWhitespace(value);
+    long long parsed = 0;
     const auto* begin = value.data();
     const auto* end = value.data() + value.size();
     const auto result = std::from_chars(begin, end, parsed);
+    if (result.ec == std::errc::result_out_of_range && result.ptr == end) {
+        out = value.starts_with("-") ? 0 : std::numeric_limits<int>::max();
+        return true;
+    }
     if (result.ec != std::errc{} || result.ptr != end) {
         return false;
     }
-    out = parsed;
+    if (parsed < 0) {
+        out = 0;
+        return true;
+    }
+    if (parsed > std::numeric_limits<int>::max()) {
+        out = std::numeric_limits<int>::max();
+        return true;
+    }
+    out = static_cast<int>(parsed);
     return true;
 }
 

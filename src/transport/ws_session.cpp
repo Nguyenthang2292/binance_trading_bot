@@ -5,8 +5,10 @@
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/ssl/host_name_verification.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <openssl/ssl.h>
@@ -15,6 +17,8 @@
 #include <cmath>
 #include <exception>
 #include <memory>
+#include <string>
+#include <utility>
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -29,6 +33,7 @@ WsSession::WsSession(asio::io_context& ioc,
                      ReconnectConfig cfg)
     : m_ioc(ioc),
       m_ssl(sslContext),
+      m_strand(asio::make_strand(ioc)),
       m_host(std::move(host)),
       m_proxy(std::move(proxy)),
       m_reconnectCfg(cfg) {
@@ -36,57 +41,164 @@ WsSession::WsSession(asio::io_context& ioc,
 }
 
 void WsSession::resetSocket() {
-    m_ws = std::make_unique<WebSocket>(m_ioc, m_ssl);
+    cancelReconnectDeadline();
+    m_ws = std::make_unique<WebSocket>(m_strand, m_ssl);
     m_connected = false;
 }
 
-void WsSession::start(std::string path, WsMessageCb onMessage, WsSimpleCb onDisconnect, WsSimpleCb onReconnect) {
-    m_path = std::move(path);
-    m_onMessage = std::move(onMessage);
-    m_onDisconnect = std::move(onDisconnect);
-    m_onReconnect = std::move(onReconnect);
-    m_stopped = false;
+void WsSession::clearWriteQueue() {
+    std::queue<std::string> empty;
+    m_outboundMessages.swap(empty);
+}
 
+void WsSession::start(std::string path, WsMessageCb onMessage, WsSimpleCb onDisconnect, WsSimpleCb onReconnect) {
     auto self = shared_from_this();
-    asio::co_spawn(
-        m_ioc,
-        [self] { return self->connectLoop(); },
-        [](std::exception_ptr ep) {
-            if (!ep) {
-                return;
-            }
-            try {
-                std::rethrow_exception(ep);
-            } catch (const std::exception& e) {
-                Logger::instance().log(LogLevel::Error, std::string("WsSession connectLoop exception: ") + e.what());
-            } catch (...) {
-                Logger::instance().log(LogLevel::Error, "WsSession connectLoop unknown exception");
-            }
+    asio::dispatch(
+        m_strand,
+        [self,
+         path = std::move(path),
+         onMessage = std::move(onMessage),
+         onDisconnect = std::move(onDisconnect),
+         onReconnect = std::move(onReconnect)]() mutable {
+            self->m_path = std::move(path);
+            self->m_onMessage = std::move(onMessage);
+            self->m_onDisconnect = std::move(onDisconnect);
+            self->m_onReconnect = std::move(onReconnect);
+            self->m_stopped = false;
+            self->clearWriteQueue();
+            self->m_writerRunning = false;
+
+            asio::co_spawn(
+                self->m_strand,
+                [self] { return self->connectLoop(); },
+                [](std::exception_ptr ep) {
+                    if (!ep) {
+                        return;
+                    }
+                    try {
+                        std::rethrow_exception(ep);
+                    } catch (const std::exception& e) {
+                        Logger::instance().log(
+                            LogLevel::Error,
+                            std::string("WsSession connectLoop exception: ") + e.what());
+                    } catch (...) {
+                        Logger::instance().log(LogLevel::Error, "WsSession connectLoop unknown exception");
+                    }
+                });
         });
 }
 
 void WsSession::stop() {
-    m_stopped = true;
     auto self = shared_from_this();
-    asio::post(m_ioc, [self] {
-        if (self->m_ws && self->m_connected) {
-            boost::system::error_code ec;
-            self->m_ws->close(websocket::close_code::normal, ec);
+    asio::post(m_strand, [self] {
+        self->m_stopped = true;
+        self->cancelReconnectDeadline();
+        self->clearWriteQueue();
+        self->m_writerRunning = false;
+
+        if (!self->m_ws) {
+            return;
         }
-        self->resetSocket();
+
+        boost::system::error_code ec;
+        beast::get_lowest_layer(*self->m_ws).socket().cancel(ec);
+        if (self->m_ws->is_open()) {
+            self->m_ws->async_close(websocket::close_code::normal, [](boost::system::error_code) {});
+        }
     });
 }
 
 void WsSession::send(std::string message) {
     auto self = shared_from_this();
-    asio::post(m_ioc, [self, message = std::move(message)] {
-        if (!self->m_ws || !self->m_connected) {
+    asio::post(m_strand, [self, message = std::move(message)]() mutable {
+        if (self->m_stopped) {
             return;
         }
-        self->m_ws->text(true);
-        self->m_ws->async_write(asio::buffer(message),
-                                [self](boost::system::error_code, std::size_t) {});
+        self->m_outboundMessages.push(std::move(message));
+        if (!self->m_connected || self->m_writerRunning) {
+            return;
+        }
+        self->m_writerRunning = true;
+        asio::co_spawn(
+            self->m_strand,
+            [self] { return self->writeLoop(); },
+            [self](std::exception_ptr ep) {
+                self->m_writerRunning = false;
+                if (!ep) {
+                    return;
+                }
+                try {
+                    std::rethrow_exception(ep);
+                } catch (const std::exception& e) {
+                    if (self->m_onMessage) {
+                        self->m_onMessage(boost::asio::error::operation_aborted, std::string{});
+                    }
+                    Logger::instance().log(
+                        LogLevel::Warning,
+                        std::string("WsSession writeLoop exception: ") + e.what());
+                } catch (...) {
+                    if (self->m_onMessage) {
+                        self->m_onMessage(boost::asio::error::operation_aborted, std::string{});
+                    }
+                    Logger::instance().log(LogLevel::Warning, "WsSession writeLoop unknown exception");
+                }
+            });
     });
+}
+
+void WsSession::onConnected() {
+    if (m_connected && !m_outboundMessages.empty() && !m_writerRunning) {
+        m_writerRunning = true;
+        auto self = shared_from_this();
+        asio::co_spawn(
+            m_strand,
+            [self] { return self->writeLoop(); },
+            [self](std::exception_ptr ep) {
+                self->m_writerRunning = false;
+                if (!ep) {
+                    return;
+                }
+                try {
+                    std::rethrow_exception(ep);
+                } catch (const std::exception& e) {
+                    if (self->m_onMessage) {
+                        self->m_onMessage(boost::asio::error::operation_aborted, std::string{});
+                    }
+                    Logger::instance().log(
+                        LogLevel::Warning,
+                        std::string("WsSession writeLoop exception: ") + e.what());
+                } catch (...) {
+                    if (self->m_onMessage) {
+                        self->m_onMessage(boost::asio::error::operation_aborted, std::string{});
+                    }
+                    Logger::instance().log(LogLevel::Warning, "WsSession writeLoop unknown exception");
+                }
+            });
+    }
+}
+
+void WsSession::armReconnectDeadline() {
+    cancelReconnectDeadline();
+    auto self = shared_from_this();
+    m_reconnectDeadlineTimer = std::make_unique<asio::steady_timer>(m_strand);
+    m_reconnectDeadlineTimer->expires_after(m_maxSessionLifetime);
+    m_reconnectDeadlineTimer->async_wait([self](const boost::system::error_code& ec) {
+        if (ec || self->m_stopped || !self->m_ws) {
+            return;
+        }
+        Logger::instance().log(LogLevel::Info, "WsSession rotating websocket connection after max session lifetime");
+        boost::system::error_code ignored;
+        beast::get_lowest_layer(*self->m_ws).socket().cancel(ignored);
+    });
+}
+
+void WsSession::cancelReconnectDeadline() {
+    if (!m_reconnectDeadlineTimer) {
+        return;
+    }
+    boost::system::error_code ignored;
+    m_reconnectDeadlineTimer->cancel(ignored);
+    m_reconnectDeadlineTimer.reset();
 }
 
 asio::awaitable<void> WsSession::connectLoop() {
@@ -98,6 +210,8 @@ asio::awaitable<void> WsSession::connectLoop() {
             co_await doConnect();
             m_connected = true;
             m_connectedAt = std::chrono::steady_clock::now();
+            armReconnectDeadline();
+            onConnected();
             if (!firstConnect && m_onReconnect) {
                 m_onReconnect();
             }
@@ -107,11 +221,11 @@ asio::awaitable<void> WsSession::connectLoop() {
             co_await readLoop();
         } catch (const boost::system::system_error& e) {
             if (m_onMessage) {
-                m_onMessage(e.code(), {});
+                m_onMessage(e.code(), std::string{});
             }
         } catch (...) {
             if (m_onMessage) {
-                m_onMessage(asio::error::connection_reset, {});
+                m_onMessage(asio::error::connection_reset, std::string{});
             }
         }
 
@@ -120,12 +234,15 @@ asio::awaitable<void> WsSession::connectLoop() {
         }
 
         m_connected = false;
+        cancelReconnectDeadline();
+        m_writerRunning = false;
+        clearWriteQueue();
         resetSocket();
         if (m_onDisconnect) {
             m_onDisconnect();
         }
 
-        asio::steady_timer timer(m_ioc);
+        asio::steady_timer timer(m_strand);
         timer.expires_after(delay);
         co_await timer.async_wait(asio::use_awaitable);
 
@@ -136,6 +253,8 @@ asio::awaitable<void> WsSession::connectLoop() {
 
 asio::awaitable<void> WsSession::doConnect() {
     resetSocket();
+    m_ws->next_layer().set_verify_mode(ssl::verify_peer);
+    m_ws->next_layer().set_verify_callback(ssl::host_name_verification(m_host));
     if (!SSL_set_tlsext_host_name(m_ws->next_layer().native_handle(), m_host.c_str())) {
         throw boost::system::system_error(asio::error::operation_aborted);
     }
@@ -143,7 +262,7 @@ asio::awaitable<void> WsSession::doConnect() {
     const std::string connectHost = m_proxy.enabled() ? m_proxy.host : m_host;
     const std::string connectPort = m_proxy.enabled() ? std::to_string(m_proxy.port) : "443";
 
-    tcp::resolver resolver(m_ioc);
+    tcp::resolver resolver(m_strand);
     auto results = co_await resolver.async_resolve(connectHost, connectPort, asio::use_awaitable);
     beast::get_lowest_layer(*m_ws).expires_after(std::chrono::seconds(30));
     co_await beast::get_lowest_layer(*m_ws).async_connect(results, asio::use_awaitable);
@@ -163,20 +282,24 @@ asio::awaitable<void> WsSession::doConnect() {
     co_await m_ws->async_handshake(m_host, m_path, asio::use_awaitable);
 }
 
+asio::awaitable<void> WsSession::writeLoop() {
+    while (!m_stopped && m_connected && m_ws && !m_outboundMessages.empty()) {
+        std::string message = std::move(m_outboundMessages.front());
+        m_outboundMessages.pop();
+        m_ws->text(true);
+        co_await m_ws->async_write(asio::buffer(message), asio::use_awaitable);
+    }
+    m_writerRunning = false;
+}
+
 asio::awaitable<void> WsSession::readLoop() {
     beast::flat_buffer buffer;
     while (!m_stopped) {
         buffer.clear();
         co_await m_ws->async_read(buffer, asio::use_awaitable);
-        const auto text = beast::buffers_to_string(buffer.data());
+        std::string text = beast::buffers_to_string(buffer.data());
         if (m_onMessage) {
-            m_onMessage({}, text);
-        }
-
-        if (std::chrono::steady_clock::now() - m_connectedAt >= std::chrono::hours(23) + std::chrono::minutes(50)) {
-            boost::system::error_code ec;
-            m_ws->close(websocket::close_code::normal, ec);
-            throw boost::system::system_error(asio::error::connection_reset);
+            m_onMessage({}, std::move(text));
         }
     }
 }

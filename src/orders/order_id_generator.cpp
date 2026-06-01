@@ -24,24 +24,24 @@ int64_t unixMsNow() {
 OrderIdGenerator::OrderIdGenerator(std::string nameSpace)
     : m_namespace(std::move(nameSpace)) {}
 
-std::expected<void, BinanceError> OrderIdGenerator::validateClientOrderId(const ClientOrderId& id) const {
+compat::expected<void, BinanceError> OrderIdGenerator::validateClientOrderId(const ClientOrderId& id) const {
     if (!std::regex_match(id, kClientOrderIdPattern)) {
-        return std::unexpected(BinanceError::fromApiResponse(
+        return compat::unexpected(BinanceError::fromApiResponse(
             -90003, "Invalid clientOrderId format. Allowed charset: [A-Za-z0-9._:@/\\-], length 1..36"));
     }
     return {};
 }
 
-std::expected<ClientOrderId, BinanceError> OrderIdGenerator::generateClientOrderId() {
+compat::expected<ClientOrderId, BinanceError> OrderIdGenerator::generateClientOrderId() {
     if (!std::regex_match(m_namespace, kNamespacePattern)) {
-        return std::unexpected(BinanceError::fromApiResponse(
+        return compat::unexpected(BinanceError::fromApiResponse(
             -90004, "Invalid client id namespace. Expected [A-Za-z0-9_], length 1..8"));
     }
 
     const auto ts = unixMsNow();
     uint32_t entropy = 0;
     if (RAND_bytes(reinterpret_cast<unsigned char*>(&entropy), sizeof(entropy)) != 1) {
-        return std::unexpected(BinanceError::fromApiResponse(
+        return compat::unexpected(BinanceError::fromApiResponse(
             -90008, "Failed to generate cryptographic randomness for clientOrderId"));
     }
     std::ostringstream out;
@@ -49,7 +49,7 @@ std::expected<ClientOrderId, BinanceError> OrderIdGenerator::generateClientOrder
     out << std::hex << std::nouppercase << std::setw(8) << std::setfill('0') << entropy;
     auto id = out.str();
     if (id.size() > kMaxClientOrderIdLen) {
-        return std::unexpected(BinanceError::fromApiResponse(
+        return compat::unexpected(BinanceError::fromApiResponse(
             -90005, "Generated clientOrderId exceeds 36 characters"));
     }
     return id;

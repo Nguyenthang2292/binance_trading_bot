@@ -164,6 +164,15 @@ boost::asio::awaitable<void> RiskController::maybeRecompute(int64_t nowMs) {
             co_return;
         }
     }
+    bool expected = false;
+    if (!m_recomputeInFlight.compare_exchange_strong(expected, true)) {
+        co_return;
+    }
+
+    struct InFlightGuard {
+        std::atomic<bool>& flag;
+        ~InFlightGuard() { flag.store(false); }
+    } guard{m_recomputeInFlight};
 
     recomputeMetrics(nowMs);
 
@@ -218,16 +227,16 @@ RiskStatus RiskController::evaluate(const RiskMetricsResult& metrics) const {
     const double hardDrawdownLimit = -m_config.hardMaxDrawdown;
     const double softDrawdownLimit = -m_config.softMaxDrawdown;
 
-    if (metrics.maxDrawdown < hardDrawdownLimit) {
+    if (metrics.maxDrawdown <= hardDrawdownLimit) {
         return RiskStatus::HARD_BREACH;
     }
-    if (metrics.upi < m_config.hardMinUpi) {
+    if (metrics.upi <= m_config.hardMinUpi) {
         return RiskStatus::HARD_BREACH;
     }
-    if (metrics.maxDrawdown < softDrawdownLimit) {
+    if (metrics.maxDrawdown <= softDrawdownLimit) {
         return RiskStatus::SOFT_BREACH;
     }
-    if (metrics.upi < m_config.softMinUpi) {
+    if (metrics.upi <= m_config.softMinUpi) {
         return RiskStatus::SOFT_BREACH;
     }
     return RiskStatus::OK;

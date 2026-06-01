@@ -25,10 +25,30 @@ strategy::IStrategy* createOk(const char*) {
     cfg.name = "dummy";
     return new DummyStrategy(cfg);
 }
+strategy::IStrategy* createV1(const char*) {
+    strategy::StrategyConfig cfg;
+    cfg.name = "v1";
+    return new DummyStrategy(cfg);
+}
+strategy::IStrategy* createV2(const char*) {
+    strategy::StrategyConfig cfg;
+    cfg.name = "v2";
+    return new DummyStrategy(cfg);
+}
 strategy::IStrategy* createNull(const char*) { return nullptr; }
 strategy::IStrategy* createThrowsStd(const char*) { throw std::runtime_error("factory failed"); }
 strategy::IStrategy* createThrowsUnknown(const char*) { throw 42; }
 void destroyOk(strategy::IStrategy* ptr) { delete ptr; }
+int g_destroyV1Count = 0;
+int g_destroyV2Count = 0;
+void destroyV1(strategy::IStrategy* ptr) {
+    ++g_destroyV1Count;
+    delete ptr;
+}
+void destroyV2(strategy::IStrategy* ptr) {
+    ++g_destroyV2Count;
+    delete ptr;
+}
 const char* typeFn() { return "dummy"; }
 const char* verFn() { return "1.0.0"; }
 
@@ -68,7 +88,7 @@ TEST(PluginLoaderTest, LoadAllAndCreateSuccess) {
         {.pluginsDir = "plugins"},
         [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"a.dll"}; },
         [](const std::filesystem::path& path) {
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 
@@ -76,6 +96,7 @@ TEST(PluginLoaderTest, LoadAllAndCreateSuccess) {
     ASSERT_EQ(results.size(), 1u);
     EXPECT_TRUE(results[0].success);
     EXPECT_EQ(results[0].type, "dummy");
+    EXPECT_EQ(results[0].abiVersion, strategy::kStrategyPluginAbiVersion);
 
     auto instance = loader.createStrategy("dummy", "{}");
     ASSERT_TRUE(instance);
@@ -87,8 +108,8 @@ TEST(PluginLoaderTest, CapturesMissingExportFailure) {
         {.pluginsDir = "plugins"},
         [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"bad.dll"}; },
         [](const std::filesystem::path&) {
-            return std::expected<catalog::PluginHandle, std::string>(
-                std::unexpected(std::string("missing required exports")));
+            return compat::expected<catalog::PluginHandle, std::string>(
+                compat::unexpected(std::string("missing required exports")));
         });
 
     const auto results = loader.loadAll();
@@ -102,7 +123,7 @@ TEST(PluginLoaderTest, CreateReturnsNullWhenFactoryReturnsNullptr) {
         {.pluginsDir = "plugins"},
         [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"null.dll"}; },
         [](const std::filesystem::path& path) {
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createNull, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 
@@ -127,7 +148,7 @@ TEST(PluginLoaderTest, EnforcedSha256AllowlistBlocksUnlistedPlugin) {
         [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
         [&loadCalls](const std::filesystem::path& path) {
             ++loadCalls;
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 
@@ -155,7 +176,7 @@ TEST(PluginLoaderTest, EnforcedSha256AllowlistLoadsAllowlistedPlugin) {
         [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
         [&loadCalls](const std::filesystem::path& path) {
             ++loadCalls;
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 
@@ -170,7 +191,7 @@ TEST(PluginLoaderTest, CreateReturnsNullWhenFactoryThrowsStdException) {
         {.pluginsDir = "plugins"},
         [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"throw_std.dll"}; },
         [](const std::filesystem::path& path) {
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createThrowsStd, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 
@@ -184,7 +205,7 @@ TEST(PluginLoaderTest, CreateReturnsNullWhenFactoryThrowsUnknownException) {
         {.pluginsDir = "plugins"},
         [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"throw_unknown.dll"}; },
         [](const std::filesystem::path& path) {
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createThrowsUnknown, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 
@@ -206,7 +227,7 @@ TEST(PluginLoaderTest, EnforcedSha256AllowlistWithEmptyPathFailsClosed) {
         [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
         [&loadCalls](const std::filesystem::path& path) {
             ++loadCalls;
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 
@@ -231,7 +252,7 @@ TEST(PluginLoaderTest, EnforcedSha256AllowlistMissingFileFailsClosed) {
         [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
         [&loadCalls](const std::filesystem::path& path) {
             ++loadCalls;
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 
@@ -257,7 +278,7 @@ TEST(PluginLoaderTest, EnforcedSha256AllowlistRejectsEmptyAllowlistFile) {
         [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
         [&loadCalls](const std::filesystem::path& path) {
             ++loadCalls;
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 
@@ -283,7 +304,7 @@ TEST(PluginLoaderTest, EnforcedSha256AllowlistRejectsInvalidHexEntry) {
         [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
         [&loadCalls](const std::filesystem::path& path) {
             ++loadCalls;
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 
@@ -293,6 +314,127 @@ TEST(PluginLoaderTest, EnforcedSha256AllowlistRejectsInvalidHexEntry) {
     EXPECT_NE(results[0].error.find("invalid sha256 allowlist entry"), std::string::npos);
     EXPECT_EQ(loadCalls, 0);
 }
+
+TEST(PluginLoaderTest, DuplicateStrategyTypesAreRejected) {
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins"},
+        [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"a.dll", "b.dll"}; },
+        [](const std::filesystem::path& path) {
+            if (path.filename() == "a.dll") {
+                return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                    path, &createV1, &destroyV1, &typeFn, &verFn, "dup_type", "1.0.0"));
+            }
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createV2, &destroyV2, &typeFn, &verFn, "dup_type", "2.0.0"));
+        });
+
+    const auto results = loader.loadAll();
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_TRUE(results[0].success);
+    EXPECT_FALSE(results[1].success);
+    EXPECT_NE(results[1].error.find("duplicate strategy type"), std::string::npos);
+
+    auto created = loader.createStrategy("dup_type", "{}");
+    ASSERT_TRUE(created);
+    EXPECT_EQ(created->config().name, "v1");
+}
+
+TEST(PluginLoaderTest, StrategyInstancesRemainValidAcrossReloads) {
+    g_destroyV1Count = 0;
+    g_destroyV2Count = 0;
+    int loadGeneration = 0;
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins"},
+        [&loadGeneration](const std::filesystem::path&) {
+            if (loadGeneration == 0) {
+                return std::vector<std::filesystem::path>{"v1.dll"};
+            }
+            return std::vector<std::filesystem::path>{"v2.dll"};
+        },
+        [](const std::filesystem::path& path) {
+            if (path.filename() == "v1.dll") {
+                return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                    path, &createV1, &destroyV1, &typeFn, &verFn, "dummy", "1.0.0"));
+            }
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createV2, &destroyV2, &typeFn, &verFn, "dummy", "2.0.0"));
+        });
+
+    const auto first = loader.loadAll();
+    ASSERT_EQ(first.size(), 1u);
+    ASSERT_TRUE(first[0].success);
+
+    auto strategyV1 = loader.createStrategy("dummy", "{}");
+    ASSERT_TRUE(strategyV1);
+    EXPECT_EQ(strategyV1->config().name, "v1");
+
+    loadGeneration = 1;
+    const auto second = loader.loadAll();
+    ASSERT_EQ(second.size(), 1u);
+    ASSERT_TRUE(second[0].success);
+
+    auto strategyV2 = loader.createStrategy("dummy", "{}");
+    ASSERT_TRUE(strategyV2);
+    EXPECT_EQ(strategyV2->config().name, "v2");
+
+    strategyV2.reset();
+    strategyV1.reset();
+    EXPECT_EQ(g_destroyV1Count, 1);
+    EXPECT_EQ(g_destroyV2Count, 1);
+}
+
+TEST(PluginLoaderTest, EnforcedSha256AllowlistDetectsHashChangeBetweenVerifyAndLoad) {
+    const auto tmpDir = makeTempDir();
+    ASSERT_FALSE(tmpDir.empty());
+    TempDirGuard cleanup{tmpDir};
+
+    const auto pluginPath = tmpDir / "plugin.dll";
+    const auto allowlistPath = tmpDir / "allowlist.txt";
+    writeTextFile(pluginPath, "abc");
+    writeTextFile(allowlistPath, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n");
+
+    catalog::PluginLoader loader(
+        {.pluginsDir = "plugins", .enforceSha256Allowlist = true, .sha256AllowlistFile = allowlistPath},
+        [pluginPath](const std::filesystem::path&) { return std::vector<std::filesystem::path>{pluginPath}; },
+        [pluginPath](const std::filesystem::path& path) {
+            writeTextFile(pluginPath, "tampered");
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
+        });
+
+    const auto results = loader.loadAll();
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_FALSE(results[0].success);
+    EXPECT_NE(results[0].error.find("changed between integrity check and load"), std::string::npos);
+}
+
+#if defined(_WIN32)
+TEST(PluginLoaderTest, DefaultEnumerateAcceptsMixedCaseDllExtension) {
+    const auto tmpRoot = makeTempDir();
+    ASSERT_FALSE(tmpRoot.empty());
+    TempDirGuard cleanup{tmpRoot};
+
+    const auto pluginsDir = tmpRoot / "plugins";
+    std::error_code ec;
+    std::filesystem::create_directories(pluginsDir, ec);
+    ASSERT_FALSE(ec);
+
+    const auto mixedCase = pluginsDir / "mixed.Dll";
+    writeTextFile(mixedCase, "bytes");
+
+    catalog::PluginLoader loader(
+        {.pluginsDir = pluginsDir},
+        {},
+        [](const std::filesystem::path& path) {
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+                path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
+        });
+
+    const auto results = loader.loadAll();
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].path.filename().string(), "mixed.Dll");
+}
+#endif
 
 // T6 — normalizePluginsDir: a relative pluginsDir is resolved to an absolute path
 // (anchored to the executable directory) before enumeration runs.
@@ -305,8 +447,8 @@ TEST(PluginLoaderTest, NormalizesRelativePluginsDirToAbsolute) {
             return std::vector<std::filesystem::path>{};
         },
         [](const std::filesystem::path&) {
-            return std::expected<catalog::PluginHandle, std::string>(
-                std::unexpected(std::string("unused")));
+            return compat::expected<catalog::PluginHandle, std::string>(
+                compat::unexpected(std::string("unused")));
         });
 
     (void)loader.loadAll();
@@ -328,8 +470,8 @@ TEST(PluginLoaderTest, PreservesAbsolutePluginsDir) {
             return std::vector<std::filesystem::path>{};
         },
         [](const std::filesystem::path&) {
-            return std::expected<catalog::PluginHandle, std::string>(
-                std::unexpected(std::string("unused")));
+            return compat::expected<catalog::PluginHandle, std::string>(
+                compat::unexpected(std::string("unused")));
         });
 
     (void)loader.loadAll();
@@ -378,7 +520,7 @@ TEST(PluginLoaderTest, DefaultEnumerateRejectsSymlinkEscapingPluginsDir) {
         {.pluginsDir = pluginsDir},
         {}, // use the real defaultEnumerate so path confinement is exercised
         [](const std::filesystem::path& path) {
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 
@@ -424,7 +566,7 @@ TEST(PluginLoaderTest, DefaultEnumerateReturnsSortedConfinedPluginFiles) {
         {.pluginsDir = pluginsDir},
         {}, // real defaultEnumerate
         [](const std::filesystem::path& path) {
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path, &createOk, &destroyOk, &typeFn, &verFn, "dummy", "1.0.0"));
         });
 

@@ -405,6 +405,22 @@ TEST(WorkQueueTest, ReturnsEmptyWhenNoStrategies) {
     EXPECT_TRUE(queue.empty());
 }
 
+TEST(WorkQueueTest, WorkItemsKeepStrategyAliveAfterRegistryClear) {
+    strategy::StrategyRegistry registry;
+    strategy::StrategyConfig cfg;
+    cfg.name = "owned";
+    cfg.intervals = {"15m"};
+    registry.add(std::make_unique<QueueStrategy>(cfg));
+
+    auto queue = engine::WorkQueue::build({"BTCUSDT"}, registry, 42u);
+    ASSERT_EQ(queue.size(), 1u);
+    registry.clear();
+
+    ASSERT_NE(queue[0].strategy, nullptr);
+    ASSERT_NE(queue[0].strategyOwner, nullptr);
+    EXPECT_EQ(queue[0].strategy->config().name, "owned");
+}
+
 TEST(WorkQueueTest, ReturnsEmptyWhenNoSymbols) {
     strategy::StrategyRegistry registry;
     strategy::StrategyConfig a;

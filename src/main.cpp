@@ -54,10 +54,12 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 std::atomic<bool> g_running{true};
+std::atomic<int> g_lastSignal{0};
 
 void terminateHandler() noexcept {
     try {
@@ -75,7 +77,7 @@ void terminateHandler() noexcept {
 }
 
 void signalHandler(int signum) {
-    Logger::instance().log(LogLevel::Info, "Received signal " + std::to_string(signum) + ", shutting down...");
+    g_lastSignal.store(signum);
     g_running = false;
 }
 
@@ -513,7 +515,8 @@ int main(int argc, char* argv[]) {
             in >> config;
         }
     } catch (const std::exception& e) {
-        Logger::instance().log(LogLevel::Warning, std::string("Failed to parse config.json: ") + e.what());
+        Logger::instance().log(LogLevel::Error, std::string("Failed to parse config.json: ") + e.what());
+        return 1;
     }
 
     const auto riskProfile = engine::RiskProfileLoadResult::loadActive(config);
@@ -570,6 +573,10 @@ int main(int argc, char* argv[]) {
     }
 
     catalog::CatalogReporter::logStartupSummary(catalogSummary, strategyCatalog.listStrategies());
+    if (!catalogSummary.errors.empty() || catalogSummary.strategiesRegistered <= 0) {
+        Logger::instance().log(LogLevel::Error, "Strategy catalog initialization failed; aborting startup");
+        return 1;
+    }
 
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
@@ -904,13 +911,20 @@ int main(int argc, char* argv[]) {
     }
 
     RestClientAdapter ordersRest(rest);
-    Orders orders(
-        ordersRest,
-        OrdersConfig{
-            .clientIdNamespace = "bot",
-            .allowBestEffortJournal = true,
-            .positionMode = PositionMode::OneWay,
-        });
+    std::unordered_map<std::string, ExchangeSymbol> orderExchangeInfo;
+    for (const auto& symbol : scanner.symbols()) {
+        if (auto info = scanner.symbolInfo(symbol)) {
+            orderExchangeInfo.emplace(symbol, *info);
+        }
+    }
+    OrdersConfig ordersConfig;
+    ordersConfig.clientIdNamespace = "bot";
+    ordersConfig.allowBestEffortJournal = true;
+    ordersConfig.positionMode = PositionMode::OneWay;
+    ordersConfig.requireExchangeInfo = true;
+    ordersConfig.exchangeInfoBySymbol = std::move(orderExchangeInfo);
+    ordersConfig.exchangeInfoUpdatedAt = std::chrono::system_clock::now();
+    Orders orders(ordersRest, std::move(ordersConfig));
 
     const auto accountCompatibility = parseAccountCompatibilityConfig(config, contextConfig.testnet);
     account::AccountService accountSvc(rest, accountCompatibility);
@@ -1472,6 +1486,12 @@ int main(int argc, char* argv[]) {
 
     Logger::instance().log(LogLevel::Info, "SignalEngine started. Press Ctrl+C to stop");
     while (g_running) {
+        const int capturedSignal = g_lastSignal.exchange(0);
+        if (capturedSignal != 0) {
+            Logger::instance().log(
+                LogLevel::Info,
+                "Received signal " + std::to_string(capturedSignal) + ", shutting down...");
+        }
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 

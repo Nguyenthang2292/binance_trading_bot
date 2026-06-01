@@ -6,9 +6,12 @@
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/redirect_error.hpp>
+#include <boost/asio/ssl/host_name_verification.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/version.hpp>
 #include <openssl/ssl.h>
+
+#include <algorithm>
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -33,8 +36,7 @@ void HttpSession::RequestGate::Lock::release() {
 }
 
 asio::awaitable<HttpSession::RequestGate::Lock> HttpSession::RequestGate::lock(asio::io_context& ioc) {
-    auto waiter = std::make_shared<asio::steady_timer>(ioc);
-    waiter->expires_at(asio::steady_timer::time_point::max());
+    auto waiter = std::make_shared<Waiter>(ioc);
 
     bool acquired = false;
     {
@@ -48,27 +50,52 @@ asio::awaitable<HttpSession::RequestGate::Lock> HttpSession::RequestGate::lock(a
     }
 
     if (!acquired) {
-        boost::system::error_code ec;
-        co_await waiter->async_wait(asio::redirect_error(asio::use_awaitable, ec));
+        while (true) {
+            boost::system::error_code ec;
+            co_await waiter->timer.async_wait(asio::redirect_error(asio::use_awaitable, ec));
+
+            bool granted = false;
+            {
+                std::lock_guard guard(m_mutex);
+                granted = waiter->granted;
+                if (!granted) {
+                    auto it = std::find(m_waiters.begin(), m_waiters.end(), waiter);
+                    if (it != m_waiters.end()) {
+                        m_waiters.erase(it);
+                    }
+                }
+            }
+            if (granted) {
+                break;
+            }
+            throw boost::system::system_error(
+                ec ? ec : boost::asio::error::operation_aborted);
+        }
     }
 
     co_return Lock(*this);
 }
 
 void HttpSession::RequestGate::unlock() {
-    std::shared_ptr<asio::steady_timer> next;
+    std::shared_ptr<Waiter> next;
     {
         std::lock_guard guard(m_mutex);
-        if (m_waiters.empty()) {
+        while (!m_waiters.empty()) {
+            next = m_waiters.front();
+            m_waiters.pop_front();
+            if (next) {
+                break;
+            }
+        }
+        if (!next) {
             m_locked = false;
             return;
         }
-        next = m_waiters.front();
-        m_waiters.pop_front();
+        next->granted = true;
     }
 
     boost::system::error_code ec;
-    next->cancel(ec);
+    next->timer.cancel(ec);
 }
 
 void HttpSession::resetStream() {
@@ -76,15 +103,17 @@ void HttpSession::resetStream() {
     m_connected = false;
 }
 
-asio::awaitable<std::expected<void, BinanceError>> HttpSession::ensureConnected() {
+asio::awaitable<compat::expected<void, BinanceError>> HttpSession::ensureConnected() {
     if (m_connected) {
-        co_return std::expected<void, BinanceError>{};
+        co_return compat::expected<void, BinanceError>{};
     }
 
     try {
         resetStream();
+        m_stream->set_verify_mode(ssl::verify_peer);
+        m_stream->set_verify_callback(ssl::host_name_verification(m_host));
         if (!SSL_set_tlsext_host_name(m_stream->native_handle(), m_host.c_str())) {
-            co_return std::unexpected(BinanceError{ErrorCategory::Network, 0, "failed to set SNI host name"});
+            co_return compat::unexpected(BinanceError{ErrorCategory::Network, 0, "failed to set SNI host name"});
         }
 
         const std::string connectHost = m_proxy.enabled() ? m_proxy.host : m_host;
@@ -103,13 +132,13 @@ asio::awaitable<std::expected<void, BinanceError>> HttpSession::ensureConnected(
         co_await m_stream->async_handshake(ssl::stream_base::client, asio::use_awaitable);
         beast::get_lowest_layer(*m_stream).expires_never();
         m_connected = true;
-        co_return std::expected<void, BinanceError>{};
+        co_return compat::expected<void, BinanceError>{};
     } catch (const boost::system::system_error& e) {
         resetStream();
-            co_return std::unexpected(BinanceError::fromNetwork(e.code(), NetworkErrorPhase::BeforeSend));
+            co_return compat::unexpected(BinanceError::fromNetwork(e.code(), NetworkErrorPhase::BeforeSend));
     } catch (const std::exception& e) {
         resetStream();
-        co_return std::unexpected(BinanceError{ErrorCategory::Network, 0, e.what()});
+        co_return compat::unexpected(BinanceError{ErrorCategory::Network, 0, e.what()});
     }
 }
 
@@ -174,18 +203,23 @@ asio::awaitable<HttpSession::Result> HttpSession::execute(http::request<http::st
     auto requestLock = co_await m_requestGate.lock(m_ioc);
 
     if (auto connected = co_await ensureConnected(); !connected) {
-        co_return std::unexpected(connected.error());
+        co_return compat::unexpected(connected.error());
     }
 
     req.set(http::field::host, m_host);
     req.set(http::field::user_agent, "binance-futures-sdk-cpp/1.0");
     req.keep_alive(true);
 
+    bool requestWritten = false;
     try {
         http::response<http::string_body> res;
         beast::flat_buffer buffer;
+        beast::get_lowest_layer(*m_stream).expires_after(m_requestIoTimeout);
         co_await http::async_write(*m_stream, req, asio::use_awaitable);
+        requestWritten = true;
+        beast::get_lowest_layer(*m_stream).expires_after(m_requestIoTimeout);
         co_await http::async_read(*m_stream, buffer, res, asio::use_awaitable);
+        beast::get_lowest_layer(*m_stream).expires_never();
 
         RateLimitHeaderUsage usage;
         for (const auto& field : res) {
@@ -207,14 +241,16 @@ asio::awaitable<HttpSession::Result> HttpSession::execute(http::request<http::st
 
         const int status = static_cast<int>(res.result_int());
         if (status >= 400) {
-            co_return std::unexpected(BinanceError::fromHttp(status, res.body()));
+            co_return compat::unexpected(BinanceError::fromHttp(status, res.body()));
         }
         co_return res.body();
     } catch (const boost::system::system_error& e) {
         resetStream();
-        co_return std::unexpected(BinanceError::fromNetwork(e.code(), NetworkErrorPhase::AfterSend));
+        co_return compat::unexpected(BinanceError::fromNetwork(
+            e.code(),
+            requestWritten ? NetworkErrorPhase::AfterSend : NetworkErrorPhase::BeforeSend));
     } catch (const std::exception& e) {
         resetStream();
-        co_return std::unexpected(BinanceError{ErrorCategory::Network, 0, e.what()});
+        co_return compat::unexpected(BinanceError{ErrorCategory::Network, 0, e.what()});
     }
 }

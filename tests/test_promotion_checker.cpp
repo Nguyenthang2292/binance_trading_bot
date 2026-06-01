@@ -279,6 +279,44 @@ TEST(PromotionCheckerTest, HitRateAloneNotSufficient) {
     EXPECT_EQ(result, orchestration::PromotionChecker::Result::BelowThreshold);
 }
 
+TEST(PromotionCheckerTest, BreakEvenMeanDoesNotPromoteByDefault) {
+    TestContext ctx;
+    seedOutcomes(ctx.dbPath, 220, 0.0, 0.0, 1);
+    orchestration::PromotionChecker checker({
+        .minCandles = 100,
+        .minSharpe = 0.0,
+        .minHitRate = 0.52,
+        .lookbackCandles = 336,
+    });
+    const auto result = checker.evaluate(*ctx.stateStore);
+    EXPECT_EQ(result, orchestration::PromotionChecker::Result::BelowThreshold);
+}
+
+TEST(PromotionCheckerTest, SharpeAnnualizationScalesByHorizonBars) {
+    TestContext ctx;
+    seedOutcomes(ctx.dbPath, 220, 0.004, 0.002, 1);
+
+    orchestration::PromotionChecker oneBar({
+        .minCandles = 100,
+        .minSharpe = 0.0,
+        .minHitRate = 0.0,
+        .lookbackCandles = 336,
+        .horizonBars = 1,
+    });
+    orchestration::PromotionChecker fourBars({
+        .minCandles = 100,
+        .minSharpe = 0.0,
+        .minHitRate = 0.0,
+        .lookbackCandles = 336,
+        .horizonBars = 4,
+    });
+
+    const auto oneBarStats = oneBar.computeStats(ctx.dbPath, "lightgbm_1h_v1", "1h");
+    const auto fourBarStats = fourBars.computeStats(ctx.dbPath, "lightgbm_1h_v1", "1h");
+    EXPECT_GT(oneBarStats.sharpe, 0.0);
+    EXPECT_NEAR(fourBarStats.sharpe, oneBarStats.sharpe / 2.0, 1e-9);
+}
+
 TEST(PromotionCheckerTest, SharpeAloneNotSufficient) {
     TestContext ctx;
     seedOutcomes(ctx.dbPath, 220, 0.004, 0.002, 0);
@@ -442,4 +480,47 @@ TEST(QlibStateStoreTest, SeedsLegacyAndAdapterRuntimeModesFromConfigDefaults) {
     EXPECT_EQ(
         stateStore->snapshotForAdapter("adapter_live", "1h").mode,
         orchestration::ExecutionMode::Live);
+}
+
+TEST(QlibStateStoreTest, MigratesLegacyRuntimeStateToAllowShadowOnly) {
+    const auto tmp = makeTempDir();
+    TempDirGuard guard{tmp};
+    const std::string dbPath = (tmp / "legacy_state.db").string();
+
+    sqlite3* rawDb = nullptr;
+    ASSERT_EQ(sqlite3_open(dbPath.c_str(), &rawDb), SQLITE_OK);
+    ASSERT_NE(rawDb, nullptr);
+    {
+        std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(rawDb, sqlite3_close);
+        execOrThrow(
+            db.get(),
+            "CREATE TABLE qlib_runtime_state ("
+            "model_id TEXT NOT NULL,"
+            "interval TEXT NOT NULL,"
+            "execution_mode TEXT NOT NULL CHECK (execution_mode IN ('disabled','shadow','live_canary','live')),"
+            "active_run_id TEXT,"
+            "active_manifest_path TEXT,"
+            "state_version INTEGER NOT NULL DEFAULT 0,"
+            "promoted_at_ms INTEGER,"
+            "rollback_reason TEXT,"
+            "updated_at_ms INTEGER NOT NULL,"
+            "PRIMARY KEY (model_id, interval)"
+            ");");
+        execOrThrow(
+            db.get(),
+            "INSERT INTO qlib_runtime_state(model_id, interval, execution_mode, state_version, updated_at_ms) "
+            "VALUES('lightgbm_1h_v1', '1h', 'shadow', 3, 1700000000000);");
+    }
+
+    orchestration::QlibStateStoreConfig sc;
+    sc.dbPath = dbPath;
+    sc.modelId = "lightgbm_1h_v1";
+    sc.interval = "1h";
+    auto stateStore = orchestration::QlibStateStore::create(sc);
+    stateStore->initializeSchema();
+
+    ASSERT_TRUE(stateStore->setExecutionMode(orchestration::ExecutionMode::ShadowOnly));
+    EXPECT_EQ(
+        scalarText(dbPath, "SELECT execution_mode FROM qlib_runtime_state WHERE model_id='lightgbm_1h_v1';"),
+        "shadow_only");
 }

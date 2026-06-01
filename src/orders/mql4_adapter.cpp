@@ -31,6 +31,33 @@ ValidationIssue makeProtectionWarning(std::string code, std::string message) {
     };
 }
 
+bool isMarketEntryOperation(TradeOperation operation) {
+    return operation == TradeOperation::Buy || operation == TradeOperation::Sell;
+}
+
+boost::asio::awaitable<std::optional<Quantity>> confirmedProtectionQuantity(
+    Orders& orders,
+    const MappedOrderSendDraft& sourceDraft,
+    const NormalPlacementResult& placement) {
+    if (!isMarketEntryOperation(sourceDraft.operation)) {
+        co_return sourceDraft.quantity;
+    }
+    if (!placement.orderId.has_value()) {
+        co_return std::nullopt;
+    }
+
+    auto queried = co_await orders.queryNormalByOrderId(sourceDraft.symbol, *placement.orderId);
+    if (!queried) {
+        co_return std::nullopt;
+    }
+
+    auto parsedQty = DecimalString::parse(queried->executedQty);
+    if (!parsedQty || parsedQty->toDouble() <= 0.0) {
+        co_return std::nullopt;
+    }
+    co_return *parsedQty;
+}
+
 boost::asio::awaitable<void> attachProtectionIfPresent(
     Orders& orders,
     const MappedOrderSendDraft& sourceDraft,
@@ -42,8 +69,16 @@ boost::asio::awaitable<void> attachProtectionIfPresent(
         co_return;
     }
 
+    const auto protectionQty = co_await confirmedProtectionQuantity(orders, sourceDraft, placement);
+    if (!protectionQty) {
+        placement.validation.issues.push_back(makeProtectionWarning(
+            "mql4_protection_qty_unconfirmed",
+            "skipped SL/TP attach because executed quantity is not confirmed"));
+        co_return;
+    }
+
     const auto shape = protectionShapeFor(sourceDraft.operation);
-    const auto closeQuantity = std::variant<Quantity, CloseEntirePosition>{sourceDraft.quantity};
+    const auto closeQuantity = std::variant<Quantity, CloseEntirePosition>{*protectionQty};
 
     if (sourceDraft.stopLoss) {
         ProtectionOrderDraft stopLossDraft{
@@ -95,7 +130,7 @@ boost::asio::awaitable<void> attachProtectionIfPresent(
 } // namespace
 
 boost::asio::awaitable<OrdersResult<NormalPlacementResult>> Mql4Adapter::orderSend(MappedOrderSendDraft draft) {
-    OrdersResult<NormalPlacementResult> result = std::unexpected(BinanceError::fromApiResponse(-1, "Unknown operation"));
+    OrdersResult<NormalPlacementResult> result = compat::unexpected(BinanceError::fromApiResponse(-1, "Unknown operation"));
     switch (draft.operation) {
         case TradeOperation::Buy: {
             result = co_await m_orders.market(MarketOrderDraft{
@@ -117,7 +152,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> Mql4Adapter::orderSe
         }
         case TradeOperation::BuyLimit:
             if (!draft.price) {
-                co_return std::unexpected(BinanceError::fromApiResponse(-1, "Price required for BuyLimit"));
+                co_return compat::unexpected(BinanceError::fromApiResponse(-1, "Price required for BuyLimit"));
             }
             result = co_await m_orders.limit(LimitOrderDraft{
                 .symbol = draft.symbol,
@@ -129,7 +164,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> Mql4Adapter::orderSe
             break;
         case TradeOperation::SellLimit:
             if (!draft.price) {
-                co_return std::unexpected(BinanceError::fromApiResponse(-1, "Price required for SellLimit"));
+                co_return compat::unexpected(BinanceError::fromApiResponse(-1, "Price required for SellLimit"));
             }
             result = co_await m_orders.limit(LimitOrderDraft{
                 .symbol = draft.symbol,
@@ -141,7 +176,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> Mql4Adapter::orderSe
             break;
         case TradeOperation::BuyStop:
             if (!draft.price) {
-                co_return std::unexpected(BinanceError::fromApiResponse(-1, "Price required for BuyStop"));
+                co_return compat::unexpected(BinanceError::fromApiResponse(-1, "Price required for BuyStop"));
             }
             result = co_await m_orders.stopEntry(StopEntryDraft{
                 .symbol = draft.symbol,
@@ -154,7 +189,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> Mql4Adapter::orderSe
             break;
         case TradeOperation::SellStop:
             if (!draft.price) {
-                co_return std::unexpected(BinanceError::fromApiResponse(-1, "Price required for SellStop"));
+                co_return compat::unexpected(BinanceError::fromApiResponse(-1, "Price required for SellStop"));
             }
             result = co_await m_orders.stopEntry(StopEntryDraft{
                 .symbol = draft.symbol,

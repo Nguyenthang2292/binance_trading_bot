@@ -21,6 +21,11 @@ namespace account {
  *
  * The service can be constructed from either an injected account REST interface
  * or a low-level `RestClient` that is wrapped by an adapter.
+ *
+ * Lifetime contract: callers must keep the AccountService instance and the
+ * referenced REST client alive until every awaitable returned by this service
+ * has completed. The service intentionally does not extend `this` lifetime
+ * across coroutine suspension.
  */
 class AccountService {
 public:

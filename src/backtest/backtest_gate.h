@@ -46,6 +46,7 @@ enum class DropReason {
     ComboBudgetExhausted, ///< Parameter grid exceeds configured budget.
     NoComboPassedFilter,  ///< All parameter points failed post-backtest filters.
     NoPlateauFound,       ///< Plateau detector could not produce a robust region.
+    SignalMismatch,       ///< Plateau center does not support the requested live signal contract.
     MajorityVoteFailed,   ///< Plateau vote disagreed with live direction.
     DeadlineExceeded,     ///< End-to-end gate deadline was exceeded.
     InternalError,        ///< Unexpected internal failure.

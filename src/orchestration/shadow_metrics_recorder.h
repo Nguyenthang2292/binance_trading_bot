@@ -50,6 +50,7 @@ private:
     void upsertShadowOutcomesLocked(std::string_view interval);
     int64_t nowMs() const;
     double fundingCost(double durationDays) const;
+    std::string costModelVersion() const;
 
     ShadowMetricsConfig m_config;
     sqlite3* m_db{nullptr};

@@ -71,7 +71,7 @@ struct Order {
 };
 
 struct BatchOrderResult {
-    std::vector<std::expected<Order, BinanceError>> results;
+    std::vector<compat::expected<Order, BinanceError>> results;
 };
 
 struct UserTrade {

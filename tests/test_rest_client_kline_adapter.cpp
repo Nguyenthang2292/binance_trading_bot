@@ -1,6 +1,12 @@
 #include "backtest/rest_client_kline_adapter.h"
+#include "context.h"
+#include "rest/rest_client.h"
 
 #include <gtest/gtest.h>
+
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/ssl/context.hpp>
+#include <boost/asio/use_future.hpp>
 
 #include <chrono>
 #include <string>
@@ -369,4 +375,31 @@ TEST(PaginateClosedKlinesTest, RemainingWallTimeShrinksAcrossPages) {
     EXPECT_GE(reportedTimeouts[1].count(), 0);
     EXPECT_LT(reportedTimeouts[1].count(), 500);
     (void)result;
+}
+
+TEST(RestClientKlineAdapterTest, FailsClosedWhenCalledFromIoContextThread) {
+    boost::asio::io_context ioc;
+    boost::asio::ssl::context ssl(boost::asio::ssl::context::tls_client);
+    ContextConfig cfg;
+    cfg.apiKey = "";
+    cfg.secretKey = "";
+    cfg.testnet = true;
+    RestClient rest(ioc, ssl, cfg);
+    RestClientKlineAdapter adapter(rest, ioc);
+
+    auto task = [&]() -> boost::asio::awaitable<IKlineRestClient::FetchResult> {
+        co_return adapter.fetchClosedKlines(
+            "BTCUSDT",
+            "1m",
+            1'000'000,
+            5,
+            std::chrono::milliseconds(100),
+            1);
+    };
+
+    auto fut = boost::asio::co_spawn(ioc, task(), boost::asio::use_future);
+    ioc.run();
+    auto result = fut.get();
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "rest_failed page=1 io_thread_blocking_forbidden");
 }

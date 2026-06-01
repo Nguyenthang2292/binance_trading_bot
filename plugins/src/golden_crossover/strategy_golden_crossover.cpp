@@ -240,4 +240,7 @@ __declspec(dllexport) const char* pluginVersion() {
     return "1.0.0";
 }
 
+__declspec(dllexport) int strategyPluginAbiVersion() {
+    return strategy::kStrategyPluginAbiVersion;
+}
 } // extern "C"

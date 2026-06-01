@@ -19,6 +19,9 @@ StrategyCatalog::LoadSummary StrategyCatalog::initialize(const std::vector<nlohm
     m_info.clear();
     m_registry.clear();
     LoadSummary summary;
+    std::vector<std::shared_ptr<strategy::IStrategy>> pendingStrategies;
+    std::vector<StrategyInfo> pendingInfo;
+
     const auto pluginResults = m_loader.loadAll();
     summary.pluginsFound = static_cast<int>(pluginResults.size());
     for (const auto& result : pluginResults) {
@@ -49,16 +52,17 @@ StrategyCatalog::LoadSummary StrategyCatalog::initialize(const std::vector<nlohm
         }
 
         const std::string jsonConfig = item.dump();
-        auto created = m_loader.createStrategy(type, jsonConfig.c_str());
-        if (!created) {
+        auto shared = m_loader.createStrategy(type, jsonConfig.c_str());
+        if (!shared) {
             summary.errors.push_back("failed creating strategy type=" + type);
             continue;
         }
-
-        const auto deleter = created.get_deleter();
-        strategy::IStrategy* raw = created.release();
-        auto shared = std::shared_ptr<strategy::IStrategy>(raw, deleter);
         const auto& cfg = shared->config();
+        if (auto validation = strategy::validateStrategyConfig(cfg); !validation) {
+            summary.errors.push_back(
+                "invalid strategy config type=" + type + " reason=" + validation.error());
+            continue;
+        }
 
         StrategyInfo info;
         info.name = cfg.name;
@@ -76,10 +80,22 @@ StrategyCatalog::LoadSummary StrategyCatalog::initialize(const std::vector<nlohm
             info.pluginFile = loadedIt->path.filename().string();
         }
 
-        m_registry.addShared(shared);
-        m_info.push_back(std::move(info));
+        pendingStrategies.push_back(std::move(shared));
+        pendingInfo.push_back(std::move(info));
+    }
+
+    if (pendingStrategies.empty() && summary.errors.empty()) {
+        summary.errors.push_back("no strategies registered");
+    }
+    if (!summary.errors.empty()) {
+        return summary;
+    }
+
+    for (auto& strategy : pendingStrategies) {
+        m_registry.addShared(std::move(strategy));
         ++summary.strategiesRegistered;
     }
+    m_info = std::move(pendingInfo);
 
     return summary;
 }

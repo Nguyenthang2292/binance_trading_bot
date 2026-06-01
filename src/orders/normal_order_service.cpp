@@ -4,7 +4,9 @@
 #include "logger.h"
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -170,7 +172,7 @@ OrdersResult<ClientOrderId> NormalOrderService::resolveClientOrderId(const std::
     if (provided.has_value()) {
         auto valid = m_idGenerator.validateClientOrderId(*provided);
         if (!valid) {
-            return std::unexpected(valid.error());
+            return compat::unexpected(valid.error());
         }
         return *provided;
     }
@@ -208,14 +210,14 @@ std::string NormalOrderService::serializeRequestParams(const OrderRequest& reque
     return params;
 }
 
-std::expected<void, BinanceError> NormalOrderService::recordIntent(const PreparedPlacement& placement) {
+compat::expected<void, BinanceError> NormalOrderService::recordIntent(const PreparedPlacement& placement) {
     if (!m_journal) {
-        return std::unexpected(BinanceError::fromApiResponse(-90006, "No journal configured"));
+        return compat::unexpected(BinanceError::fromApiResponse(-90006, "No journal configured"));
     }
     const bool durableConfigured = m_cfg.journalIsDurable
         || dynamic_cast<DurableOrderJournal*>(m_journal.get()) != nullptr;
     if (!m_cfg.allowBestEffortJournal && !durableConfigured) {
-        return std::unexpected(BinanceError::fromApiResponse(
+        return compat::unexpected(BinanceError::fromApiResponse(
             -90009, "Durable journal is required when allowBestEffortJournal=false"));
     }
 
@@ -236,7 +238,7 @@ std::expected<void, BinanceError> NormalOrderService::recordIntent(const Prepare
     return m_journal->recordIntent(std::move(entry));
 }
 
-std::expected<void, BinanceError> NormalOrderService::updateJournal(const CorrelationId& id,
+compat::expected<void, BinanceError> NormalOrderService::updateJournal(const CorrelationId& id,
                                                                     PlacementState state,
                                                                     std::optional<int64_t> orderId) {
     if (!m_journal) {
@@ -351,10 +353,12 @@ OrdersResult<NormalOrderService::PreparedPlacement> NormalOrderService::prepareC
 }
 
 boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::market(MarketOrderDraft draft) {
+    co_await reconcilePendingJournalOnce();
+
     const auto startedAt = std::chrono::steady_clock::now();
     auto prepared = prepareMarket(std::move(draft));
     if (!prepared) {
-        co_return std::unexpected(prepared.error());
+        co_return compat::unexpected(prepared.error());
     }
     auto result = std::move(prepared->result);
     if (result.state == PlacementState::Rejected) {
@@ -386,16 +390,21 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     result.orderId = placed->orderId;
     result.orderStatus = placed->status;
     result.avgPrice = placed->avgPrice;
+    if (!placed->executedQty.empty()) {
+        result.executedQty = placed->executedQty;
+    }
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
     logPlacement(result, startedAt, prepared->metadata);
     co_return result;
 }
 
 boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::limit(LimitOrderDraft draft) {
+    co_await reconcilePendingJournalOnce();
+
     const auto startedAt = std::chrono::steady_clock::now();
     auto prepared = prepareLimit(std::move(draft));
     if (!prepared) {
-        co_return std::unexpected(prepared.error());
+        co_return compat::unexpected(prepared.error());
     }
     auto result = std::move(prepared->result);
     if (result.state == PlacementState::Rejected) {
@@ -427,16 +436,21 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     result.orderId = placed->orderId;
     result.orderStatus = placed->status;
     result.avgPrice = placed->avgPrice;
+    if (!placed->executedQty.empty()) {
+        result.executedQty = placed->executedQty;
+    }
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
     logPlacement(result, startedAt, prepared->metadata);
     co_return result;
 }
 
 boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::closeByMarket(CloseByMarketDraft draft) {
+    co_await reconcilePendingJournalOnce();
+
     const auto startedAt = std::chrono::steady_clock::now();
     auto prepared = prepareCloseByMarket(std::move(draft));
     if (!prepared) {
-        co_return std::unexpected(prepared.error());
+        co_return compat::unexpected(prepared.error());
     }
     auto result = std::move(prepared->result);
     if (result.state == PlacementState::Rejected) {
@@ -468,12 +482,23 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     result.orderId = placed->orderId;
     result.orderStatus = placed->status;
     result.avgPrice = placed->avgPrice;
+    if (!placed->executedQty.empty()) {
+        result.executedQty = placed->executedQty;
+    }
     (void)updateJournal(result.correlationId, PlacementState::Accepted, placed->orderId);
     logPlacement(result, startedAt, prepared->metadata);
     co_return result;
 }
 
 boost::asio::awaitable<OrdersResult<LeverageResult>> NormalOrderService::setLeverage(Symbol symbol, int leverage) {
+    const int minLeverage = std::max(1, m_cfg.minLeverage);
+    const int maxLeverage = std::max(minLeverage, m_cfg.maxLeverage);
+    if (leverage < minLeverage || leverage > maxLeverage) {
+        co_return compat::unexpected(BinanceError::fromApiResponse(
+            -90015,
+            "leverage out of configured range [" + std::to_string(minLeverage) + ", " +
+                std::to_string(maxLeverage) + "]"));
+    }
     co_return co_await m_rest.setLeverage(std::move(symbol), leverage);
 }
 
@@ -481,7 +506,7 @@ boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> NormalOrderService::am
     auto request = m_mapper.toOrderRequest(draft);
     auto amended = co_await m_rest.modifyOrder(std::move(request));
     if (!amended) {
-        co_return std::unexpected(amended.error());
+        co_return compat::unexpected(amended.error());
     }
     co_return toSnapshot(*amended);
 }
@@ -561,7 +586,7 @@ NormalOrderSnapshot NormalOrderService::toSnapshot(const Order& order) {
 boost::asio::awaitable<OrdersResult<NormalCancelResult>> NormalOrderService::cancelNormalByOrderId(Symbol symbol, int64_t orderId) {
     auto canceled = co_await m_rest.cancelOrder(std::move(symbol), orderId);
     if (!canceled) {
-        co_return std::unexpected(canceled.error());
+        co_return compat::unexpected(canceled.error());
     }
     co_return toCancelResult(*canceled);
 }
@@ -571,7 +596,7 @@ boost::asio::awaitable<OrdersResult<NormalCancelResult>> NormalOrderService::can
     ClientOrderId clientOrderId) {
     auto canceled = co_await m_rest.cancelOrderByClientOrderId(std::move(symbol), std::move(clientOrderId));
     if (!canceled) {
-        co_return std::unexpected(canceled.error());
+        co_return compat::unexpected(canceled.error());
     }
     co_return toCancelResult(*canceled);
 }
@@ -583,7 +608,7 @@ boost::asio::awaitable<OrdersResult<void>> NormalOrderService::cancelAllNormal(S
 boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> NormalOrderService::queryNormalByOrderId(Symbol symbol, int64_t orderId) {
     auto queried = co_await m_rest.queryOrder(std::move(symbol), orderId);
     if (!queried) {
-        co_return std::unexpected(queried.error());
+        co_return compat::unexpected(queried.error());
     }
     co_return toSnapshot(*queried);
 }
@@ -593,7 +618,7 @@ boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> NormalOrderService::qu
     ClientOrderId clientOrderId) {
     auto queried = co_await m_rest.queryOrderByClientOrderId(std::move(symbol), std::move(clientOrderId));
     if (!queried) {
-        co_return std::unexpected(queried.error());
+        co_return compat::unexpected(queried.error());
     }
     co_return toSnapshot(*queried);
 }
@@ -602,7 +627,7 @@ boost::asio::awaitable<OrdersResult<std::vector<NormalOrderSnapshot>>> NormalOrd
     std::optional<Symbol> symbol) {
     auto open = co_await m_rest.openOrders(std::move(symbol));
     if (!open) {
-        co_return std::unexpected(open.error());
+        co_return compat::unexpected(open.error());
     }
     std::vector<NormalOrderSnapshot> result;
     result.reserve(open->size());
@@ -620,13 +645,13 @@ boost::asio::awaitable<OrdersResult<std::vector<NormalOrderSnapshot>>> NormalOrd
     if (startTime && endTime) {
         constexpr int64_t kSevenDaysMs = 7LL * 24LL * 60LL * 60LL * 1000LL;
         if (*endTime <= *startTime || (*endTime - *startTime) >= kSevenDaysMs) {
-            co_return std::unexpected(BinanceError::fromApiResponse(
+            co_return compat::unexpected(BinanceError::fromApiResponse(
                 -90007, "queryAllNormal requires start/end window < 7 days"));
         }
     }
     auto all = co_await m_rest.allOrders(std::move(symbol), startTime, endTime, limit);
     if (!all) {
-        co_return std::unexpected(all.error());
+        co_return compat::unexpected(all.error());
     }
     std::vector<NormalOrderSnapshot> result;
     result.reserve(all->size());
@@ -639,7 +664,7 @@ boost::asio::awaitable<OrdersResult<std::vector<NormalOrderSnapshot>>> NormalOrd
 boost::asio::awaitable<OrdersResult<OrderFillSummary>> NormalOrderService::queryOrderFillSummary(Symbol symbol, int64_t orderId) {
     auto tradesResult = co_await m_rest.userTrades(symbol, orderId);
     if (!tradesResult) {
-        co_return std::unexpected(tradesResult.error());
+        co_return compat::unexpected(tradesResult.error());
     }
 
     const auto& trades = *tradesResult;
@@ -739,6 +764,8 @@ boost::asio::awaitable<OrdersResult<OrderFillSummary>> NormalOrderService::query
 }
 
 boost::asio::awaitable<OrdersResult<BatchPlacementResult>> NormalOrderService::batchNormal(std::vector<NormalOrderDraft> drafts) {
+    co_await reconcilePendingJournalOnce();
+
     const auto startedAt = std::chrono::steady_clock::now();
     BatchPlacementResult output;
     output.items.resize(drafts.size());
@@ -784,7 +811,7 @@ boost::asio::awaitable<OrdersResult<BatchPlacementResult>> NormalOrderService::b
             drafts[i]);
 
         if (!prepared) {
-            co_return std::unexpected(prepared.error());
+            co_return compat::unexpected(prepared.error());
         }
         prepared->result.endpoint = "/fapi/v1/batchOrders";
 
@@ -871,7 +898,7 @@ boost::asio::awaitable<OrdersResult<OrderPoolSnapshot>> NormalOrderService::open
     std::optional<Symbol> symbol) {
     auto ordersResult = co_await openNormalOrders(symbol);
     if (!ordersResult) {
-        co_return std::unexpected(ordersResult.error());
+        co_return compat::unexpected(ordersResult.error());
     }
 
     OrderPoolSnapshot snapshot;
@@ -890,7 +917,7 @@ boost::asio::awaitable<OrdersResult<OrderPoolSnapshot>> NormalOrderService::quer
     int limit) {
     auto ordersResult = co_await queryAllNormal(symbol, startTime, endTime, limit);
     if (!ordersResult) {
-        co_return std::unexpected(ordersResult.error());
+        co_return compat::unexpected(ordersResult.error());
     }
 
     OrderPoolSnapshot snapshot;
@@ -920,4 +947,61 @@ OrderView NormalOrderService::enrichWithMetadata(NormalOrderSnapshot snapshot) {
     }
 
     return view;
+}
+
+boost::asio::awaitable<void> NormalOrderService::reconcilePendingJournalOnce() {
+    if (!m_journal) {
+        co_return;
+    }
+    if (m_pendingJournalReconciled.exchange(true)) {
+        co_return;
+    }
+
+    auto pending = m_journal->pendingReconcile();
+    if (!pending) {
+        Logger::instance().log(
+            LogLevel::Warning,
+            "pending reconcile load failed reason=" + pending.error().toString());
+        co_return;
+    }
+
+    constexpr int64_t kMinuteMs = 60LL * 1000LL;
+    constexpr int64_t kSevenDaysMs = 7LL * 24LL * 60LL * 60LL * 1000LL;
+    const int64_t nowMs = unixMsNow();
+    int reconciledCount = 0;
+
+    for (const auto& entry : *pending) {
+        auto liveOrder = co_await m_rest.queryOrderByClientOrderId(entry.symbol, entry.clientOrderId);
+        if (liveOrder) {
+            (void)m_journal->updateState(entry.correlationId, PlacementState::Accepted, liveOrder->orderId);
+            ++reconciledCount;
+            continue;
+        }
+
+        if (liveOrder.error().category != ErrorCategory::Api || liveOrder.error().code != -2013) {
+            continue;
+        }
+
+        const int64_t safeStart = std::max<int64_t>(0, entry.sendTimestampMs - kMinuteMs);
+        const int64_t safeEnd = std::min<int64_t>(nowMs, safeStart + kSevenDaysMs - 1);
+        auto history = co_await m_rest.allOrders(entry.symbol, safeStart, safeEnd, 500);
+        if (!history) {
+            continue;
+        }
+
+        const auto hit = std::find_if(
+            history->begin(),
+            history->end(),
+            [&entry](const Order& order) { return order.clientOrderId == entry.clientOrderId; });
+        if (hit != history->end()) {
+            (void)m_journal->updateState(entry.correlationId, PlacementState::Accepted, hit->orderId);
+            ++reconciledCount;
+        }
+    }
+
+    if (reconciledCount > 0) {
+        Logger::instance().log(
+            LogLevel::Info,
+            "pending reconcile completed reconciled=" + std::to_string(reconciledCount));
+    }
 }
