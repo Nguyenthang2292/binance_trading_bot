@@ -19,7 +19,7 @@
 namespace account {
 
 template <typename T>
-using AccountRestResult = std::expected<T, BinanceError>;
+using AccountRestResult = compat::expected<T, BinanceError>;
 
 /**
  * @brief Async contract for fetching account data and validating test orders.

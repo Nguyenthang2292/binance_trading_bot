@@ -300,7 +300,7 @@ public:
         lastSetLeverageSymbol = std::move(symbol);
         lastRequestedLeverage = leverage;
         if (setLeverageError.has_value()) {
-            co_return std::unexpected(*setLeverageError);
+            co_return compat::unexpected(*setLeverageError);
         }
         co_return LeverageResult{
             .symbol = lastSetLeverageSymbol,
@@ -1802,7 +1802,7 @@ TEST(SignalEngineTest, TimeExitCloseFailureKeepsProtectionsAndTracker) {
     liveSnapshot.positions = std::vector<Position>{livePosition};
     account.nextSnapshot = liveSnapshot;
     MockOrdersPort orders;
-    orders.closeResult = std::unexpected(BinanceError::fromApiResponse(-1000, "close failed"));
+    orders.closeResult = compat::unexpected(BinanceError::fromApiResponse(-1000, "close failed"));
     strategy::StrategyRegistry registry;
     MockExposurePort exposure;
     engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});
@@ -2031,7 +2031,7 @@ TEST(SignalEngineTest, ProcessTrailingStopsDoesNotAdvanceTrackerWhenOldStopCance
     MockScannerPort scanner(ioc);
     MockAccountPort account;
     MockOrdersPort orders;
-    orders.cancelAlgoResult = std::unexpected(BinanceError::fromApiResponse(-1000, "cancel failed"));
+    orders.cancelAlgoResult = compat::unexpected(BinanceError::fromApiResponse(-1000, "cancel failed"));
     strategy::StrategyRegistry registry;
     MockExposurePort exposure;
     engine::SignalEngine engine(scanner, registry, account, orders, exposure, {});

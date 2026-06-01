@@ -41,7 +41,7 @@ struct StrategyConfig {
 };
 
 // Validates strategy configuration invariants before runtime registration.
-std::expected<void, std::string> validateStrategyConfig(const StrategyConfig& cfg);
+compat::expected<void, std::string> validateStrategyConfig(const StrategyConfig& cfg);
 
 } // namespace strategy
 

@@ -12,9 +12,9 @@ namespace {
 class StubRestClient final : public IRestClient {
 public:
     Order lastModifyRequest;
-    RestResult<Order> modifyResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> modifyResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
 
-    boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest) override { co_return std::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
+    boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest) override { co_return compat::unexpected(BinanceError::fromApiResponse(-1, "not used")); }
     
     boost::asio::awaitable<RestResult<Order>> modifyOrder(OrderRequest req) override {
         lastModifyRequest.symbol = req.symbol;

@@ -26,7 +26,7 @@
  */
 class HttpSession : public std::enable_shared_from_this<HttpSession> {
 public:
-    using Result = std::expected<std::string, BinanceError>;
+    using Result = compat::expected<std::string, BinanceError>;
 
     /**
      * Creates a session bound to the given I/O context, TLS context, and exchange host.
@@ -111,7 +111,7 @@ private:
     };
 
     /** Establishes or re-establishes the TLS connection before sending a request. */
-    boost::asio::awaitable<std::expected<void, BinanceError>> ensureConnected();
+    boost::asio::awaitable<compat::expected<void, BinanceError>> ensureConnected();
     /** Runs the full request/response exchange and maps transport errors into BinanceError. */
     boost::asio::awaitable<Result> execute(boost::beast::http::request<boost::beast::http::string_body> req);
     /** Recreates the SSL stream and marks the session disconnected. */

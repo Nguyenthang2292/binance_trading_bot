@@ -16,8 +16,9 @@ public:
     using DestroyFn = void (*)(strategy::IStrategy*);
     using TypeFn = const char* (*)();
     using VersionFn = const char* (*)();
+    using AbiVersionFn = int (*)();
 
-    static std::expected<PluginHandle, std::string> load(const std::filesystem::path& dllPath);
+    static compat::expected<PluginHandle, std::string> load(const std::filesystem::path& dllPath);
     static PluginHandle fromExports(
         std::filesystem::path path,
         CreateFn createFn,
@@ -25,7 +26,8 @@ public:
         TypeFn typeFn,
         VersionFn versionFn,
         std::string type,
-        std::string version);
+        std::string version,
+        int abiVersion = strategy::kStrategyPluginAbiVersion);
 
     PluginHandle() = default;
     PluginHandle(PluginHandle&& other) noexcept;
@@ -37,6 +39,7 @@ public:
     [[nodiscard]] const std::filesystem::path& path() const noexcept;
     [[nodiscard]] std::string_view type() const noexcept;
     [[nodiscard]] std::string_view version() const noexcept;
+    [[nodiscard]] int abiVersion() const noexcept;
     [[nodiscard]] bool hasFactory() const;
     [[nodiscard]] strategy::IStrategy* create(const char* configJson) const;
     [[nodiscard]] DestroyFn destroyFunction() const;
@@ -46,6 +49,7 @@ private:
     std::filesystem::path m_path;
     std::string m_type;
     std::string m_version;
+    int m_abiVersion{0};
     CreateFn m_createFn{nullptr};
     DestroyFn m_destroyFn{nullptr};
     TypeFn m_typeFn{nullptr};

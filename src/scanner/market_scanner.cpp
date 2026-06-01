@@ -94,7 +94,7 @@ boost::asio::awaitable<Result<std::vector<Kline>>> fetchKlineWindow(
         const int pageLimit = clampKlineRequestLimit(remaining);
         auto page = co_await client.klines(symbol, interval, pageLimit, {}, endTime);
         if (!page) {
-            co_return std::unexpected(page.error());
+            co_return compat::unexpected(page.error());
         }
         if (page->empty()) {
             break;
@@ -312,7 +312,7 @@ boost::asio::awaitable<Result<void>> MarketScanner::waitForConnectionsReady(
             co_return Result<void>{};
         }
         if (std::chrono::steady_clock::now() >= deadline) {
-            co_return std::unexpected(BinanceError::fromApiResponse(
+            co_return compat::unexpected(BinanceError::fromApiResponse(
                 -91004,
                 "market scanner websocket feeds did not become healthy before timeout"));
         }
@@ -321,7 +321,7 @@ boost::asio::awaitable<Result<void>> MarketScanner::waitForConnectionsReady(
         boost::system::error_code ec;
         co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
         if (ec) {
-            co_return std::unexpected(BinanceError::fromApiResponse(
+            co_return compat::unexpected(BinanceError::fromApiResponse(
                 -91005,
                 "market scanner startup wait interrupted"));
         }
@@ -339,7 +339,7 @@ boost::asio::awaitable<Result<void>> MarketScanner::start() {
 
     const auto symbolsResult = co_await m_rest.exchangeInfo();
     if (!symbolsResult) {
-        co_return std::unexpected(symbolsResult.error());
+        co_return compat::unexpected(symbolsResult.error());
     }
 
     std::vector<std::string> symbols;
@@ -408,13 +408,13 @@ boost::asio::awaitable<Result<void>> MarketScanner::start() {
     }
 
     if (warmupResult.regularTotal > 0 && warmupResult.regularSucceeded == 0) {
-        co_return std::unexpected(
+        co_return compat::unexpected(
             BinanceError::fromApiResponse(-91001, "market scanner warmup failed for all regular kline requests"));
     }
 
     auto subscribeResult = co_await subscribeStreams(symbols);
     if (!subscribeResult) {
-        co_return std::unexpected(subscribeResult.error());
+        co_return compat::unexpected(subscribeResult.error());
     }
     startBackfill(symbols);
 
@@ -504,7 +504,7 @@ boost::asio::awaitable<Result<void>> MarketScanner::subscribeStreams(const std::
         readyFlags,
         std::chrono::duration_cast<std::chrono::milliseconds>(readyTimeout));
     if (!readyResult) {
-        co_return std::unexpected(readyResult.error());
+        co_return compat::unexpected(readyResult.error());
     }
     Logger::instance().log(
         LogLevel::Info,

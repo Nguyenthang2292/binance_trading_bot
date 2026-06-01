@@ -18,10 +18,10 @@ namespace {
 
 class StubRestClient final : public IRestClient {
 public:
-    RestResult<Order> newOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
-    RestResult<Order> newAlgoOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
-    RestResult<Order> cancelOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
-    RestResult<Order> queryOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> newOrderResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> newAlgoOrderResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> cancelOrderResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> queryOrderResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
     RestResult<void> cancelAllOrdersResult = RestResult<void>{};
     RestResult<std::vector<Order>> openOrdersResult = std::vector<Order>{};
     RestResult<std::vector<Order>> allOrdersResult = std::vector<Order>{};
@@ -129,20 +129,20 @@ class CaptureJournal final : public OrderJournal {
 public:
     std::optional<JournalEntry> lastEntry;
 
-    std::expected<void, BinanceError> recordIntent(JournalEntry entry) override {
+    compat::expected<void, BinanceError> recordIntent(JournalEntry entry) override {
         lastEntry = entry;
         return {};
     }
 
-    std::expected<void, BinanceError> updateState(CorrelationId, PlacementState, std::optional<int64_t>) override {
+    compat::expected<void, BinanceError> updateState(CorrelationId, PlacementState, std::optional<int64_t>) override {
         return {};
     }
 
-    std::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override {
+    compat::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override {
         return std::vector<JournalEntry>{};
     }
 
-    std::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(const ClientOrderId&) override {
+    compat::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(const ClientOrderId&) override {
         return std::optional<JournalEntry>{};
     }
 };
@@ -153,11 +153,11 @@ public:
     int updateCalls{0};
     std::optional<int64_t> lastUpdatedOrderId;
 
-    std::expected<void, BinanceError> recordIntent(JournalEntry) override {
+    compat::expected<void, BinanceError> recordIntent(JournalEntry) override {
         return {};
     }
 
-    std::expected<void, BinanceError> updateState(
+    compat::expected<void, BinanceError> updateState(
         CorrelationId,
         PlacementState,
         std::optional<int64_t> binanceOrderId) override {
@@ -166,11 +166,11 @@ public:
         return {};
     }
 
-    std::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override {
+    compat::expected<std::vector<JournalEntry>, BinanceError> pendingReconcile() override {
         return pendingEntries;
     }
 
-    std::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(const ClientOrderId&) override {
+    compat::expected<std::optional<JournalEntry>, BinanceError> findByClientOrderId(const ClientOrderId&) override {
         return std::optional<JournalEntry>{};
     }
 };
@@ -203,7 +203,7 @@ TriggerPrice trigger(std::string_view v) {
 
 TEST(OrdersTest, MarketTreatsHttp500AsUnknownPendingReconcile) {
     StubRestClient rest;
-    rest.newOrderResult = std::unexpected(BinanceError{
+    rest.newOrderResult = compat::unexpected(BinanceError{
         .category = ErrorCategory::Api,
         .code = 500,
         .message = "internal",
@@ -422,7 +422,7 @@ TEST(OrdersTest, QuerySnapshotPreservesDecimalStrings) {
 
 TEST(OrdersTest, MarketMapsMinus1007ToTimeoutCategory) {
     StubRestClient rest;
-    rest.newOrderResult = std::unexpected(BinanceError{
+    rest.newOrderResult = compat::unexpected(BinanceError{
         .category = ErrorCategory::Api,
         .code = -1007,
         .message = "timeout",
@@ -560,7 +560,7 @@ TEST(OrdersTest, DurableJournalWriteFailureBlocksPlacement) {
 
 TEST(OrdersTest, OperationAbortedBeforeSendMapsToCanceledBeforeSend) {
     StubRestClient rest;
-    rest.newOrderResult = std::unexpected(BinanceError::fromNetwork(
+    rest.newOrderResult = compat::unexpected(BinanceError::fromNetwork(
         boost::asio::error::operation_aborted,
         NetworkErrorPhase::BeforeSend));
 
@@ -585,7 +585,7 @@ TEST(OrdersTest, OperationAbortedBeforeSendMapsToCanceledBeforeSend) {
 
 TEST(OrdersTest, NetworkErrorMessageAloneDoesNotMapToCanceledBeforeSend) {
     StubRestClient rest;
-    rest.newOrderResult = std::unexpected(BinanceError{
+    rest.newOrderResult = compat::unexpected(BinanceError{
         .category = ErrorCategory::Network,
         .code = 0,
         .message = "operation aborted",
@@ -688,7 +688,7 @@ TEST(OrdersTest, QueryAllNormalPassesValidWindowAndLimitToRest) {
 
 TEST(OrdersTest, ReconcilePrimitiveCanQueryClientIdThenHistory) {
     StubRestClient rest;
-    rest.queryOrderResult = std::unexpected(BinanceError::fromApiResponse(-2013, "Order does not exist"));
+    rest.queryOrderResult = compat::unexpected(BinanceError::fromApiResponse(-2013, "Order does not exist"));
 
     Order historical;
     historical.symbol = "BTCUSDT";

@@ -13,7 +13,7 @@
 #include <vector>
 
 template <typename T>
-using RestResult = std::expected<T, BinanceError>;
+using RestResult = compat::expected<T, BinanceError>;
 
 class IRestClient {
 public:
@@ -59,7 +59,7 @@ public:
         std::optional<int64_t> endTime = {},
         int limit = 500) = 0;
     virtual boost::asio::awaitable<RestResult<LeverageResult>> setLeverage(std::string, int) {
-        co_return std::unexpected(BinanceError::fromApiResponse(-1, "setLeverage unsupported"));
+        co_return compat::unexpected(BinanceError::fromApiResponse(-1, "setLeverage unsupported"));
     }
     virtual boost::asio::awaitable<RestResult<BatchOrderResult>> batchOrders(std::vector<OrderRequest> reqs) = 0;
 };

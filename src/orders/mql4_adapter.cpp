@@ -130,7 +130,7 @@ boost::asio::awaitable<void> attachProtectionIfPresent(
 } // namespace
 
 boost::asio::awaitable<OrdersResult<NormalPlacementResult>> Mql4Adapter::orderSend(MappedOrderSendDraft draft) {
-    OrdersResult<NormalPlacementResult> result = std::unexpected(BinanceError::fromApiResponse(-1, "Unknown operation"));
+    OrdersResult<NormalPlacementResult> result = compat::unexpected(BinanceError::fromApiResponse(-1, "Unknown operation"));
     switch (draft.operation) {
         case TradeOperation::Buy: {
             result = co_await m_orders.market(MarketOrderDraft{
@@ -152,7 +152,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> Mql4Adapter::orderSe
         }
         case TradeOperation::BuyLimit:
             if (!draft.price) {
-                co_return std::unexpected(BinanceError::fromApiResponse(-1, "Price required for BuyLimit"));
+                co_return compat::unexpected(BinanceError::fromApiResponse(-1, "Price required for BuyLimit"));
             }
             result = co_await m_orders.limit(LimitOrderDraft{
                 .symbol = draft.symbol,
@@ -164,7 +164,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> Mql4Adapter::orderSe
             break;
         case TradeOperation::SellLimit:
             if (!draft.price) {
-                co_return std::unexpected(BinanceError::fromApiResponse(-1, "Price required for SellLimit"));
+                co_return compat::unexpected(BinanceError::fromApiResponse(-1, "Price required for SellLimit"));
             }
             result = co_await m_orders.limit(LimitOrderDraft{
                 .symbol = draft.symbol,
@@ -176,7 +176,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> Mql4Adapter::orderSe
             break;
         case TradeOperation::BuyStop:
             if (!draft.price) {
-                co_return std::unexpected(BinanceError::fromApiResponse(-1, "Price required for BuyStop"));
+                co_return compat::unexpected(BinanceError::fromApiResponse(-1, "Price required for BuyStop"));
             }
             result = co_await m_orders.stopEntry(StopEntryDraft{
                 .symbol = draft.symbol,
@@ -189,7 +189,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> Mql4Adapter::orderSe
             break;
         case TradeOperation::SellStop:
             if (!draft.price) {
-                co_return std::unexpected(BinanceError::fromApiResponse(-1, "Price required for SellStop"));
+                co_return compat::unexpected(BinanceError::fromApiResponse(-1, "Price required for SellStop"));
             }
             result = co_await m_orders.stopEntry(StopEntryDraft{
                 .symbol = draft.symbol,

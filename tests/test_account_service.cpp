@@ -158,7 +158,7 @@ TEST(AccountServiceTest, SnapshotConfigCanTradeAndAccountCanTradeAreCombinedCons
 
 TEST(AccountServiceTest, SnapshotPropagatesAccountRestFailure) {
     StubAccountRestClient rest;
-    rest.accountResult = std::unexpected(BinanceError::fromApiResponse(-1000, "account unavailable"));
+    rest.accountResult = compat::unexpected(BinanceError::fromApiResponse(-1000, "account unavailable"));
 
     account::AccountCompatibilityConfig cfg;
     account::AccountService service(rest, cfg);
@@ -179,7 +179,7 @@ TEST(AccountServiceTest, SnapshotAllowsPartialOptionalEndpointFailuresWhenReques
     FuturesAccount account;
     account.canTrade = true;
     rest.accountResult = account;
-    rest.balanceResult = std::unexpected(BinanceError::fromApiResponse(-1001, "balance unavailable"));
+    rest.balanceResult = compat::unexpected(BinanceError::fromApiResponse(-1001, "balance unavailable"));
     Position position;
     position.symbol = "BTCUSDT";
     rest.positionsResult = std::vector<Position>{position};
@@ -488,7 +488,7 @@ TEST(AccountServiceTest, LiquidationRiskReturnsPositionOnlyView) {
 
 TEST(AccountServiceTest, LiquidationRiskPropagatesRestFailure) {
     StubAccountRestClient rest;
-    rest.positionsResult = std::unexpected(BinanceError::fromApiResponse(-2011, "position risk unavailable"));
+    rest.positionsResult = compat::unexpected(BinanceError::fromApiResponse(-2011, "position risk unavailable"));
     account::AccountCompatibilityConfig cfg;
     account::AccountService service(rest, cfg);
 

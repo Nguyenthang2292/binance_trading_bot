@@ -9,8 +9,14 @@
 #include <expected>
 #endif
 
-#if !defined(__cpp_lib_expected)
-namespace std {
+#if defined(__cpp_lib_expected)
+namespace compat {
+using std::bad_expected_access;
+using std::expected;
+using std::unexpected;
+} // namespace compat
+#else
+namespace compat {
 
 template <typename E>
 class unexpected {
@@ -44,6 +50,10 @@ private:
 
 template <typename T, typename E>
 class expected {
+    static_assert(
+        !std::is_same_v<T, E>,
+        "compat::expected fallback does not support identical value and error types");
+
 public:
     expected() requires std::is_default_constructible_v<T> : m_storage(T{}) {}
     expected(const T& value) : m_storage(value) {}
@@ -122,5 +132,5 @@ private:
     std::variant<std::monostate, E> m_storage;
 };
 
-} // namespace std
+} // namespace compat
 #endif

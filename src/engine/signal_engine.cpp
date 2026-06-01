@@ -1261,7 +1261,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
         .placeOrders = placeOrders,
     });
     if (!preflight) {
-        co_return std::unexpected(preflight.error());
+        co_return compat::unexpected(preflight.error());
     }
     if (!*preflight) {
         co_return Result<void>{};
@@ -1372,7 +1372,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPosition(
     if (revalidateAfterBacktest) {
         auto rechecked = co_await preflightOpenPositionInternal(preflightValue.request, false);
         if (!rechecked) {
-            co_return std::unexpected(rechecked.error());
+            co_return compat::unexpected(rechecked.error());
         }
         if (!*rechecked) {
             co_return Result<void>{};
@@ -1456,7 +1456,7 @@ boost::asio::awaitable<Result<std::optional<SignalEngine::OpenPositionPreflight>
     }
     if (size.quantity <= 0.0) {
         m_lastOpenDecision.blockedStage = "sizing";
-        co_return std::unexpected(BinanceError::fromApiResponse(-91000, "quantity is zero after sizing"));
+        co_return compat::unexpected(BinanceError::fromApiResponse(-91000, "quantity is zero after sizing"));
     }
 
     OrderCapResult orderCapResult;
@@ -1645,7 +1645,7 @@ boost::asio::awaitable<Result<std::optional<SignalEngine::OpenPositionPreflight>
     const auto qty = quantityToStepDecimal(size.quantity, stepSize);
     if (!qty) {
         m_lastOpenDecision.blockedStage = "qty_decimal";
-        co_return std::unexpected(BinanceError::fromParse("invalid quantity decimal"));
+        co_return compat::unexpected(BinanceError::fromParse("invalid quantity decimal"));
     }
 
     co_return std::optional<OpenPositionPreflight>{OpenPositionPreflight{
@@ -1682,7 +1682,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
     auto qty = std::move(preflight.quantity);
     if (!qty) {
         m_lastOpenDecision.blockedStage = "qty_decimal";
-        co_return std::unexpected(BinanceError::fromParse("invalid quantity decimal"));
+        co_return compat::unexpected(BinanceError::fromParse("invalid quantity decimal"));
     }
     if (!placeOrders) {
         m_lastOpenDecision.blockedStage.clear();
@@ -1711,7 +1711,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
             "set leverage failed symbol=" + std::string(symbol) +
                 " requested_leverage=" + std::to_string(requestedLeverage) +
                 " error=" + quoteString(leverageResult.error().toString()));
-        co_return std::unexpected(leverageResult.error());
+        co_return compat::unexpected(leverageResult.error());
     }
     const int activeLeverage = leverageResult->leverage > 0 ? leverageResult->leverage : requestedLeverage;
 
@@ -1742,12 +1742,12 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
     if (!marketResult) {
         m_lastOpenDecision.blockedStage = "market_order_error";
         m_tracker.remove(symbol);
-        co_return std::unexpected(marketResult.error());
+        co_return compat::unexpected(marketResult.error());
     }
     if (marketResult->state != PlacementState::Accepted) {
         m_lastOpenDecision.blockedStage = "market_order_rejected";
         m_tracker.remove(symbol);
-        co_return std::unexpected(BinanceError::fromApiResponse(
+        co_return compat::unexpected(BinanceError::fromApiResponse(
             marketResult->binanceCode.value_or(-91001),
             marketResult->binanceMessage.value_or("market placement rejected")));
     }
@@ -1972,7 +1972,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
             } else {
                 commitEmergencyTracked("tp_decimal");
             }
-            co_return std::unexpected(BinanceError::fromParse("invalid tp decimal"));
+            co_return compat::unexpected(BinanceError::fromParse("invalid tp decimal"));
         }
 
         tpClientOrderId = makeExitClientOrderId(symbol, "tp");
@@ -2010,12 +2010,12 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
             }
             if (placedTp) {
                 m_lastOpenDecision.blockedStage = "tp_rejected";
-                co_return std::unexpected(BinanceError::fromApiResponse(
+                co_return compat::unexpected(BinanceError::fromApiResponse(
                     placedTp->binanceCode.value_or(-91002),
                     placedTp->binanceMessage.value_or("take-profit placement rejected")));
             }
             m_lastOpenDecision.blockedStage = "tp_error";
-            co_return std::unexpected(placedTp.error());
+            co_return compat::unexpected(placedTp.error());
         }
         tpResult = *placedTp;
     }
@@ -2041,7 +2041,7 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
             } else {
                 commitEmergencyTracked("sl_decimal");
             }
-            co_return std::unexpected(BinanceError::fromParse("invalid sl decimal"));
+            co_return compat::unexpected(BinanceError::fromParse("invalid sl decimal"));
         }
         slClientOrderId = makeExitClientOrderId(symbol, "sl");
         auto protectionResult = co_await m_orders.protection(ProtectionOrderDraft{
@@ -2085,12 +2085,12 @@ boost::asio::awaitable<Result<void>> SignalEngine::openPositionFromPreflight(Ope
             }
             if (protectionResult) {
                 m_lastOpenDecision.blockedStage = "sl_rejected";
-                co_return std::unexpected(BinanceError::fromApiResponse(
+                co_return compat::unexpected(BinanceError::fromApiResponse(
                     protectionResult->binanceCode.value_or(-91003),
                     protectionResult->binanceMessage.value_or("stop-loss placement rejected")));
             }
             m_lastOpenDecision.blockedStage = "sl_error";
-            co_return std::unexpected(protectionResult.error());
+            co_return compat::unexpected(protectionResult.error());
         }
     }
 

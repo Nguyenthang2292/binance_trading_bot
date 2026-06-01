@@ -346,7 +346,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
         if (rawDb) {
             sqlite3_close(rawDb);
         }
-        co_return std::unexpected(BinanceError::fromApiResponse(-92000, "qlib execution db open failed"));
+        co_return compat::unexpected(BinanceError::fromApiResponse(-92000, "qlib execution db open failed"));
     }
     std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(rawDb, sqlite3_close);
 
@@ -372,13 +372,13 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                         " slices=" + std::to_string(readyPlan->slices.size()));
                 if (m_nativeFallback == nullptr) {
                     markRequest(db.get(), requestId, "failed", "slice executor fallback is not configured");
-                    co_return std::unexpected(BinanceError::fromApiResponse(
+                    co_return compat::unexpected(BinanceError::fromApiResponse(
                         -92002,
                         "qlib plan ready but slice executor fallback is not configured"));
                 }
 
                 OrdersResult<NormalPlacementResult> lastResult =
-                    std::unexpected(BinanceError::fromApiResponse(-92004, "qlib plan had no submitted slices"));
+                    compat::unexpected(BinanceError::fromApiResponse(-92004, "qlib plan had no submitted slices"));
                 double cumulativeQuantity = 0.0;
                 // Sum of the executed (filled) base quantity reported by each accepted
                 // slice. Used to stamp an aggregate executedQty on the returned result so
@@ -393,20 +393,20 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                     if (slice.side != expectedSide) {
                         markSlice(db.get(), slice.sliceId, "failed", "side mismatch");
                         markRequest(db.get(), requestId, "failed", "slice side mismatch");
-                        co_return std::unexpected(BinanceError::fromApiResponse(-92005, "qlib slice side mismatch"));
+                        co_return compat::unexpected(BinanceError::fromApiResponse(-92005, "qlib slice side mismatch"));
                     }
                     auto sliceQty = DecimalString::parse(slice.quantity);
                     if (!sliceQty) {
                         markSlice(db.get(), slice.sliceId, "failed", "invalid quantity");
                         markRequest(db.get(), requestId, "failed", "invalid slice quantity");
-                        co_return std::unexpected(sliceQty.error());
+                        co_return compat::unexpected(sliceQty.error());
                     }
                     cumulativeQuantity += sliceQty->toDouble();
                     if (cumulativeQuantity > approvedQuantity + 1e-12) {
                         markSlice(db.get(), slice.sliceId, "failed", "quantity exceeds parent");
                         revokePendingSlices(db.get(), readyPlan->planId, "quantity exceeds parent");
                         markRequest(db.get(), requestId, "failed", "slice quantity exceeds parent");
-                        co_return std::unexpected(BinanceError::fromApiResponse(-92006, "qlib slice quantity exceeds parent"));
+                        co_return compat::unexpected(BinanceError::fromApiResponse(-92006, "qlib slice quantity exceeds parent"));
                     }
 
                     const int64_t now = orchestration::sqlite_helpers::nowMs();
@@ -428,7 +428,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                             "[QLIB_EXEC][SLICE_REVOKED] request=" + requestId +
                                 " slice=" + std::to_string(slice.sliceIndex) +
                                 " reason=" + revokeReason);
-                        co_return std::unexpected(BinanceError::fromApiResponse(-92007, "qlib execution revoked: " + revokeReason));
+                        co_return compat::unexpected(BinanceError::fromApiResponse(-92007, "qlib execution revoked: " + revokeReason));
                     }
 
                     MarketOrderDraft sliceDraft = draft;
@@ -483,14 +483,14 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> QlibExecutionPlanner
                     " reason=" + reason);
             co_return co_await m_nativeFallback->executeMarket(std::move(draft));
         }
-        co_return std::unexpected(BinanceError::fromApiResponse(
+        co_return compat::unexpected(BinanceError::fromApiResponse(
             -92001,
             "qlib execution plan not ready: " + reason));
     } catch (const std::exception& e) {
         std::string ignored;
         (void)orchestration::sqlite_helpers::execSql(db.get(), "ROLLBACK;", ignored);
         Logger::instance().log(LogLevel::Warning, std::string("[QlibExecutionPlanner] fail closed: ") + e.what());
-        co_return std::unexpected(BinanceError::fromApiResponse(-92003, e.what()));
+        co_return compat::unexpected(BinanceError::fromApiResponse(-92003, e.what()));
     }
 }
 

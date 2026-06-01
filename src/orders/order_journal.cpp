@@ -102,13 +102,13 @@ BinanceError journalIoError(int code, std::string_view action, int savedErrno) {
     return BinanceError::fromApiResponse(code, message.str());
 }
 
-std::expected<void, BinanceError> appendDurably(const std::string& path, const std::string& data) {
+compat::expected<void, BinanceError> appendDurably(const std::string& path, const std::string& data) {
     std::error_code ec;
     const auto parent = std::filesystem::path(path).parent_path();
     if (!parent.empty()) {
         std::filesystem::create_directories(parent, ec);
         if (ec) {
-            return std::unexpected(BinanceError::fromApiResponse(
+            return compat::unexpected(BinanceError::fromApiResponse(
                 -90011,
                 "Failed to create durable journal directory: " + ec.message()));
         }
@@ -116,7 +116,7 @@ std::expected<void, BinanceError> appendDurably(const std::string& path, const s
 #ifdef _WIN32
     const int fd = _open(path.c_str(), _O_APPEND | _O_CREAT | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE);
     if (fd == -1) {
-        return std::unexpected(journalIoError(-90011, "Failed to open durable journal", errno));
+        return compat::unexpected(journalIoError(-90011, "Failed to open durable journal", errno));
     }
 
     size_t offset = 0;
@@ -128,7 +128,7 @@ std::expected<void, BinanceError> appendDurably(const std::string& path, const s
         if (written <= 0) {
             const int savedErrno = errno;
             (void)_close(fd);
-            return std::unexpected(journalIoError(-90012, "Failed to write durable journal", savedErrno));
+            return compat::unexpected(journalIoError(-90012, "Failed to write durable journal", savedErrno));
         }
         offset += static_cast<size_t>(written);
     }
@@ -136,16 +136,16 @@ std::expected<void, BinanceError> appendDurably(const std::string& path, const s
     if (_commit(fd) == -1) {
         const int savedErrno = errno;
         (void)_close(fd);
-        return std::unexpected(journalIoError(-90013, "Failed to flush durable journal", savedErrno));
+        return compat::unexpected(journalIoError(-90013, "Failed to flush durable journal", savedErrno));
     }
     if (_close(fd) == -1) {
-        return std::unexpected(journalIoError(-90013, "Failed to close durable journal", errno));
+        return compat::unexpected(journalIoError(-90013, "Failed to close durable journal", errno));
     }
     return {};
 #else
     const int fd = ::open(path.c_str(), O_APPEND | O_CREAT | O_WRONLY, 0600);
     if (fd == -1) {
-        return std::unexpected(journalIoError(-90011, "Failed to open durable journal", errno));
+        return compat::unexpected(journalIoError(-90011, "Failed to open durable journal", errno));
     }
 
     size_t offset = 0;
@@ -154,7 +154,7 @@ std::expected<void, BinanceError> appendDurably(const std::string& path, const s
         if (written <= 0) {
             const int savedErrno = errno;
             (void)::close(fd);
-            return std::unexpected(journalIoError(-90012, "Failed to write durable journal", savedErrno));
+            return compat::unexpected(journalIoError(-90012, "Failed to write durable journal", savedErrno));
         }
         offset += static_cast<size_t>(written);
     }
@@ -162,10 +162,10 @@ std::expected<void, BinanceError> appendDurably(const std::string& path, const s
     if (::fsync(fd) == -1) {
         const int savedErrno = errno;
         (void)::close(fd);
-        return std::unexpected(journalIoError(-90013, "Failed to flush durable journal", savedErrno));
+        return compat::unexpected(journalIoError(-90013, "Failed to flush durable journal", savedErrno));
     }
     if (::close(fd) == -1) {
-        return std::unexpected(journalIoError(-90013, "Failed to close durable journal", errno));
+        return compat::unexpected(journalIoError(-90013, "Failed to close durable journal", errno));
     }
     return {};
 #endif
@@ -173,7 +173,7 @@ std::expected<void, BinanceError> appendDurably(const std::string& path, const s
 
 } // namespace
 
-std::expected<void, BinanceError> InMemoryOrderJournal::recordIntent(JournalEntry entry) {
+compat::expected<void, BinanceError> InMemoryOrderJournal::recordIntent(JournalEntry entry) {
     std::scoped_lock lock(m_mutex);
     const auto correlationId = entry.correlationId;
     const auto clientOrderId = entry.clientOrderId;
@@ -182,14 +182,14 @@ std::expected<void, BinanceError> InMemoryOrderJournal::recordIntent(JournalEntr
     return {};
 }
 
-std::expected<void, BinanceError> InMemoryOrderJournal::updateState(
+compat::expected<void, BinanceError> InMemoryOrderJournal::updateState(
     CorrelationId id,
     PlacementState state,
     std::optional<int64_t> binanceOrderId) {
     std::scoped_lock lock(m_mutex);
     auto it = m_entriesByCorrelationId.find(id);
     if (it == m_entriesByCorrelationId.end()) {
-        return std::unexpected(BinanceError::fromApiResponse(-90002, "Journal entry not found"));
+        return compat::unexpected(BinanceError::fromApiResponse(-90002, "Journal entry not found"));
     }
     it->second.state = state;
     it->second.binanceOrderId = binanceOrderId;
@@ -197,7 +197,7 @@ std::expected<void, BinanceError> InMemoryOrderJournal::updateState(
     return {};
 }
 
-std::expected<std::vector<JournalEntry>, BinanceError> InMemoryOrderJournal::pendingReconcile() {
+compat::expected<std::vector<JournalEntry>, BinanceError> InMemoryOrderJournal::pendingReconcile() {
     std::scoped_lock lock(m_mutex);
     std::vector<JournalEntry> result;
     result.reserve(m_entriesByCorrelationId.size());
@@ -209,7 +209,7 @@ std::expected<std::vector<JournalEntry>, BinanceError> InMemoryOrderJournal::pen
     return result;
 }
 
-std::expected<std::optional<JournalEntry>, BinanceError> InMemoryOrderJournal::findByClientOrderId(
+compat::expected<std::optional<JournalEntry>, BinanceError> InMemoryOrderJournal::findByClientOrderId(
     const ClientOrderId& clientOrderId) {
     std::scoped_lock lock(m_mutex);
     const auto idIt = m_correlationByClientId.find(clientOrderId);
@@ -235,7 +235,7 @@ DurableOrderJournal::DurableOrderJournal(std::string path)
     }
 }
 
-std::expected<void, BinanceError> DurableOrderJournal::appendRecord(const std::string& op,
+compat::expected<void, BinanceError> DurableOrderJournal::appendRecord(const std::string& op,
                                                                     const CorrelationId& correlationId,
                                                                     PlacementState state,
                                                                     std::optional<int64_t> binanceOrderId,
@@ -286,12 +286,12 @@ std::expected<void, BinanceError> DurableOrderJournal::appendRecord(const std::s
     }
 
     if (!out.good()) {
-        return std::unexpected(BinanceError::fromApiResponse(-90012, "Failed to write durable journal"));
+        return compat::unexpected(BinanceError::fromApiResponse(-90012, "Failed to write durable journal"));
     }
     return appendDurably(m_path, out.str());
 }
 
-std::expected<void, BinanceError> DurableOrderJournal::loadFromFile() {
+compat::expected<void, BinanceError> DurableOrderJournal::loadFromFile() {
     std::ifstream in(m_path);
     if (!in.is_open()) {
         return {};
@@ -395,30 +395,30 @@ std::expected<void, BinanceError> DurableOrderJournal::loadFromFile() {
     return {};
 }
 
-std::expected<void, BinanceError> DurableOrderJournal::recordIntent(JournalEntry entry) {
+compat::expected<void, BinanceError> DurableOrderJournal::recordIntent(JournalEntry entry) {
     std::scoped_lock lock(m_mutex);
     const auto correlationId = entry.correlationId;
     const auto clientOrderId = entry.clientOrderId;
     if (auto saved = appendRecord("R", correlationId, entry.state, entry.binanceOrderId, &entry); !saved) {
-        return std::unexpected(saved.error());
+        return compat::unexpected(saved.error());
     }
     m_entriesByCorrelationId[correlationId] = std::move(entry);
     m_correlationByClientId[clientOrderId] = correlationId;
     return {};
 }
 
-std::expected<void, BinanceError> DurableOrderJournal::updateState(
+compat::expected<void, BinanceError> DurableOrderJournal::updateState(
     CorrelationId id,
     PlacementState state,
     std::optional<int64_t> binanceOrderId) {
     std::scoped_lock lock(m_mutex);
     auto it = m_entriesByCorrelationId.find(id);
     if (it == m_entriesByCorrelationId.end()) {
-        return std::unexpected(BinanceError::fromApiResponse(-90002, "Journal entry not found"));
+        return compat::unexpected(BinanceError::fromApiResponse(-90002, "Journal entry not found"));
     }
 
     if (auto saved = appendRecord("U", id, state, binanceOrderId, nullptr); !saved) {
-        return std::unexpected(saved.error());
+        return compat::unexpected(saved.error());
     }
 
     it->second.state = state;
@@ -427,7 +427,7 @@ std::expected<void, BinanceError> DurableOrderJournal::updateState(
     return {};
 }
 
-std::expected<std::vector<JournalEntry>, BinanceError> DurableOrderJournal::pendingReconcile() {
+compat::expected<std::vector<JournalEntry>, BinanceError> DurableOrderJournal::pendingReconcile() {
     std::scoped_lock lock(m_mutex);
     std::vector<JournalEntry> result;
     result.reserve(m_entriesByCorrelationId.size());
@@ -439,7 +439,7 @@ std::expected<std::vector<JournalEntry>, BinanceError> DurableOrderJournal::pend
     return result;
 }
 
-std::expected<std::optional<JournalEntry>, BinanceError> DurableOrderJournal::findByClientOrderId(
+compat::expected<std::optional<JournalEntry>, BinanceError> DurableOrderJournal::findByClientOrderId(
     const ClientOrderId& clientOrderId) {
     std::scoped_lock lock(m_mutex);
     const auto idIt = m_correlationByClientId.find(clientOrderId);

@@ -22,7 +22,7 @@
 #include <vector>
 
 template <typename T>
-using Result = std::expected<T, BinanceError>;
+using Result = compat::expected<T, BinanceError>;
 
 class RestClient {
 public:
@@ -113,7 +113,7 @@ public:
         RawParsedDocument& operator=(const RawParsedDocument&) = delete;
     };
 
-    using RawParseResult = std::expected<RawParsedDocument, BinanceError>;
+    using RawParseResult = compat::expected<RawParsedDocument, BinanceError>;
 
     template <typename T>
     Result<T> parseResponse(std::string_view body,
@@ -166,11 +166,11 @@ Result<T> RestClient::parseResponse(std::string_view body,
                                     std::function<T(simdjson::ondemand::document&)> parser) {
     auto parsed = rawParse(body);
     if (!parsed) {
-        return std::unexpected(parsed.error());
+        return compat::unexpected(parsed.error());
     }
     try {
         return parser(parsed->document);
     } catch (const std::exception& e) {
-        return std::unexpected(BinanceError::fromParse(e.what()));
+        return compat::unexpected(BinanceError::fromParse(e.what()));
     }
 }

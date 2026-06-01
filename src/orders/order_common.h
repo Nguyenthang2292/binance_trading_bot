@@ -87,7 +87,7 @@ struct OrderMetadata {
 };
 
 template <typename T>
-using OrdersResult = std::expected<T, BinanceError>;
+using OrdersResult = compat::expected<T, BinanceError>;
 
 class OrderJournal;
 

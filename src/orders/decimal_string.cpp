@@ -11,9 +11,9 @@ BinanceError invalidDecimal(std::string_view value) {
 
 } // namespace
 
-std::expected<DecimalString, BinanceError> DecimalString::parse(std::string_view value) {
+compat::expected<DecimalString, BinanceError> DecimalString::parse(std::string_view value) {
     if (value.empty()) {
-        return std::unexpected(invalidDecimal(value));
+        return compat::unexpected(invalidDecimal(value));
     }
 
     bool hasDigit = false;
@@ -26,16 +26,16 @@ std::expected<DecimalString, BinanceError> DecimalString::parse(std::string_view
         }
         if (c == '.') {
             if (hasDot) {
-                return std::unexpected(invalidDecimal(value));
+                return compat::unexpected(invalidDecimal(value));
             }
             hasDot = true;
             continue;
         }
-        return std::unexpected(invalidDecimal(value));
+        return compat::unexpected(invalidDecimal(value));
     }
 
     if (!hasDigit) {
-        return std::unexpected(invalidDecimal(value));
+        return compat::unexpected(invalidDecimal(value));
     }
 
     return DecimalString(std::string(value));

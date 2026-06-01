@@ -118,21 +118,21 @@ OrdersResult<ClientOrderId> AlgoOrderService::resolveClientOrderId(const std::op
     if (provided.has_value()) {
         auto valid = m_idGenerator.validateClientOrderId(*provided);
         if (!valid) {
-            return std::unexpected(valid.error());
+            return compat::unexpected(valid.error());
         }
         return *provided;
     }
     return m_idGenerator.generateClientOrderId();
 }
 
-std::expected<void, BinanceError> AlgoOrderService::recordIntent(const PreparedPlacement& placement) {
+compat::expected<void, BinanceError> AlgoOrderService::recordIntent(const PreparedPlacement& placement) {
     if (!m_journal) {
-        return std::unexpected(BinanceError::fromApiResponse(-90006, "No journal configured"));
+        return compat::unexpected(BinanceError::fromApiResponse(-90006, "No journal configured"));
     }
     const bool durableConfigured = m_cfg.journalIsDurable
         || dynamic_cast<DurableOrderJournal*>(m_journal.get()) != nullptr;
     if (!m_cfg.allowBestEffortJournal && !durableConfigured) {
-        return std::unexpected(BinanceError::fromApiResponse(
+        return compat::unexpected(BinanceError::fromApiResponse(
             -90009, "Durable journal is required when allowBestEffortJournal=false"));
     }
 
@@ -152,7 +152,7 @@ std::expected<void, BinanceError> AlgoOrderService::recordIntent(const PreparedP
     return m_journal->recordIntent(std::move(entry));
 }
 
-std::expected<void, BinanceError> AlgoOrderService::updateJournal(const CorrelationId& id,
+compat::expected<void, BinanceError> AlgoOrderService::updateJournal(const CorrelationId& id,
                                                                   PlacementState state,
                                                                   std::optional<int64_t> orderId) {
     if (!m_journal) {
@@ -235,7 +235,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::st
     const auto startedAt = std::chrono::steady_clock::now();
     auto prepared = prepareStopEntry(std::move(draft));
     if (!prepared) {
-        co_return std::unexpected(prepared.error());
+        co_return compat::unexpected(prepared.error());
     }
     auto result = std::move(prepared->result);
     if (result.state == PlacementState::Rejected) {
@@ -276,7 +276,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::pr
     const auto startedAt = std::chrono::steady_clock::now();
     auto prepared = prepareProtection(std::move(draft));
     if (!prepared) {
-        co_return std::unexpected(prepared.error());
+        co_return compat::unexpected(prepared.error());
     }
     auto result = std::move(prepared->result);
     if (result.state == PlacementState::Rejected) {
@@ -316,7 +316,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> AlgoOrderService::pr
 boost::asio::awaitable<OrdersResult<NormalCancelResult>> AlgoOrderService::cancelAlgoByAlgoId(Symbol symbol, int64_t algoId) {
     auto canceled = co_await m_rest.cancelAlgoOrder(std::move(symbol), algoId);
     if (!canceled) {
-        co_return std::unexpected(canceled.error());
+        co_return compat::unexpected(canceled.error());
     }
     co_return toCancelResult(*canceled);
 }
@@ -326,7 +326,7 @@ boost::asio::awaitable<OrdersResult<NormalCancelResult>> AlgoOrderService::cance
     ClientAlgoId clientAlgoId) {
     auto canceled = co_await m_rest.cancelAlgoOrderByClientAlgoId(std::move(symbol), std::move(clientAlgoId));
     if (!canceled) {
-        co_return std::unexpected(canceled.error());
+        co_return compat::unexpected(canceled.error());
     }
     co_return toCancelResult(*canceled);
 }
@@ -334,7 +334,7 @@ boost::asio::awaitable<OrdersResult<NormalCancelResult>> AlgoOrderService::cance
 boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> AlgoOrderService::queryAlgoByAlgoId(Symbol symbol, int64_t algoId) {
     auto queried = co_await m_rest.queryAlgoOrder(std::move(symbol), algoId);
     if (!queried) {
-        co_return std::unexpected(queried.error());
+        co_return compat::unexpected(queried.error());
     }
     co_return toSnapshot(*queried);
 }
@@ -344,7 +344,7 @@ boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> AlgoOrderService::quer
     ClientAlgoId clientAlgoId) {
     auto queried = co_await m_rest.queryAlgoOrderByClientAlgoId(std::move(symbol), std::move(clientAlgoId));
     if (!queried) {
-        co_return std::unexpected(queried.error());
+        co_return compat::unexpected(queried.error());
     }
     co_return toSnapshot(*queried);
 }

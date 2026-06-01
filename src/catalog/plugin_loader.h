@@ -16,6 +16,7 @@ struct PluginLoadResult {
     std::filesystem::path path;
     std::string type;
     std::string version;
+    int abiVersion{0};
     bool success{false};
     std::string error;
 };
@@ -30,7 +31,7 @@ public:
     };
 
     using EnumerateFn = std::function<std::vector<std::filesystem::path>(const std::filesystem::path&)>;
-    using LoadFn = std::function<std::expected<PluginHandle, std::string>(const std::filesystem::path&)>;
+    using LoadFn = std::function<compat::expected<PluginHandle, std::string>(const std::filesystem::path&)>;
 
     explicit PluginLoader(Config config, EnumerateFn enumerateFn = {}, LoadFn loadFn = {});
 
@@ -47,10 +48,10 @@ private:
     using HashAllowlist = std::unordered_set<std::string>;
 
     static std::vector<std::filesystem::path> defaultEnumerate(const std::filesystem::path& pluginsDir);
-    static std::expected<PluginHandle, std::string> defaultLoad(const std::filesystem::path& path);
-    static std::expected<HashAllowlist, std::string> loadSha256Allowlist(const std::filesystem::path& allowlistPath);
-    static std::expected<std::string, std::string> calculateSha256(const std::filesystem::path& filePath);
-    std::expected<std::string, std::string> verifyIntegrity(const std::filesystem::path& filePath) const;
+    static compat::expected<PluginHandle, std::string> defaultLoad(const std::filesystem::path& path);
+    static compat::expected<HashAllowlist, std::string> loadSha256Allowlist(const std::filesystem::path& allowlistPath);
+    static compat::expected<std::string, std::string> calculateSha256(const std::filesystem::path& filePath);
+    compat::expected<std::string, std::string> verifyIntegrity(const std::filesystem::path& filePath) const;
 
     Config m_config;
     EnumerateFn m_enumerateFn;

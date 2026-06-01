@@ -143,7 +143,7 @@ bool BinanceAPI::testConnectivity() {
     return *result;
 }
 
-std::expected<NormalPlacementResult, BinanceError> BinanceAPI::marketOrder(MarketOrderDraft draft) {
+compat::expected<NormalPlacementResult, BinanceError> BinanceAPI::marketOrder(MarketOrderDraft draft) {
     auto future = boost::asio::co_spawn(
         m_context->ioc(),
         [this, draft = std::move(draft)]() mutable -> boost::asio::awaitable<OrdersResult<NormalPlacementResult>> {
@@ -153,7 +153,7 @@ std::expected<NormalPlacementResult, BinanceError> BinanceAPI::marketOrder(Marke
     return future.get();
 }
 
-std::expected<NormalPlacementResult, BinanceError> BinanceAPI::limitOrder(LimitOrderDraft draft) {
+compat::expected<NormalPlacementResult, BinanceError> BinanceAPI::limitOrder(LimitOrderDraft draft) {
     auto future = boost::asio::co_spawn(
         m_context->ioc(),
         [this, draft = std::move(draft)]() mutable -> boost::asio::awaitable<OrdersResult<NormalPlacementResult>> {
@@ -163,7 +163,7 @@ std::expected<NormalPlacementResult, BinanceError> BinanceAPI::limitOrder(LimitO
     return future.get();
 }
 
-std::expected<NormalPlacementResult, BinanceError> BinanceAPI::closeByMarket(CloseByMarketDraft draft) {
+compat::expected<NormalPlacementResult, BinanceError> BinanceAPI::closeByMarket(CloseByMarketDraft draft) {
     auto future = boost::asio::co_spawn(
         m_context->ioc(),
         [this, draft = std::move(draft)]() mutable -> boost::asio::awaitable<OrdersResult<NormalPlacementResult>> {
@@ -173,7 +173,7 @@ std::expected<NormalPlacementResult, BinanceError> BinanceAPI::closeByMarket(Clo
     return future.get();
 }
 
-std::expected<NormalCancelResult, BinanceError> BinanceAPI::cancelNormalByOrderId(const Symbol& symbol, int64_t orderId) {
+compat::expected<NormalCancelResult, BinanceError> BinanceAPI::cancelNormalByOrderId(const Symbol& symbol, int64_t orderId) {
     auto future = boost::asio::co_spawn(
         m_context->ioc(),
         [this, symbol, orderId]() -> boost::asio::awaitable<OrdersResult<NormalCancelResult>> {
@@ -183,7 +183,7 @@ std::expected<NormalCancelResult, BinanceError> BinanceAPI::cancelNormalByOrderI
     return future.get();
 }
 
-std::expected<NormalOrderSnapshot, BinanceError> BinanceAPI::queryNormalByOrderId(const Symbol& symbol, int64_t orderId) {
+compat::expected<NormalOrderSnapshot, BinanceError> BinanceAPI::queryNormalByOrderId(const Symbol& symbol, int64_t orderId) {
     auto future = boost::asio::co_spawn(
         m_context->ioc(),
         [this, symbol, orderId]() -> boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> {

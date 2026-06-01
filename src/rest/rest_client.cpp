@@ -515,12 +515,12 @@ RestClient::RawParseResult RestClient::rawParse(std::string_view body) {
     storage->buffer = simdjson::padded_string(body);
     auto docResult = storage->parser.iterate(storage->buffer);
     if (docResult.error()) {
-        return std::unexpected(BinanceError::fromParse(simdjson::error_message(docResult.error())));
+        return compat::unexpected(BinanceError::fromParse(simdjson::error_message(docResult.error())));
     }
     auto doc = std::move(docResult).value();
     auto type = doc.type();
     if (type.error()) {
-        return std::unexpected(BinanceError::fromParse(simdjson::error_message(type.error())));
+        return compat::unexpected(BinanceError::fromParse(simdjson::error_message(type.error())));
     }
     const auto bodyView = std::string_view(storage->buffer.data(), storage->buffer.length());
     return RawParsedDocument{std::move(storage), std::move(doc), bodyView};
@@ -557,7 +557,7 @@ asio::awaitable<HttpSession::Result> RestClient::publicGet(
         timer.expires_after(delay);
         co_await timer.async_wait(asio::use_awaitable);
     }
-    co_return std::unexpected(BinanceError::fromApiResponse(-91002, "unexpected publicGet retry flow"));
+    co_return compat::unexpected(BinanceError::fromApiResponse(-91002, "unexpected publicGet retry flow"));
 }
 
 asio::awaitable<HttpSession::Result> RestClient::signedGet(
@@ -695,13 +695,13 @@ asio::awaitable<HttpSession::Result> RestClient::apiKeyDelete(
 
 asio::awaitable<Result<bool>> RestClient::ping() {
     auto body = co_await publicGet("/fapi/v1/ping", {});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return true;
 }
 
 asio::awaitable<Result<int64_t>> RestClient::serverTime() {
     auto body = co_await publicGet("/fapi/v1/time", {});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<int64_t>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return intField(object, "serverTime");
@@ -710,7 +710,7 @@ asio::awaitable<Result<int64_t>> RestClient::serverTime() {
 
 asio::awaitable<Result<std::vector<ExchangeSymbol>>> RestClient::exchangeInfo() {
     auto body = co_await publicGet("/fapi/v1/exchangeInfo", {});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<std::vector<ExchangeSymbol>>(*body, [](simdjson::ondemand::document& doc) {
         std::vector<ExchangeSymbol> symbols;
         auto object = doc.get_object().value();
@@ -790,7 +790,7 @@ asio::awaitable<Result<OrderBook>> RestClient::orderBook(std::string symbol, int
         "/fapi/v1/depth",
         query({{"symbol", upper(symbol)}, {"limit", std::to_string(limit)}}),
         RateLimiter::Cost{.requestWeight = RateLimiter::depthWeight(limit)});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<OrderBook>(*body, [](simdjson::ondemand::document& doc) {
         OrderBook book;
         auto object = doc.get_object().value();
@@ -815,7 +815,7 @@ asio::awaitable<Result<std::vector<Kline>>> RestClient::klines(std::string symbo
     });
     const int cost = RateLimiter::klineWeight(limit);
     auto body = co_await publicGet("/fapi/v1/klines", q, RateLimiter::Cost{.requestWeight = cost});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<std::vector<Kline>>(*body, [interval, endTime](simdjson::ondemand::document& doc) {
         std::vector<Kline> out;
         auto rows = doc.get_array().value();
@@ -829,7 +829,7 @@ asio::awaitable<Result<std::vector<Kline>>> RestClient::klines(std::string symbo
 
 asio::awaitable<Result<MarkPrice>> RestClient::markPrice(std::string symbol) {
     auto body = co_await publicGet("/fapi/v1/premiumIndex", query({{"symbol", upper(symbol)}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<MarkPrice>(*body, [](simdjson::ondemand::document& doc) {
         MarkPrice p;
         auto object = doc.get_object().value();
@@ -850,7 +850,7 @@ asio::awaitable<Result<MarkPrice>> RestClient::markPrice(std::string symbol) {
 
 asio::awaitable<Result<std::vector<MarkPrice>>> RestClient::allMarkPrices() {
     auto body = co_await publicGet("/fapi/v1/premiumIndex", {});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<std::vector<MarkPrice>>(*body, [](simdjson::ondemand::document& doc) {
         std::vector<MarkPrice> out;
         auto array = doc.get_array().value();
@@ -876,7 +876,7 @@ asio::awaitable<Result<std::vector<MarkPrice>>> RestClient::allMarkPrices() {
 
 asio::awaitable<Result<double>> RestClient::fundingRate(std::string symbol) {
     auto body = co_await publicGet("/fapi/v1/fundingRate", query({{"symbol", upper(symbol)}, {"limit", "1"}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<double>(*body, [](simdjson::ondemand::document& doc) {
         auto array = doc.get_array().value();
         for (auto itemValue : array) {
@@ -889,7 +889,7 @@ asio::awaitable<Result<double>> RestClient::fundingRate(std::string symbol) {
 
 asio::awaitable<Result<Ticker24h>> RestClient::ticker24h(std::string symbol) {
     auto body = co_await publicGet("/fapi/v1/ticker/24hr", query({{"symbol", upper(symbol)}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Ticker24h>(*body, [](simdjson::ondemand::document& doc) {
         Ticker24h t;
         auto object = doc.get_object().value();
@@ -916,7 +916,7 @@ asio::awaitable<Result<Ticker24h>> RestClient::ticker24h(std::string symbol) {
 
 asio::awaitable<Result<std::vector<Ticker24h>>> RestClient::allTicker24h() {
     auto body = co_await publicGet("/fapi/v1/ticker/24hr", {});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<std::vector<Ticker24h>>(*body, [](simdjson::ondemand::document& doc) {
         std::vector<Ticker24h> out;
         auto array = doc.get_array().value();
@@ -948,7 +948,7 @@ asio::awaitable<Result<std::vector<Ticker24h>>> RestClient::allTicker24h() {
 
 asio::awaitable<Result<double>> RestClient::bestBidPrice(std::string symbol) {
     auto body = co_await publicGet("/fapi/v1/ticker/bookTicker", query({{"symbol", upper(symbol)}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<double>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return doubleField(object, "bidPrice");
@@ -957,7 +957,7 @@ asio::awaitable<Result<double>> RestClient::bestBidPrice(std::string symbol) {
 
 asio::awaitable<Result<FuturesAccount>> RestClient::account() {
     auto body = co_await signedGet("/fapi/v2/account", {});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<FuturesAccount>(*body, [](simdjson::ondemand::document& doc) {
         FuturesAccount a;
         auto object = doc.get_object().value();
@@ -995,7 +995,7 @@ asio::awaitable<Result<FuturesAccount>> RestClient::account() {
 
 asio::awaitable<Result<std::vector<Balance>>> RestClient::balance() {
     auto body = co_await signedGet("/fapi/v2/balance", {});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<std::vector<Balance>>(*body, [](simdjson::ondemand::document& doc) {
         std::vector<Balance> out;
         auto array = doc.get_array().value();
@@ -1009,7 +1009,7 @@ asio::awaitable<Result<std::vector<Balance>>> RestClient::balance() {
 
 asio::awaitable<Result<std::vector<Position>>> RestClient::positions(std::optional<std::string> symbol) {
     auto body = co_await signedGet("/fapi/v2/positionRisk", symbol ? query({{"symbol", upper(*symbol)}}) : "");
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<std::vector<Position>>(*body, [](simdjson::ondemand::document& doc) {
         std::vector<Position> out;
         auto array = doc.get_array().value();
@@ -1023,7 +1023,7 @@ asio::awaitable<Result<std::vector<Position>>> RestClient::positions(std::option
 
 asio::awaitable<Result<FuturesAccountConfig>> RestClient::accountConfig() {
     auto body = co_await signedGet("/fapi/v1/accountConfig", {});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<FuturesAccountConfig>(*body, [](simdjson::ondemand::document& doc) {
         FuturesAccountConfig config;
         auto object = doc.get_object().value();
@@ -1036,7 +1036,7 @@ asio::awaitable<Result<FuturesAccountConfig>> RestClient::accountConfig() {
 
 asio::awaitable<Result<PositionModeStatus>> RestClient::positionMode() {
     auto body = co_await signedGet("/fapi/v1/positionSide/dual", {});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<PositionModeStatus>(*body, [](simdjson::ondemand::document& doc) {
         PositionModeStatus mode;
         auto object = doc.get_object().value();
@@ -1047,7 +1047,7 @@ asio::awaitable<Result<PositionModeStatus>> RestClient::positionMode() {
 
 asio::awaitable<Result<MultiAssetsModeStatus>> RestClient::multiAssetsMode() {
     auto body = co_await signedGet("/fapi/v1/multiAssetsMargin", {});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<MultiAssetsModeStatus>(*body, [](simdjson::ondemand::document& doc) {
         MultiAssetsModeStatus mode;
         auto object = doc.get_object().value();
@@ -1080,14 +1080,14 @@ asio::awaitable<Result<void>> RestClient::testOrder(OrderRequest req) {
         appendParam(params, k, v);
     }
     auto body = co_await signedPost("/fapi/v1/order/test", params);
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return Result<void>{};
 }
 
 asio::awaitable<Result<std::vector<SymbolLeverageBrackets>>> RestClient::leverageBrackets(
     std::optional<std::string> symbol) {
     auto body = co_await signedGet("/fapi/v1/leverageBracket", symbol ? query({{"symbol", upper(*symbol)}}) : "");
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<std::vector<SymbolLeverageBrackets>>(
         *body,
         [](simdjson::ondemand::document& doc) {
@@ -1127,7 +1127,7 @@ asio::awaitable<Result<std::vector<SymbolLeverageBrackets>>> RestClient::leverag
 
 asio::awaitable<Result<LeverageResult>> RestClient::setLeverage(std::string symbol, int leverage) {
     auto body = co_await signedPost("/fapi/v1/leverage", query({{"symbol", upper(symbol)}, {"leverage", std::to_string(leverage)}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<LeverageResult>(*body, [](simdjson::ondemand::document& doc) {
         LeverageResult r;
         auto object = doc.get_object().value();
@@ -1141,7 +1141,7 @@ asio::awaitable<Result<LeverageResult>> RestClient::setLeverage(std::string symb
 
 asio::awaitable<Result<void>> RestClient::setMarginType(std::string symbol, std::string marginType) {
     auto body = co_await signedPost("/fapi/v1/marginType", query({{"symbol", upper(symbol)}, {"marginType", upper(marginType)}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return Result<void>{};
 }
 
@@ -1172,7 +1172,7 @@ asio::awaitable<Result<Order>> RestClient::newOrder(OrderRequest req) {
         "/fapi/v1/order",
         params,
         RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseOrder(object);
@@ -1205,7 +1205,7 @@ asio::awaitable<Result<Order>> RestClient::newAlgoOrder(OrderRequest req) {
         "/fapi/v1/algoOrder",
         params,
         RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseAlgoOrder(object);
@@ -1232,7 +1232,7 @@ asio::awaitable<Result<Order>> RestClient::modifyOrder(OrderRequest req) {
         "/fapi/v1/order",
         params,
         RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseOrder(object);
@@ -1244,7 +1244,7 @@ asio::awaitable<Result<Order>> RestClient::cancelOrder(std::string symbol, int64
         "/fapi/v1/order",
         query({{"symbol", upper(symbol)}, {"orderId", std::to_string(orderId)}}),
         RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseOrder(object);
@@ -1257,7 +1257,7 @@ asio::awaitable<Result<Order>> RestClient::cancelAlgoOrder(std::string symbol, i
         "/fapi/v1/algoOrder",
         query({{"algoId", std::to_string(algoId)}}),
         RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseAlgoOrder(object);
@@ -1269,7 +1269,7 @@ asio::awaitable<Result<Order>> RestClient::cancelOrderByClientOrderId(std::strin
         "/fapi/v1/order",
         query({{"symbol", upper(symbol)}, {"origClientOrderId", clientOrderId}}),
         RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseOrder(object);
@@ -1284,7 +1284,7 @@ asio::awaitable<Result<Order>> RestClient::cancelAlgoOrderByClientAlgoId(
         "/fapi/v1/algoOrder",
         query({{"clientAlgoId", clientAlgoId}}),
         RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseAlgoOrder(object);
@@ -1296,13 +1296,13 @@ asio::awaitable<Result<void>> RestClient::cancelAllOrders(std::string symbol) {
         "/fapi/v1/allOpenOrders",
         query({{"symbol", upper(symbol)}}),
         RateLimiter::Cost{.requestWeight = 1, .orders1m = 1, .orders10s = 1});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return Result<void>{};
 }
 
 asio::awaitable<Result<Order>> RestClient::queryOrder(std::string symbol, int64_t orderId) {
     auto body = co_await signedGet("/fapi/v1/order", query({{"symbol", upper(symbol)}, {"orderId", std::to_string(orderId)}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseOrder(object);
@@ -1314,7 +1314,7 @@ asio::awaitable<Result<Order>> RestClient::queryAlgoOrder(std::string symbol, in
     auto body = co_await signedGet(
         "/fapi/v1/algoOrder",
         query({{"algoId", std::to_string(algoId)}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseAlgoOrder(object);
@@ -1325,7 +1325,7 @@ asio::awaitable<Result<Order>> RestClient::queryOrderByClientOrderId(std::string
     auto body = co_await signedGet(
         "/fapi/v1/order",
         query({{"symbol", upper(symbol)}, {"origClientOrderId", clientOrderId}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseOrder(object);
@@ -1339,7 +1339,7 @@ asio::awaitable<Result<Order>> RestClient::queryAlgoOrderByClientAlgoId(
     auto body = co_await signedGet(
         "/fapi/v1/algoOrder",
         query({{"clientAlgoId", clientAlgoId}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<Order>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return parseAlgoOrder(object);
@@ -1351,7 +1351,7 @@ asio::awaitable<Result<std::vector<Order>>> RestClient::openOrders(std::optional
         "/fapi/v1/openOrders",
         symbol ? query({{"symbol", upper(*symbol)}}) : "",
         RateLimiter::Cost{.requestWeight = symbol ? 1 : 40});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<std::vector<Order>>(*body, [](simdjson::ondemand::document& doc) {
         std::vector<Order> out;
         auto array = doc.get_array().value();
@@ -1374,7 +1374,7 @@ asio::awaitable<Result<std::vector<Order>>> RestClient::allOrders(std::string sy
         {"limit", std::to_string(limit)},
     });
     auto body = co_await signedGet("/fapi/v1/allOrders", params);
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<std::vector<Order>>(*body, [](simdjson::ondemand::document& doc) {
         std::vector<Order> out;
         auto array = doc.get_array().value();
@@ -1399,7 +1399,7 @@ asio::awaitable<Result<std::vector<UserTrade>>> RestClient::userTrades(std::stri
         {"limit", std::to_string(limit)},
     });
     auto body = co_await signedGet("/fapi/v1/userTrades", params);
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<std::vector<UserTrade>>(*body, [](simdjson::ondemand::document& doc) {
         std::vector<UserTrade> out;
         auto array = doc.get_array().value();
@@ -1429,7 +1429,7 @@ asio::awaitable<Result<std::vector<UserTrade>>> RestClient::userTrades(std::stri
 
 asio::awaitable<Result<BatchOrderResult>> RestClient::batchOrders(std::vector<OrderRequest> reqs) {
     if (reqs.size() > 5) {
-        co_return std::unexpected(BinanceError::fromApiResponse(
+        co_return compat::unexpected(BinanceError::fromApiResponse(
             -91003,
             "batchOrders supports at most 5 orders per request"));
     }
@@ -1504,20 +1504,20 @@ asio::awaitable<Result<BatchOrderResult>> RestClient::batchOrders(std::vector<Or
             .requestWeight = 5,
             .orders1m = static_cast<int>(maxBatch),
             .orders10s = static_cast<int>(maxBatch)});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<BatchOrderResult>(*body, [](simdjson::ondemand::document& doc) {
         BatchOrderResult result;
         auto array = doc.get_array().value();
         for (auto itemValue : array) {
             auto itemObj = itemValue.get_object();
             if (itemObj.error()) {
-                result.results.push_back(std::unexpected(BinanceError::fromParse("Invalid batch order item")));
+                result.results.push_back(compat::unexpected(BinanceError::fromParse("Invalid batch order item")));
                 continue;
             }
             auto item = itemObj.value();
             const auto errCode = intField(item, "code", 0);
             if (errCode != 0) {
-                result.results.push_back(std::unexpected(BinanceError::fromApiResponse(
+                result.results.push_back(compat::unexpected(BinanceError::fromApiResponse(
                     static_cast<int>(errCode), stringField(item, "msg"))));
                 continue;
             }
@@ -1529,7 +1529,7 @@ asio::awaitable<Result<BatchOrderResult>> RestClient::batchOrders(std::vector<Or
 
 asio::awaitable<Result<std::string>> RestClient::createListenKey() {
     auto body = co_await apiKeyPost("/fapi/v1/listenKey", {});
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return parseResponse<std::string>(*body, [](simdjson::ondemand::document& doc) {
         auto object = doc.get_object().value();
         return stringField(object, "listenKey");
@@ -1538,12 +1538,12 @@ asio::awaitable<Result<std::string>> RestClient::createListenKey() {
 
 asio::awaitable<Result<void>> RestClient::keepAliveListenKey(std::string listenKey) {
     auto body = co_await apiKeyPut("/fapi/v1/listenKey", query({{"listenKey", listenKey}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return Result<void>{};
 }
 
 asio::awaitable<Result<void>> RestClient::deleteListenKey(std::string listenKey) {
     auto body = co_await apiKeyDelete("/fapi/v1/listenKey", query({{"listenKey", listenKey}}));
-    if (!body) co_return std::unexpected(body.error());
+    if (!body) co_return compat::unexpected(body.error());
     co_return Result<void>{};
 }

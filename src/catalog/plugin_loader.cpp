@@ -230,6 +230,7 @@ std::vector<PluginLoadResult> PluginLoader::loadAll() {
         result.success = true;
         result.type = std::string(loaded->type());
         result.version = std::string(loaded->version());
+        result.abiVersion = loaded->abiVersion();
         if (!loadedTypes.insert(result.type).second) {
             result.success = false;
             result.error = "duplicate strategy type exported by plugins: " + result.type;
@@ -336,15 +337,15 @@ std::vector<std::filesystem::path> PluginLoader::defaultEnumerate(const std::fil
     return out;
 }
 
-std::expected<PluginHandle, std::string> PluginLoader::defaultLoad(const std::filesystem::path& path) {
+compat::expected<PluginHandle, std::string> PluginLoader::defaultLoad(const std::filesystem::path& path) {
     return PluginHandle::load(path);
 }
 
-std::expected<PluginLoader::HashAllowlist, std::string> PluginLoader::loadSha256Allowlist(
+compat::expected<PluginLoader::HashAllowlist, std::string> PluginLoader::loadSha256Allowlist(
     const std::filesystem::path& allowlistPath) {
     std::ifstream input(allowlistPath);
     if (!input) {
-        return std::unexpected("failed to open sha256 allowlist file: " + allowlistPath.string());
+        return compat::unexpected("failed to open sha256 allowlist file: " + allowlistPath.string());
     }
 
     HashAllowlist hashes;
@@ -361,31 +362,31 @@ std::expected<PluginLoader::HashAllowlist, std::string> PluginLoader::loadSha256
         std::string hashToken;
         iss >> hashToken;
         if (!isHexSha256(hashToken)) {
-            return std::unexpected(
+            return compat::unexpected(
                 "invalid sha256 allowlist entry at line " + std::to_string(lineNo) + ": " + cleaned);
         }
         hashes.insert(toLowerHex(hashToken));
     }
     if (hashes.empty()) {
-        return std::unexpected("sha256 allowlist file is empty: " + allowlistPath.string());
+        return compat::unexpected("sha256 allowlist file is empty: " + allowlistPath.string());
     }
     return hashes;
 }
 
-std::expected<std::string, std::string> PluginLoader::calculateSha256(const std::filesystem::path& filePath) {
+compat::expected<std::string, std::string> PluginLoader::calculateSha256(const std::filesystem::path& filePath) {
     std::ifstream input(filePath, std::ios::binary);
     if (!input) {
-        return std::unexpected("failed to open plugin for hashing: " + filePath.string());
+        return compat::unexpected("failed to open plugin for hashing: " + filePath.string());
     }
 
     EVP_MD_CTX* rawCtx = EVP_MD_CTX_new();
     if (!rawCtx) {
-        return std::unexpected("failed to allocate digest context");
+        return compat::unexpected("failed to allocate digest context");
     }
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(rawCtx, &EVP_MD_CTX_free);
 
     if (EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1) {
-        return std::unexpected("failed to initialize sha256 digest: " + opensslError());
+        return compat::unexpected("failed to initialize sha256 digest: " + opensslError());
     }
 
     std::array<char, 8192> buffer{};
@@ -394,17 +395,17 @@ std::expected<std::string, std::string> PluginLoader::calculateSha256(const std:
         const std::streamsize bytesRead = input.gcount();
         if (bytesRead > 0 &&
             EVP_DigestUpdate(ctx.get(), buffer.data(), static_cast<size_t>(bytesRead)) != 1) {
-            return std::unexpected("failed to update sha256 digest: " + opensslError());
+            return compat::unexpected("failed to update sha256 digest: " + opensslError());
         }
     }
     if (!input.eof()) {
-        return std::unexpected("failed while reading plugin for hashing: " + filePath.string());
+        return compat::unexpected("failed while reading plugin for hashing: " + filePath.string());
     }
 
     std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
     unsigned int digestLen = 0;
     if (EVP_DigestFinal_ex(ctx.get(), digest.data(), &digestLen) != 1) {
-        return std::unexpected("failed to finalize sha256 digest: " + opensslError());
+        return compat::unexpected("failed to finalize sha256 digest: " + opensslError());
     }
 
     std::ostringstream oss;
@@ -415,19 +416,19 @@ std::expected<std::string, std::string> PluginLoader::calculateSha256(const std:
     return oss.str();
 }
 
-std::expected<std::string, std::string> PluginLoader::verifyIntegrity(const std::filesystem::path& filePath) const {
+compat::expected<std::string, std::string> PluginLoader::verifyIntegrity(const std::filesystem::path& filePath) const {
     if (!m_config.enforceSha256Allowlist) {
         return std::string{};
     }
     if (!m_allowlistLoadError.empty()) {
-        return std::unexpected(m_allowlistLoadError);
+        return compat::unexpected(m_allowlistLoadError);
     }
     auto computedHash = calculateSha256(filePath);
     if (!computedHash) {
-        return std::unexpected(computedHash.error());
+        return compat::unexpected(computedHash.error());
     }
     if (m_sha256Allowlist.find(*computedHash) == m_sha256Allowlist.end()) {
-        return std::unexpected("sha256 not allowlisted for plugin: " + filePath.string());
+        return compat::unexpected("sha256 not allowlisted for plugin: " + filePath.string());
     }
     return *computedHash;
 }

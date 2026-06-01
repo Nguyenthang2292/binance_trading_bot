@@ -14,7 +14,7 @@ class StubRestClient final : public IRestClient {
 public:
     Order lastNewOrderRequest;
     std::vector<Order> capturedNewOrderRequests;
-    RestResult<Order> newOrderResult = std::unexpected(BinanceError::fromApiResponse(-1, "not set"));
+    RestResult<Order> newOrderResult = compat::unexpected(BinanceError::fromApiResponse(-1, "not set"));
 
     boost::asio::awaitable<RestResult<Order>> newOrder(OrderRequest req) override {
         lastNewOrderRequest.symbol = req.symbol;

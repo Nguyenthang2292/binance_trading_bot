@@ -31,11 +31,11 @@ public:
     std::optional<std::vector<Position>> getPositions(const std::string& symbol);
     bool testConnectivity();
 
-    std::expected<NormalPlacementResult, BinanceError> marketOrder(MarketOrderDraft draft);
-    std::expected<NormalPlacementResult, BinanceError> limitOrder(LimitOrderDraft draft);
-    std::expected<NormalPlacementResult, BinanceError> closeByMarket(CloseByMarketDraft draft);
-    std::expected<NormalCancelResult, BinanceError> cancelNormalByOrderId(const Symbol& symbol, int64_t orderId);
-    std::expected<NormalOrderSnapshot, BinanceError> queryNormalByOrderId(const Symbol& symbol, int64_t orderId);
+    compat::expected<NormalPlacementResult, BinanceError> marketOrder(MarketOrderDraft draft);
+    compat::expected<NormalPlacementResult, BinanceError> limitOrder(LimitOrderDraft draft);
+    compat::expected<NormalPlacementResult, BinanceError> closeByMarket(CloseByMarketDraft draft);
+    compat::expected<NormalCancelResult, BinanceError> cancelNormalByOrderId(const Symbol& symbol, int64_t orderId);
+    compat::expected<NormalOrderSnapshot, BinanceError> queryNormalByOrderId(const Symbol& symbol, int64_t orderId);
 
 private:
     std::unique_ptr<BinanceContext> m_context;

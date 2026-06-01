@@ -11,9 +11,9 @@ class OrderIdGenerator {
 public:
     explicit OrderIdGenerator(std::string nameSpace);
 
-    std::expected<ClientOrderId, BinanceError> generateClientOrderId();
+    compat::expected<ClientOrderId, BinanceError> generateClientOrderId();
     CorrelationId generateCorrelationId();
-    std::expected<void, BinanceError> validateClientOrderId(const ClientOrderId& id) const;
+    compat::expected<void, BinanceError> validateClientOrderId(const ClientOrderId& id) const;
 
 private:
     std::string m_namespace;

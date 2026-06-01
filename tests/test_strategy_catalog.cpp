@@ -41,7 +41,7 @@ TEST(StrategyCatalogTest, InitializeRegistersStrategiesByType) {
         {.pluginsDir = "plugins"},
         [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"rsi.dll"}; },
         [](const std::filesystem::path& path) {
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path,
                 &createCatalogStrategy,
                 &destroyCatalogStrategy,
@@ -81,8 +81,8 @@ TEST(StrategyCatalogTest, MissingPluginTypeReturnsError) {
         {.pluginsDir = "plugins"},
         [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{}; },
         [](const std::filesystem::path&) {
-            return std::expected<catalog::PluginHandle, std::string>(
-                std::unexpected(std::string("not used")));
+            return compat::expected<catalog::PluginHandle, std::string>(
+                compat::unexpected(std::string("not used")));
         });
 
     strategy::StrategyRegistry registry;
@@ -104,7 +104,7 @@ TEST(StrategyCatalogTest, InitializeTwiceClearsRegistryBeforeReload) {
         {.pluginsDir = "plugins"},
         [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"rsi.dll"}; },
         [](const std::filesystem::path& path) {
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path,
                 &createCatalogStrategy,
                 &destroyCatalogStrategy,
@@ -149,8 +149,8 @@ TEST(StrategyCatalogTest, NonStringTypeIsReportedAsValidationError) {
         {.pluginsDir = "plugins"},
         [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{}; },
         [](const std::filesystem::path&) {
-            return std::expected<catalog::PluginHandle, std::string>(
-                std::unexpected(std::string("not used")));
+            return compat::expected<catalog::PluginHandle, std::string>(
+                compat::unexpected(std::string("not used")));
         });
 
     strategy::StrategyRegistry registry;
@@ -172,7 +172,7 @@ TEST(StrategyCatalogTest, InvalidStrategyConfigIsRejectedBeforeRegistryInsert) {
         {.pluginsDir = "plugins"},
         [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"rsi.dll"}; },
         [](const std::filesystem::path& path) {
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path,
                 &createCatalogStrategy,
                 &destroyCatalogStrategy,
@@ -203,7 +203,7 @@ TEST(StrategyCatalogTest, PartialRegistrationFailsClosed) {
         {.pluginsDir = "plugins"},
         [](const std::filesystem::path&) { return std::vector<std::filesystem::path>{"rsi.dll"}; },
         [](const std::filesystem::path& path) {
-            return std::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
+            return compat::expected<catalog::PluginHandle, std::string>(catalog::PluginHandle::fromExports(
                 path,
                 &createCatalogStrategy,
                 &destroyCatalogStrategy,

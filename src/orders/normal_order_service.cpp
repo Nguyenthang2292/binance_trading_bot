@@ -172,7 +172,7 @@ OrdersResult<ClientOrderId> NormalOrderService::resolveClientOrderId(const std::
     if (provided.has_value()) {
         auto valid = m_idGenerator.validateClientOrderId(*provided);
         if (!valid) {
-            return std::unexpected(valid.error());
+            return compat::unexpected(valid.error());
         }
         return *provided;
     }
@@ -210,14 +210,14 @@ std::string NormalOrderService::serializeRequestParams(const OrderRequest& reque
     return params;
 }
 
-std::expected<void, BinanceError> NormalOrderService::recordIntent(const PreparedPlacement& placement) {
+compat::expected<void, BinanceError> NormalOrderService::recordIntent(const PreparedPlacement& placement) {
     if (!m_journal) {
-        return std::unexpected(BinanceError::fromApiResponse(-90006, "No journal configured"));
+        return compat::unexpected(BinanceError::fromApiResponse(-90006, "No journal configured"));
     }
     const bool durableConfigured = m_cfg.journalIsDurable
         || dynamic_cast<DurableOrderJournal*>(m_journal.get()) != nullptr;
     if (!m_cfg.allowBestEffortJournal && !durableConfigured) {
-        return std::unexpected(BinanceError::fromApiResponse(
+        return compat::unexpected(BinanceError::fromApiResponse(
             -90009, "Durable journal is required when allowBestEffortJournal=false"));
     }
 
@@ -238,7 +238,7 @@ std::expected<void, BinanceError> NormalOrderService::recordIntent(const Prepare
     return m_journal->recordIntent(std::move(entry));
 }
 
-std::expected<void, BinanceError> NormalOrderService::updateJournal(const CorrelationId& id,
+compat::expected<void, BinanceError> NormalOrderService::updateJournal(const CorrelationId& id,
                                                                     PlacementState state,
                                                                     std::optional<int64_t> orderId) {
     if (!m_journal) {
@@ -358,7 +358,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     const auto startedAt = std::chrono::steady_clock::now();
     auto prepared = prepareMarket(std::move(draft));
     if (!prepared) {
-        co_return std::unexpected(prepared.error());
+        co_return compat::unexpected(prepared.error());
     }
     auto result = std::move(prepared->result);
     if (result.state == PlacementState::Rejected) {
@@ -404,7 +404,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     const auto startedAt = std::chrono::steady_clock::now();
     auto prepared = prepareLimit(std::move(draft));
     if (!prepared) {
-        co_return std::unexpected(prepared.error());
+        co_return compat::unexpected(prepared.error());
     }
     auto result = std::move(prepared->result);
     if (result.state == PlacementState::Rejected) {
@@ -450,7 +450,7 @@ boost::asio::awaitable<OrdersResult<NormalPlacementResult>> NormalOrderService::
     const auto startedAt = std::chrono::steady_clock::now();
     auto prepared = prepareCloseByMarket(std::move(draft));
     if (!prepared) {
-        co_return std::unexpected(prepared.error());
+        co_return compat::unexpected(prepared.error());
     }
     auto result = std::move(prepared->result);
     if (result.state == PlacementState::Rejected) {
@@ -494,7 +494,7 @@ boost::asio::awaitable<OrdersResult<LeverageResult>> NormalOrderService::setLeve
     const int minLeverage = std::max(1, m_cfg.minLeverage);
     const int maxLeverage = std::max(minLeverage, m_cfg.maxLeverage);
     if (leverage < minLeverage || leverage > maxLeverage) {
-        co_return std::unexpected(BinanceError::fromApiResponse(
+        co_return compat::unexpected(BinanceError::fromApiResponse(
             -90015,
             "leverage out of configured range [" + std::to_string(minLeverage) + ", " +
                 std::to_string(maxLeverage) + "]"));
@@ -506,7 +506,7 @@ boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> NormalOrderService::am
     auto request = m_mapper.toOrderRequest(draft);
     auto amended = co_await m_rest.modifyOrder(std::move(request));
     if (!amended) {
-        co_return std::unexpected(amended.error());
+        co_return compat::unexpected(amended.error());
     }
     co_return toSnapshot(*amended);
 }
@@ -586,7 +586,7 @@ NormalOrderSnapshot NormalOrderService::toSnapshot(const Order& order) {
 boost::asio::awaitable<OrdersResult<NormalCancelResult>> NormalOrderService::cancelNormalByOrderId(Symbol symbol, int64_t orderId) {
     auto canceled = co_await m_rest.cancelOrder(std::move(symbol), orderId);
     if (!canceled) {
-        co_return std::unexpected(canceled.error());
+        co_return compat::unexpected(canceled.error());
     }
     co_return toCancelResult(*canceled);
 }
@@ -596,7 +596,7 @@ boost::asio::awaitable<OrdersResult<NormalCancelResult>> NormalOrderService::can
     ClientOrderId clientOrderId) {
     auto canceled = co_await m_rest.cancelOrderByClientOrderId(std::move(symbol), std::move(clientOrderId));
     if (!canceled) {
-        co_return std::unexpected(canceled.error());
+        co_return compat::unexpected(canceled.error());
     }
     co_return toCancelResult(*canceled);
 }
@@ -608,7 +608,7 @@ boost::asio::awaitable<OrdersResult<void>> NormalOrderService::cancelAllNormal(S
 boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> NormalOrderService::queryNormalByOrderId(Symbol symbol, int64_t orderId) {
     auto queried = co_await m_rest.queryOrder(std::move(symbol), orderId);
     if (!queried) {
-        co_return std::unexpected(queried.error());
+        co_return compat::unexpected(queried.error());
     }
     co_return toSnapshot(*queried);
 }
@@ -618,7 +618,7 @@ boost::asio::awaitable<OrdersResult<NormalOrderSnapshot>> NormalOrderService::qu
     ClientOrderId clientOrderId) {
     auto queried = co_await m_rest.queryOrderByClientOrderId(std::move(symbol), std::move(clientOrderId));
     if (!queried) {
-        co_return std::unexpected(queried.error());
+        co_return compat::unexpected(queried.error());
     }
     co_return toSnapshot(*queried);
 }
@@ -627,7 +627,7 @@ boost::asio::awaitable<OrdersResult<std::vector<NormalOrderSnapshot>>> NormalOrd
     std::optional<Symbol> symbol) {
     auto open = co_await m_rest.openOrders(std::move(symbol));
     if (!open) {
-        co_return std::unexpected(open.error());
+        co_return compat::unexpected(open.error());
     }
     std::vector<NormalOrderSnapshot> result;
     result.reserve(open->size());
@@ -645,13 +645,13 @@ boost::asio::awaitable<OrdersResult<std::vector<NormalOrderSnapshot>>> NormalOrd
     if (startTime && endTime) {
         constexpr int64_t kSevenDaysMs = 7LL * 24LL * 60LL * 60LL * 1000LL;
         if (*endTime <= *startTime || (*endTime - *startTime) >= kSevenDaysMs) {
-            co_return std::unexpected(BinanceError::fromApiResponse(
+            co_return compat::unexpected(BinanceError::fromApiResponse(
                 -90007, "queryAllNormal requires start/end window < 7 days"));
         }
     }
     auto all = co_await m_rest.allOrders(std::move(symbol), startTime, endTime, limit);
     if (!all) {
-        co_return std::unexpected(all.error());
+        co_return compat::unexpected(all.error());
     }
     std::vector<NormalOrderSnapshot> result;
     result.reserve(all->size());
@@ -664,7 +664,7 @@ boost::asio::awaitable<OrdersResult<std::vector<NormalOrderSnapshot>>> NormalOrd
 boost::asio::awaitable<OrdersResult<OrderFillSummary>> NormalOrderService::queryOrderFillSummary(Symbol symbol, int64_t orderId) {
     auto tradesResult = co_await m_rest.userTrades(symbol, orderId);
     if (!tradesResult) {
-        co_return std::unexpected(tradesResult.error());
+        co_return compat::unexpected(tradesResult.error());
     }
 
     const auto& trades = *tradesResult;
@@ -811,7 +811,7 @@ boost::asio::awaitable<OrdersResult<BatchPlacementResult>> NormalOrderService::b
             drafts[i]);
 
         if (!prepared) {
-            co_return std::unexpected(prepared.error());
+            co_return compat::unexpected(prepared.error());
         }
         prepared->result.endpoint = "/fapi/v1/batchOrders";
 
@@ -898,7 +898,7 @@ boost::asio::awaitable<OrdersResult<OrderPoolSnapshot>> NormalOrderService::open
     std::optional<Symbol> symbol) {
     auto ordersResult = co_await openNormalOrders(symbol);
     if (!ordersResult) {
-        co_return std::unexpected(ordersResult.error());
+        co_return compat::unexpected(ordersResult.error());
     }
 
     OrderPoolSnapshot snapshot;
@@ -917,7 +917,7 @@ boost::asio::awaitable<OrdersResult<OrderPoolSnapshot>> NormalOrderService::quer
     int limit) {
     auto ordersResult = co_await queryAllNormal(symbol, startTime, endTime, limit);
     if (!ordersResult) {
-        co_return std::unexpected(ordersResult.error());
+        co_return compat::unexpected(ordersResult.error());
     }
 
     OrderPoolSnapshot snapshot;

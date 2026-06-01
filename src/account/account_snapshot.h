@@ -5,11 +5,11 @@
  * @brief Shared account-domain types for snapshots, mappings, and service results.
  */
 
+#include "common/expected_compat.h"
 #include "types/account.h"
 
 #include <chrono>
 #include <cstdint>
-#include <expected>
 #include <optional>
 #include <string>
 #include <variant>
@@ -76,7 +76,7 @@ enum class AccountMappingError {
 };
 
 template <typename T>
-using AccountMappingResult = std::expected<T, AccountMappingError>;
+using AccountMappingResult = compat::expected<T, AccountMappingError>;
 
 struct AccountSnapshotRequest {
     bool includeBalanceEndpoint{false};    // call /fapi/v2/balance in addition to account.assets
@@ -140,6 +140,6 @@ struct LiquidationRiskView {
 using AccountServiceError = std::variant<BinanceError, AccountMappingError>;
 
 template <typename T>
-using AccountServiceResult = std::expected<T, AccountServiceError>;
+using AccountServiceResult = compat::expected<T, AccountServiceError>;
 
 } // namespace account

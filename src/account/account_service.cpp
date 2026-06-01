@@ -103,7 +103,7 @@ AccountService::AccountService(RestClient& rest, AccountCompatibilityConfig comp
 boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> AccountService::snapshot(AccountSnapshotRequest request) {
     auto acc_res = co_await m_rest.account();
     if (!acc_res) {
-        co_return std::unexpected(AccountServiceError{acc_res.error()});
+        co_return compat::unexpected(AccountServiceError{acc_res.error()});
     }
 
     AccountSnapshot snapshot;
@@ -121,7 +121,7 @@ boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> AccountService::sn
             if (request.allowPartialResults) {
                 snapshot.partialErrors.push_back(bal_res.error());
             } else {
-                co_return std::unexpected(AccountServiceError{bal_res.error()});
+                co_return compat::unexpected(AccountServiceError{bal_res.error()});
             }
         }
     }
@@ -140,7 +140,7 @@ boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> AccountService::sn
             if (request.allowPartialResults) {
                 snapshot.partialErrors.push_back(pos_res.error());
             } else {
-                co_return std::unexpected(AccountServiceError{pos_res.error()});
+                co_return compat::unexpected(AccountServiceError{pos_res.error()});
             }
         }
     }
@@ -152,7 +152,7 @@ boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> AccountService::sn
                 snapshot.partialErrors.push_back(config_res.error());
                 co_return snapshot;
             }
-            co_return std::unexpected(AccountServiceError{config_res.error()});
+            co_return compat::unexpected(AccountServiceError{config_res.error()});
         }
         snapshot.account.canTrade = snapshot.account.canTrade && config_res->canTrade;
         snapshot.dualSidePosition = config_res->dualSidePosition;
@@ -182,10 +182,10 @@ boost::asio::awaitable<AccountServiceResult<AccountSnapshot>> AccountService::sn
  */
 boost::asio::awaitable<AccountServiceResult<MarginCheckResult>> AccountService::checkFreeMargin(MarginCheckDraft draft) {
     if (draft.symbol.empty()) {
-        co_return std::unexpected(AccountServiceError{AccountMappingError::SnapshotIncomplete});
+        co_return compat::unexpected(AccountServiceError{AccountMappingError::SnapshotIncomplete});
     }
     if (!draft.useServerTestOrder && !draft.assumedPrice) {
-        co_return std::unexpected(AccountServiceError{AccountMappingError::Unsupported});
+        co_return compat::unexpected(AccountServiceError{AccountMappingError::Unsupported});
     }
 
     MarginCheckResult result;
@@ -211,7 +211,7 @@ boost::asio::awaitable<AccountServiceResult<MarginCheckResult>> AccountService::
                 result.binanceCode = test_res.error().code;
                 result.binanceMessage = test_res.error().message;
             } else {
-                co_return std::unexpected(AccountServiceError{test_res.error()});
+                co_return compat::unexpected(AccountServiceError{test_res.error()});
             }
         } else {
             result.completeness = MarginCheckCompleteness::ServerValidatedOnly;
@@ -228,7 +228,7 @@ boost::asio::awaitable<AccountServiceResult<MarginCheckResult>> AccountService::
 
         auto acc_res = co_await m_rest.account();
         if (!acc_res) {
-            co_return std::unexpected(AccountServiceError{acc_res.error()});
+            co_return compat::unexpected(AccountServiceError{acc_res.error()});
         }
 
         int leverage = 0;
@@ -281,7 +281,7 @@ boost::asio::awaitable<AccountServiceResult<MarginCheckResult>> AccountService::
 boost::asio::awaitable<AccountServiceResult<LiquidationRiskView>> AccountService::liquidationRisk(std::optional<std::string> symbol) {
     auto pos_res = co_await m_rest.positions(symbol);
     if (!pos_res) {
-        co_return std::unexpected(AccountServiceError{pos_res.error()});
+        co_return compat::unexpected(AccountServiceError{pos_res.error()});
     }
 
     LiquidationRiskView view;

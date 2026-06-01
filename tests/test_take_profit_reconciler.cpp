@@ -406,7 +406,7 @@ TEST(TakeProfitReconcilerTest, PlacementRejectedLeavesTrackerTakeProfitUnset) {
 TEST(TakeProfitReconcilerTest, OpenOrdersFailureAbortsWithoutPlacement) {
     boost::asio::io_context ioc;
     OrdersStub orders;
-    orders.openOrdersResult = std::unexpected(BinanceError::fromParse("open-orders failed"));
+    orders.openOrdersResult = compat::unexpected(BinanceError::fromParse("open-orders failed"));
     engine::PositionTracker tracker;
 
     engine::TakeProfitReconcilerConfig cfg;
