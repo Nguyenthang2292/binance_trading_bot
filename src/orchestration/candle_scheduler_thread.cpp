@@ -12,6 +12,7 @@
 #include <fstream>
 #include <memory>
 #include <thread>
+#include <unordered_set>
 
 #if __has_include(<sqlite3.h>)
 #include <sqlite3.h>
@@ -116,8 +117,8 @@ std::string_view nthCsvField(std::string_view line, int index) {
     return trimWs(field);
 }
 
-// Index of the `datetime` column in a CSV header, or -1 if not present.
-int datetimeColumnIndex(std::string_view header) {
+// Index of a named column in a CSV header (case-insensitive), or -1 if absent.
+int csvColumnIndex(std::string_view header, std::string_view name) {
     int col = 0;
     size_t start = 0;
     while (true) {
@@ -127,7 +128,7 @@ int datetimeColumnIndex(std::string_view header) {
         for (const char c : trimWs(field)) {
             lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
         }
-        if (lowered == "datetime") {
+        if (lowered == name) {
             return col;
         }
         if (comma == std::string_view::npos) {
@@ -136,6 +137,15 @@ int datetimeColumnIndex(std::string_view header) {
         start = comma + 1;
         ++col;
     }
+}
+
+std::string toUpperAscii(std::string_view sv) {
+    std::string out;
+    out.reserve(sv.size());
+    for (const char c : sv) {
+        out.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+    }
+    return out;
 }
 
 // Parse "YYYY-MM-DD HH:MM:SS" (or 'T' separator, optional trailing 'Z', or
@@ -323,7 +333,23 @@ CandleSchedulerThread::DatasetAsofScan CandleSchedulerThread::scanDatasetForAsof
     // parsed as UTC to match predict_latest.py) and the legacy epoch-ms schema
     // (leading integer column). The previous implementation only handled the
     // latter and silently false-negatived on the real runtime dataset.
-    const int datetimeIdx = datetimeColumnIndex(header);
+    const int datetimeIdx = csvColumnIndex(header, "datetime");
+    const int symbolIdx = csvColumnIndex(header, "symbol");
+
+    // Per-symbol coverage: predict_latest.py predicts only the symbols present at
+    // the latest asof, so an asof that has BTCUSDT but is missing ETHUSDT must NOT
+    // be treated as ready — that would emit a partial-universe prediction. When a
+    // `symbol` column and a configured symbol list are both available, require a
+    // row at asof for EVERY configured symbol. Otherwise fall back to "any row".
+    std::unordered_set<std::string> requiredSymbols;
+    for (const auto& s : m_config.symbols) {
+        if (!s.empty()) {
+            requiredSymbols.insert(toUpperAscii(s));
+        }
+    }
+    const bool enforcePerSymbol = symbolIdx >= 0 && !requiredSymbols.empty();
+    std::unordered_set<std::string> seenAtAsof;
+    bool anyMatch = false;
 
     auto consider = [&](std::string_view line) {
         int64_t rowMs = 0;
@@ -341,7 +367,10 @@ CandleSchedulerThread::DatasetAsofScan CandleSchedulerThread::scanDatasetForAsof
             scan.maxAsofMs = rowMs;
         }
         if (rowMs == asofMs) {
-            scan.found = true;
+            anyMatch = true;
+            if (symbolIdx >= 0) {
+                seenAtAsof.insert(toUpperAscii(nthCsvField(line, symbolIdx)));
+            }
         }
     };
 
@@ -360,6 +389,22 @@ CandleSchedulerThread::DatasetAsofScan CandleSchedulerThread::scanDatasetForAsof
         }
         consider(line);
     }
+
+    if (enforcePerSymbol) {
+        std::string missing;
+        for (const auto& req : requiredSymbols) {
+            if (!seenAtAsof.count(req)) {
+                if (!missing.empty()) {
+                    missing.push_back(',');
+                }
+                missing += req;
+            }
+        }
+        scan.missingSymbols = std::move(missing);
+        scan.found = scan.missingSymbols.empty();
+    } else {
+        scan.found = anyMatch;
+    }
     return scan;
 }
 
@@ -375,19 +420,23 @@ bool CandleSchedulerThread::processCandle(int64_t candleOpenTimeMs) {
         if (!scan.found) {
             const std::filesystem::path datasetPath =
                 std::filesystem::path(m_config.dataDir) / ("klines_" + m_config.interval + ".csv");
-            // Fix D: rich diagnostics — distinguish "stale dataset" from "refresh
-            // could not produce the row" and surface the dataset's latest asof.
+            // Fix D: rich diagnostics — distinguish stale dataset, refresh
+            // failure, and partial per-symbol coverage; surface the latest asof.
             const char* reason = !scan.readable ? "dataset_unreadable"
+                : (!scan.missingSymbols.empty()) ? "dataset_missing_symbols"
                 : (m_config.refreshLatestCandles && !m_config.symbols.empty() && !refreshed)
                     ? "dataset_refresh_failed"
                     : "dataset_missing_asof";
-            Logger::instance().log(
-                LogLevel::Warning,
+            std::string msg =
                 "[CANDLE][PHASE3][SKIPPED] asof=" + std::to_string(candleOpenTimeMs) +
-                    " asof_utc=" + formatUtcMs(candleOpenTimeMs) +
-                    " dataset=" + datasetPath.string() +
-                    " dataset_max=" + formatUtcMs(scan.maxAsofMs) +
-                    " reason=" + reason);
+                " asof_utc=" + formatUtcMs(candleOpenTimeMs) +
+                " dataset=" + datasetPath.string() +
+                " dataset_max=" + formatUtcMs(scan.maxAsofMs) +
+                " reason=" + reason;
+            if (!scan.missingSymbols.empty()) {
+                msg += " missing_symbols=" + scan.missingSymbols;
+            }
+            Logger::instance().log(LogLevel::Warning, msg);
             return false;
         }
         const auto modelPath = resolvePublishedModelPath();

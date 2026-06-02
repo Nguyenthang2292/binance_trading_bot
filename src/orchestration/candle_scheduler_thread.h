@@ -56,8 +56,9 @@ private:
     // Result of scanning the runtime dataset for a given asof open time.
     struct DatasetAsofScan {
         bool readable{false};   // dataset file opened successfully
-        bool found{false};      // a row matching asofMs was present
+        bool found{false};      // asof present for ALL required symbols (or any row when no symbol coverage check applies)
         int64_t maxAsofMs{0};   // latest asof (epoch ms) seen in the dataset
+        std::string missingSymbols;  // configured symbols with no row at asofMs (diagnostics)
     };
 
     std::vector<std::string> buildPhase3Cmd(int64_t asofMs, std::string_view modelPath) const;

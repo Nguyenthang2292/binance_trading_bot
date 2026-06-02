@@ -456,6 +456,49 @@ TEST(CandleSchedulerThreadTest, DatasetDatetimeColumnMatchesAsof) {
     EXPECT_EQ(readAsOfArg(runner.callAt(runner.callCount() - 1)), "1780363800000");
 }
 
+TEST(CandleSchedulerThreadTest, PartialSymbolCoverageSkipsPhase3) {
+    TestContext ctx;
+    // asof present for BTCUSDT but NOT ETHUSDT -> must skip (a partial-universe
+    // prediction must not run).
+    {
+        std::ofstream out(ctx.dataDir / "klines_1h.csv", std::ios::binary);
+        out << "datetime,symbol,open,high,low,close,volume,factor,quote_volume,trade_count\n";
+        out << "2026-06-02 01:30:00,BTCUSDT,100,101,99,100,1,1.0,100,10\n";
+    }
+    orchestration::PromotionChecker promoter({.minCandles = 1000});
+    FakeProcessRunner runner({.exitCode = 0, .timedOut = false, .succeeded = true, .logPath = "p3.log"});
+
+    auto cfg = makeCandleConfig(ctx.tempDir, ctx.dbPath);
+    cfg.symbols = {"BTCUSDT", "ETHUSDT"};
+    cfg.refreshLatestCandles = false;  // isolate the coverage check from refresh
+    orchestration::CandleSchedulerThread scheduler(cfg, runner, *ctx.stateStore, promoter);
+
+    EXPECT_FALSE(scheduler.processCandle(1'780'363'800'000LL));
+    EXPECT_EQ(runner.callCount(), 0u);
+}
+
+TEST(CandleSchedulerThreadTest, FullSymbolCoverageRunsPhase3) {
+    TestContext ctx;
+    // asof present for ALL configured symbols -> Phase 3 runs.
+    {
+        std::ofstream out(ctx.dataDir / "klines_1h.csv", std::ios::binary);
+        out << "datetime,symbol,open,high,low,close,volume,factor,quote_volume,trade_count\n";
+        out << "2026-06-02 01:30:00,BTCUSDT,100,101,99,100,1,1.0,100,10\n";
+        out << "2026-06-02 01:30:00,ETHUSDT,200,201,199,200,2,1.0,400,20\n";
+    }
+    orchestration::PromotionChecker promoter({.minCandles = 1000});
+    FakeProcessRunner runner({.exitCode = 0, .timedOut = false, .succeeded = true, .logPath = "p3.log"});
+
+    auto cfg = makeCandleConfig(ctx.tempDir, ctx.dbPath);
+    cfg.symbols = {"BTCUSDT", "ETHUSDT"};
+    cfg.refreshLatestCandles = false;
+    orchestration::CandleSchedulerThread scheduler(cfg, runner, *ctx.stateStore, promoter);
+
+    EXPECT_TRUE(scheduler.processCandle(1'780'363'800'000LL));
+    ASSERT_GE(runner.callCount(), 1u);
+    EXPECT_EQ(readAsOfArg(runner.callAt(runner.callCount() - 1)), "1780363800000");
+}
+
 TEST(CandleSchedulerThreadTest, DatasetDatetimeColumnMissingAsofSkips) {
     TestContext ctx;
     {
