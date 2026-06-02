@@ -97,6 +97,27 @@ TEST(RestClientTest, PositionRiskParsesIntegerLeverage) {
     EXPECT_EQ((*result)[1].leverage, 12);
 }
 
+TEST(RestClientTest, PositionRiskRejectsMalformedLeverage) {
+    boost::asio::io_context ioc;
+    boost::asio::ssl::context ssl(boost::asio::ssl::context::tls_client);
+    RestClient client(ioc, ssl, makeDummyConfig());
+
+    // Trailing junk and fractional values must NOT be silently accepted/truncated
+    // (e.g. "12abc" -> 12, "10.5" -> 10); they fall back to 0.
+    const std::string body = R"([
+        {"symbol":"AUSDT","leverage":"12abc"},
+        {"symbol":"BUSDT","leverage":"10.5"},
+        {"symbol":"CUSDT","leverage":"  7"}
+    ])";
+
+    auto result = client.parsePositionsBody(body);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->size(), 3u);
+    EXPECT_EQ((*result)[0].leverage, 0);  // "12abc" rejected, not 12
+    EXPECT_EQ((*result)[1].leverage, 0);  // "10.5" rejected, not 10
+    EXPECT_EQ((*result)[2].leverage, 0);  // leading space rejected (from_chars is strict)
+}
+
 TEST(RestClientTest, ParseResponseInvalidJsonReturnsParseError) {
     boost::asio::io_context ioc;
     boost::asio::ssl::context ssl(boost::asio::ssl::context::tls_client);

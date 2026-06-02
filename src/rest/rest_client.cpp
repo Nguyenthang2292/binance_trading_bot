@@ -9,7 +9,9 @@
 #include <charconv>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
@@ -273,19 +275,25 @@ int64_t intField(simdjson::ondemand::object& object, std::string_view field, int
     // position with reason="invalid leverage <= 0".
     auto s = asString(value.value());
     if (!s.empty()) {
-        int64_t parsed = 0;
         const auto* begin = s.data();
         const auto* end = begin + s.size();
-        const auto [ptr, ec] = std::from_chars(begin, end, parsed);
-        if (ec == std::errc{} && ptr == end) {
+        int64_t parsed = 0;
+        if (const auto [ptr, ec] = std::from_chars(begin, end, parsed); ec == std::errc{} && ptr == end) {
             return parsed;
         }
-        // Tolerate decimal-formatted integers like "10.0".
-        try {
-            return static_cast<int64_t>(std::stod(std::string(s)));
-        } catch (...) {
-            return fallback;
+        // Tolerate decimal-formatted integers like "10.0", but require the WHOLE
+        // string to be a finite, integral value within int64 range. This rejects
+        // malformed/truncating inputs such as "12abc" or fractional "10.5" rather
+        // than silently accepting a partial parse (intField is shared across ids,
+        // timestamps, error codes, and leverage).
+        double asDouble = 0.0;
+        if (const auto [ptr, ec] = std::from_chars(begin, end, asDouble);
+            ec == std::errc{} && ptr == end && std::isfinite(asDouble) &&
+            asDouble == std::floor(asDouble) &&
+            asDouble >= -9.223372036854775808e18 && asDouble < 9.223372036854775808e18) {
+            return static_cast<int64_t>(asDouble);
         }
+        return fallback;
     }
     return fallback;
 }
