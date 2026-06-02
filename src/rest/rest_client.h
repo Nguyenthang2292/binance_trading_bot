@@ -120,6 +120,11 @@ public:
                             std::function<T(simdjson::ondemand::document&)> parser);
     RawParseResult rawParse(std::string_view body);
 
+    // Parse a /fapi/v2/positionRisk response body into positions using the same
+    // parser as positions(). Exposed so the leverage-as-string parsing path can
+    // be regression-tested without a live network call.
+    Result<std::vector<Position>> parsePositionsBody(std::string_view body);
+
 private:
     std::shared_ptr<HttpSession> m_session;
     Signer m_signer;

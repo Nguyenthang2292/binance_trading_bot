@@ -267,6 +267,26 @@ int64_t intField(simdjson::ondemand::object& object, std::string_view field, int
     if (!d.error()) {
         return static_cast<int64_t>(d.value());
     }
+    // Binance USD-M Futures returns several integer fields as JSON strings
+    // (e.g. /fapi/v2/positionRisk "leverage": "10"). Without this branch they
+    // silently fell back to 0, which made TakeProfitReconciler skip every live
+    // position with reason="invalid leverage <= 0".
+    auto s = asString(value.value());
+    if (!s.empty()) {
+        int64_t parsed = 0;
+        const auto* begin = s.data();
+        const auto* end = begin + s.size();
+        const auto [ptr, ec] = std::from_chars(begin, end, parsed);
+        if (ec == std::errc{} && ptr == end) {
+            return parsed;
+        }
+        // Tolerate decimal-formatted integers like "10.0".
+        try {
+            return static_cast<int64_t>(std::stod(std::string(s)));
+        } catch (...) {
+            return fallback;
+        }
+    }
     return fallback;
 }
 
@@ -1056,10 +1076,8 @@ asio::awaitable<Result<std::vector<Balance>>> RestClient::balance() {
     });
 }
 
-asio::awaitable<Result<std::vector<Position>>> RestClient::positions(std::optional<std::string> symbol) {
-    auto body = co_await signedGet("/fapi/v2/positionRisk", symbol ? query({{"symbol", upper(*symbol)}}) : "");
-    if (!body) co_return compat::unexpected(body.error());
-    co_return parseResponse<std::vector<Position>>(*body, [](simdjson::ondemand::document& doc) {
+Result<std::vector<Position>> RestClient::parsePositionsBody(std::string_view body) {
+    return parseResponse<std::vector<Position>>(body, [](simdjson::ondemand::document& doc) {
         std::vector<Position> out;
         auto array = doc.get_array().value();
         for (auto itemValue : array) {
@@ -1068,6 +1086,12 @@ asio::awaitable<Result<std::vector<Position>>> RestClient::positions(std::option
         }
         return out;
     });
+}
+
+asio::awaitable<Result<std::vector<Position>>> RestClient::positions(std::optional<std::string> symbol) {
+    auto body = co_await signedGet("/fapi/v2/positionRisk", symbol ? query({{"symbol", upper(*symbol)}}) : "");
+    if (!body) co_return compat::unexpected(body.error());
+    co_return parsePositionsBody(*body);
 }
 
 asio::awaitable<Result<FuturesAccountConfig>> RestClient::accountConfig() {

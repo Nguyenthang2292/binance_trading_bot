@@ -60,6 +60,43 @@ TEST(RestClientTest, RawParseDocumentsRemainValidAcrossSubsequentCalls) {
     EXPECT_EQ(secondObj.find_field_unordered("serverTime").get_int64().value(), 2);
 }
 
+TEST(RestClientTest, PositionRiskParsesStringLeverage) {
+    boost::asio::io_context ioc;
+    boost::asio::ssl::context ssl(boost::asio::ssl::context::tls_client);
+    RestClient client(ioc, ssl, makeDummyConfig());
+
+    // Binance USD-M /fapi/v2/positionRisk returns leverage as a JSON string.
+    const std::string body = R"([
+        {"symbol":"NIGHTUSDT","positionSide":"BOTH","positionAmt":"5.0","entryPrice":"1.5",
+         "markPrice":"1.6","unrealizedProfit":"0.5","liquidationPrice":"0","leverage":"10",
+         "marginType":"cross","isolatedMargin":"0","notional":"8.0"}
+    ])";
+
+    auto result = client.parsePositionsBody(body);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->size(), 1u);
+    EXPECT_EQ((*result)[0].symbol, "NIGHTUSDT");
+    EXPECT_EQ((*result)[0].leverage, 10);  // previously parsed to 0 -> TP reconcile skipped
+}
+
+TEST(RestClientTest, PositionRiskParsesIntegerLeverage) {
+    boost::asio::io_context ioc;
+    boost::asio::ssl::context ssl(boost::asio::ssl::context::tls_client);
+    RestClient client(ioc, ssl, makeDummyConfig());
+
+    // Integer-typed leverage (and a decimal-string variant) must still parse.
+    const std::string body = R"([
+        {"symbol":"BTCUSDT","leverage":20},
+        {"symbol":"ETHUSDT","leverage":"12.0"}
+    ])";
+
+    auto result = client.parsePositionsBody(body);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->size(), 2u);
+    EXPECT_EQ((*result)[0].leverage, 20);
+    EXPECT_EQ((*result)[1].leverage, 12);
+}
+
 TEST(RestClientTest, ParseResponseInvalidJsonReturnsParseError) {
     boost::asio::io_context ioc;
     boost::asio::ssl::context ssl(boost::asio::ssl::context::tls_client);
