@@ -417,11 +417,9 @@ TEST(CandleSchedulerThreadTest, MissingDatasetAsofSkipsPhase3AndDoesNotAdvanceCu
     orchestration::PromotionChecker promoter({.minCandles = 1000});
     FakeProcessRunner runner({.exitCode = 0, .timedOut = false, .succeeded = true, .logPath = "p3.log"});
 
-    orchestration::CandleSchedulerThread scheduler(
-        makeCandleConfig(ctx.tempDir, ctx.dbPath),
-        runner,
-        *ctx.stateStore,
-        promoter);
+    auto cfg = makeCandleConfig(ctx.tempDir, ctx.dbPath);
+    cfg.maxRetriesPerCandle = 0;  // unbounded retry: this test waits for the dataset to catch up
+    orchestration::CandleSchedulerThread scheduler(cfg, runner, *ctx.stateStore, promoter);
 
     std::jthread worker([&](std::stop_token st) { scheduler.run(st); });
     scheduler.notifyCandleClose(1'800'000'000'000LL, "BTCUSDT"); // not in seeded dataset
@@ -435,4 +433,66 @@ TEST(CandleSchedulerThreadTest, MissingDatasetAsofSkipsPhase3AndDoesNotAdvanceCu
     worker.request_stop();
     worker.join();
     EXPECT_EQ(runner.callCount(), 1u);
+}
+
+TEST(CandleSchedulerThreadTest, DatasetDatetimeColumnMatchesAsof) {
+    TestContext ctx;
+    // Runtime Qlib bridge schema: a `datetime` column (UTC) instead of epoch ms.
+    {
+        std::ofstream out(ctx.dataDir / "klines_1h.csv", std::ios::binary);
+        out << "datetime,symbol,open,high,low,close,volume,factor,quote_volume,trade_count\n";
+        // 1780363800000 ms == 2026-06-02 01:30:00 UTC
+        out << "2026-06-02 01:30:00,BTCUSDT,100,101,99,100,1,1.0,100,10\n";
+    }
+    orchestration::PromotionChecker promoter({.minCandles = 1000});
+    FakeProcessRunner runner({.exitCode = 0, .timedOut = false, .succeeded = true, .logPath = "p3.log"});
+
+    orchestration::CandleSchedulerThread scheduler(
+        makeCandleConfig(ctx.tempDir, ctx.dbPath), runner, *ctx.stateStore, promoter);
+
+    // Asof is present in datetime form, so Phase 3 must run (not skip) and spawn predict.
+    EXPECT_TRUE(scheduler.processCandle(1'780'363'800'000LL));
+    ASSERT_GE(runner.callCount(), 1u);
+    EXPECT_EQ(readAsOfArg(runner.callAt(runner.callCount() - 1)), "1780363800000");
+}
+
+TEST(CandleSchedulerThreadTest, DatasetDatetimeColumnMissingAsofSkips) {
+    TestContext ctx;
+    {
+        std::ofstream out(ctx.dataDir / "klines_1h.csv", std::ios::binary);
+        out << "datetime,symbol,open,high,low,close,volume,factor,quote_volume,trade_count\n";
+        out << "2026-05-30 08:00:00,ETHUSDT,100,101,99,100,1,1.0,100,10\n";
+    }
+    orchestration::PromotionChecker promoter({.minCandles = 1000});
+    FakeProcessRunner runner({.exitCode = 0, .timedOut = false, .succeeded = true, .logPath = "p3.log"});
+
+    orchestration::CandleSchedulerThread scheduler(
+        makeCandleConfig(ctx.tempDir, ctx.dbPath), runner, *ctx.stateStore, promoter);
+
+    // The requested asof is not present, so Phase 3 must skip and not spawn predict.
+    EXPECT_FALSE(scheduler.processCandle(1'780'363'800'000LL));
+    EXPECT_EQ(runner.callCount(), 0u);
+}
+
+TEST(CandleSchedulerThreadTest, BoundedRetryAdvancesCursorAfterMaxAttempts) {
+    TestContext ctx;
+    orchestration::PromotionChecker promoter({.minCandles = 1000});
+    FakeProcessRunner runner({.exitCode = 0, .timedOut = false, .succeeded = true, .logPath = "p3.log"});
+
+    auto cfg = makeCandleConfig(ctx.tempDir, ctx.dbPath);
+    cfg.maxRetriesPerCandle = 3;
+    orchestration::CandleSchedulerThread scheduler(cfg, runner, *ctx.stateStore, promoter);
+
+    std::jthread worker([&](std::stop_token st) { scheduler.run(st); });
+    scheduler.notifyCandleClose(1'800'000'000'000LL, "BTCUSDT"); // never present in dataset
+
+    // After the bounded retries the scheduler gives up; even after appending the
+    // dataset, the same (now-superseded) asof is not reprocessed.
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    ctx.appendDatasetOpenTime(1'800'000'000'000LL);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    worker.request_stop();
+    worker.join();
+    EXPECT_EQ(runner.callCount(), 0u);  // gave up before the dataset caught up
 }

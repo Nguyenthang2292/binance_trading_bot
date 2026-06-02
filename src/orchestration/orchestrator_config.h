@@ -102,6 +102,11 @@ inline OrchestratorConfig parseOrchestratorConfig(const nlohmann::json& root) {
     cfg.candle.postCandleDelaySeconds =
         candleSchedule.value("finalize_delay_seconds", cfg.candle.postCandleDelaySeconds);
     cfg.candle.readyDir = orch.value("ready_dir", cfg.candle.readyDir);
+    cfg.candle.symbols = symbols;
+    cfg.candle.refreshLatestCandles =
+        candleSchedule.value("refresh_latest_candles", cfg.candle.refreshLatestCandles);
+    cfg.candle.maxRetriesPerCandle =
+        candleSchedule.value("max_retries_per_candle", cfg.candle.maxRetriesPerCandle);
 
     cfg.promotion.minCandles = promotion.value("min_candles", cfg.promotion.minCandles);
     cfg.promotion.minSharpe = promotion.value("min_sharpe", cfg.promotion.minSharpe);
