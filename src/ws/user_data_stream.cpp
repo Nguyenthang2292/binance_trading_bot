@@ -231,7 +231,7 @@ void UserDataStream::startSessionWithCurrentListenKey() {
     }
 
     session->start(
-        "/ws/" + listenKey,
+        "/private/ws?listenKey=" + listenKey,
         [this, guard = m_callbackGuard](auto ec, auto raw) {
             std::lock_guard<std::mutex> lock(guard->mutex);
             if (!guard->alive) {

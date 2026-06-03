@@ -36,11 +36,15 @@ TEST(MarketScannerTest, FiltersTradableUsdtPerpetualSymbols) {
     halted.symbol = "OLDUSDT";
     halted.status = "BREAK";
 
+    ExchangeSymbol usdcUsdt = tradable;
+    usdcUsdt.symbol = "USDCUSDT";
+
     const auto symbols = scanner::MarketScanner::tradableUsdtPerpetualSymbols({
         tradable,
         coinMargined,
         quarterly,
         halted,
+        usdcUsdt,
     });
 
     ASSERT_EQ(symbols.size(), 1u);

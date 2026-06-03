@@ -35,6 +35,9 @@ const char* phaseName(WarmupPhase phase) {
 }
 
 bool isTradableUsdtPerp(const ExchangeSymbol& symbol) {
+    if (symbol.symbol == "USDCUSDT") {
+        return false;
+    }
     if (symbol.quoteAsset != "USDT") {
         return false;
     }
@@ -312,9 +315,13 @@ boost::asio::awaitable<Result<void>> MarketScanner::waitForConnectionsReady(
             co_return Result<void>{};
         }
         if (std::chrono::steady_clock::now() >= deadline) {
+            const auto notReady = std::count_if(readyFlags.begin(), readyFlags.end(), [](const auto& flag) {
+                return !flag || !flag->load();
+            });
             co_return compat::unexpected(BinanceError::fromApiResponse(
                 -91004,
-                "market scanner websocket feeds did not become healthy before timeout"));
+                "market scanner websocket feeds did not become healthy before timeout not_ready=" +
+                    std::to_string(notReady) + " total=" + std::to_string(readyFlags.size())));
         }
 
         timer.expires_after(std::chrono::milliseconds(100));
@@ -464,8 +471,10 @@ boost::asio::awaitable<Result<void>> MarketScanner::subscribeStreams(const std::
     for (size_t i = 0; i < streams.size();) {
         auto ws = std::make_unique<WsClient>(m_ctx.ioc(), m_ctx.sslContext(), m_ctx.config());
         auto connectionReady = std::make_shared<std::atomic_bool>(false);
+        auto connectionErrorLogged = std::make_shared<std::atomic_bool>(false);
         readyFlags.push_back(connectionReady);
         ++connectionIndex;
+        const size_t currentConnectionIndex = connectionIndex;
         const size_t end = std::min(streams.size(), i + perConnection);
         Logger::instance().log(
             LogLevel::Info,
@@ -473,12 +482,29 @@ boost::asio::awaitable<Result<void>> MarketScanner::subscribeStreams(const std::
                 " streams=" + std::to_string(end - i));
         for (; i < end; ++i) {
             const auto [symbol, interval] = streams[i];
-            ws->subscribeKline(symbol, interval, [this, connectionReady](boost::system::error_code ec, MarketEvent event) {
+            ws->subscribeKline(symbol, interval, [this,
+                                                  connectionReady,
+                                                  connectionErrorLogged,
+                                                  currentConnectionIndex](
+                                                     boost::system::error_code ec,
+                                                     MarketEvent event) {
                 if (ec) {
+                    if (!connectionReady->load() && !connectionErrorLogged->exchange(true)) {
+                        Logger::instance().log(
+                            LogLevel::Warning,
+                            "market_scanner websocket connection=" + std::to_string(currentConnectionIndex) +
+                                " not ready error=" + ec.message());
+                    }
                     return;
                 }
                 if (const auto* kline = std::get_if<KlineEvent>(&event)) {
-                    connectionReady->store(true);
+                    if (!connectionReady->exchange(true)) {
+                        Logger::instance().log(
+                            LogLevel::Info,
+                            "market_scanner websocket connection=" + std::to_string(currentConnectionIndex) +
+                                " ready first_event_symbol=" + kline->symbol +
+                                " interval=" + kline->interval);
+                    }
                     m_cache.update(kline->symbol, kline->interval, kline->kline);
                     KlineClosedCb onKlineClosed;
                     {

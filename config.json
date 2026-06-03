@@ -55,7 +55,8 @@
     "warmup_concurrency": 6,
     "backfill_enabled": true,
     "backfill_concurrency": 1,
-    "backfill_request_delay_ms": 150
+    "backfill_request_delay_ms": 150,
+    "stream_ready_timeout_seconds": 30
   },
   "engine": {
     "min_notional": 1.0,
@@ -70,7 +71,7 @@
     "place_stop_loss": false,
     "take_profit": {
       "enabled": true,
-      "takeProfitPercent": 5.0
+      "takeProfitPercent": 20.0
     }
   },
   "loss_manager": {

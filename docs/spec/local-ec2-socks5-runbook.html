@@ -277,7 +277,8 @@
       <a href="#purpose">Purpose</a>
       <a href="#traffic-model">Traffic Model</a>
       <a href="#prerequisites">Prerequisites</a>
-      <a href="#powershell">PowerShell Run</a>
+      <a href="#automated">Automated Run</a>
+      <a href="#powershell">Manual Run</a>
       <a href="#reconnect">Reconnect After Reboot</a>
       <a href="#verify">Verification</a>
       <a href="#expected-logs">Expected Logs</a>
@@ -333,14 +334,72 @@
           <li>EC2 instance is running and has an Elastic IP.</li>
           <li>Binance API key whitelist includes the EC2 Elastic IP.</li>
           <li>Local machine has SSH access to EC2 with the repo-local private key at <code>.\infra\binance-bot-key.pem</code>.</li>
-          <li>For EC2 Instance Connect reconnects, <code>.env</code> contains <code>AWS_ACCESS_KEY_ID</code>, <code>AWS_SECRET_ACCESS_KEY</code>, optional <code>AWS_SESSION_TOKEN</code>, and <code>AWS_REGION</code>.</li>
-          <li><code>BINANCE_API_KEY</code> and <code>BINANCE_SECRET_KEY</code> are set in the bot terminal.</li>
+          <li>For the reconnect helper, AWS CLI v2 for Windows is installed at <code>C:\Program Files\Amazon\AWSCLIV2\aws.exe</code> or passed with <code>-AwsCliPath</code>.</li>
+          <li>For EC2 Instance Connect reconnects, <code>.env</code> contains <code>AWS_ACCESS_KEY_ID</code>, <code>AWS_SECRET_ACCESS_KEY</code>, and optional <code>AWS_SESSION_TOKEN</code>. The helper infers region from <code>-AvailabilityZone</code>; pass <code>-Region</code> only for a different EC2 region.</li>
+          <li>For the <strong>automated run</strong>, <code>.env</code> also contains <code>BINANCE_API_KEY</code> and <code>BINANCE_SECRET_KEY</code> (and optional <code>BINANCE_TESTNET=1</code>). The launcher reads them from <code>.env</code>. For the manual run, set them in the bot terminal instead.</li>
           <li>For live trading, <code>BINANCE_TESTNET</code> is not set. For testnet, set <code>BINANCE_TESTNET=1</code>.</li>
         </ul>
       </section>
 
+      <section id="automated">
+        <h2>Automated Run (Recommended)</h2>
+        <div class="callout ok">
+          One command opens the tunnel, verifies egress, starts a hidden self-healing supervisor,
+          and runs the bot. On bot exit or <code>Ctrl-C</code> it tears the tunnel and supervisor down.
+          This supersedes the two-terminal manual flow below (kept for debugging).
+        </div>
+
+        <h3>One-command launch</h3>
+        <div class="terminal-pair">
+          <div class="terminal-card">
+            <h4>On TVKT-TAC</h4>
+            <pre><code>cd "D:\NGUYEN QUANG THANG\binance_trading_bot"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\run_bot_with_tunnel.ps1</code></pre>
+          </div>
+          <div class="terminal-card">
+            <h4>On this local machine</h4>
+            <pre><code>cd "C:\Users\Admin\Desktop\binance_trading_bot"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\run_bot_with_tunnel.ps1</code></pre>
+          </div>
+        </div>
+
+        <p>Optional overrides (defaults shown):</p>
+        <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\run_bot_with_tunnel.ps1 `
+  -BotExe ".\build\windows-msvc-debug\bin\Debug\binance_trading_bot.exe" `
+  -EnvPath ".\.env"</code></pre>
+
+        <h3>What the launcher does, in order</h3>
+        <ol>
+          <li>Validates <code>BINANCE_API_KEY</code> and <code>BINANCE_SECRET_KEY</code> exist in <code>.env</code> &mdash; <strong>fails fast before opening any tunnel</strong>.</li>
+          <li>Reaps orphan <code>ssh.exe</code> / supervisor processes from a prior hard-killed session.</li>
+          <li>Ensures the tunnel: if egress is not already the EC2 IP, runs <code>connect_ec2_socks.ps1</code> and re-verifies.</li>
+          <li>Starts <code>tunnel_supervisor.ps1</code> hidden in the background. Every <strong>15&nbsp;s</strong> it checks egress via the proxy; if unhealthy it kills the stale SSH and reconnects (light reconnect with the persistent key first, then a throttled full reconnect), all on the same port <code>1080</code> so the bot is not interrupted.</li>
+          <li>Sets <code>BINANCE_SOCKS5_PROXY=socks5://127.0.0.1:1080</code> and <code>BINANCE_REQUIRE_SOCKS5_PROXY=1</code>, then runs the bot in the foreground with the working directory pinned to the repo root.</li>
+        </ol>
+
+        <h3>Check tunnel status (anytime, another terminal)</h3>
+        <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\tunnel_status.ps1</code></pre>
+        <p>Example output:</p>
+        <pre><code>tunnel: OK | egress 47.131.185.59 | reconnects 0 | last 2026-06-02T10:15:30+07:00</code></pre>
+
+        <h3>Stop</h3>
+        <p>Press <code>Ctrl-C</code> in the launcher window. The tunnel and supervisor are torn down automatically; no orphan <code>ssh.exe</code> is left on port <code>1080</code>.</p>
+
+        <div class="callout warn">
+          The supervisor judges health <strong>only</strong> by the egress IP equalling <code>47.131.185.59</code>.
+          A Binance <code>-2015</code> with the correct egress IP is an API-key/whitelist issue, <strong>not</strong> a
+          tunnel fault, and will not trigger a reconnect.
+        </div>
+      </section>
+
       <section id="powershell">
-        <h2>PowerShell Run</h2>
+        <h2>Manual Run (two terminals)</h2>
+        <div class="callout">
+          Use this when debugging the tunnel or the bot in isolation. For normal operation prefer the
+          <a href="#automated">Automated Run</a> above.
+        </div>
 
         <div class="run-option">
           <h3>Portable repo-relative path</h3>
@@ -462,8 +521,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\connect_ec2_socks.ps
           </div>
         </div>
 
+        <p>If <code>Get-Command aws</code> points to <code>C:\Users\Admin\.local\bin\aws</code>, pass the Windows AWS CLI explicitly:</p>
+        <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\connect_ec2_socks.ps1 `
+  -AwsCliPath "C:\Program Files\Amazon\AWSCLIV2\aws.exe"</code></pre>
+
         <p>Expected successful output:</p>
-        <pre><code>SOCKS tunnel is listening on 127.0.0.1:1080
+        <pre><code>Using AWS CLI: C:\Program Files\Amazon\AWSCLIV2\aws.exe
+Using AWS region: ap-southeast-1
+SOCKS tunnel is listening on 127.0.0.1:1080
 SSH process id: &lt;pid&gt;
 Proxy egress IP: 47.131.185.59</code></pre>
 
@@ -476,6 +541,7 @@ Proxy egress IP: 47.131.185.59</code></pre>
           <li>EC2 security group is missing the current <code>/32</code> source IP for SSH.</li>
           <li>The original private key is unavailable locally, by using EC2 Instance Connect with a temporary key.</li>
           <li>Port <code>1080</code> needs a fresh hidden SSH process after reboot.</li>
+          <li>SSH auth must succeed non-interactively; the helper uses <code>BatchMode=yes</code> and reports captured SSH output when startup fails.</li>
         </ul>
 
         <h3>Stop the tunnel</h3>
@@ -575,6 +641,31 @@ $env:BINANCE_REQUIRE_SOCKS5_PROXY</code></pre>
               <td>Run <code>.\tools\connect_ec2_socks.ps1</code> to add the current <code>/32</code> source IP and recreate the tunnel.</td>
             </tr>
             <tr>
+              <td><code>aws command failed: aws</code> with no AWS error text</td>
+              <td>Run <code>Get-Command aws -All</code>. If the first result is <code>C:\Users\Admin\.local\bin\aws</code>, PowerShell is hitting a WSL bash shim.</td>
+              <td>Use the updated script, or pass <code>-AwsCliPath "C:\Program Files\Amazon\AWSCLIV2\aws.exe"</code>.</td>
+            </tr>
+            <tr>
+              <td><code>InvalidGroup.NotFound</code> for the EC2 security group</td>
+              <td>Check the region printed by the helper. The default instance and security group are in <code>ap-southeast-1</code>.</td>
+              <td>Run the updated script, or pass <code>-Region ap-southeast-1</code>.</td>
+            </tr>
+            <tr>
+              <td>Launcher exits with <code>Missing BINANCE_API_KEY in .env</code></td>
+              <td>Confirm <code>.env</code> contains <code>BINANCE_API_KEY</code> and <code>BINANCE_SECRET_KEY</code>.</td>
+              <td>Add the keys to <code>.env</code> (it is gitignored). The launcher validates them before opening the tunnel.</td>
+            </tr>
+            <tr>
+              <td>Supervisor keeps reconnecting</td>
+              <td>Run <code>.\tools\tunnel_status.ps1</code> and read <code>logs\tunnel_supervisor.log</code>.</td>
+              <td>If egress is empty/wrong, the EC2 instance or SSH is down; if the local IP changed, the full reconnect re-adds the <code>/32</code> ingress automatically.</td>
+            </tr>
+            <tr>
+              <td>Orphan <code>ssh.exe</code> after a hard kill</td>
+              <td>Run <code>Get-NetTCPConnection -LocalPort 1080 -State Listen</code>.</td>
+              <td>Re-run <code>run_bot_with_tunnel.ps1</code>; its reaper kills the stale <code>ssh.exe</code> on port 1080 before starting fresh.</td>
+            </tr>
+            <tr>
               <td>Testnet key fails on live endpoint</td>
               <td>Check <code>$env:BINANCE_TESTNET</code>.</td>
               <td>Use matching key type and endpoint mode.</td>
@@ -598,7 +689,7 @@ $env:BINANCE_REQUIRE_SOCKS5_PROXY</code></pre>
           for EC2-proxied live operation. Use the main executable flow documented above.
         </div>
 
-        <p class="muted">Last updated: 2026-05-27.</p>
+        <p class="muted">Last updated: 2026-06-02.</p>
       </section>
     </main>
   </div>

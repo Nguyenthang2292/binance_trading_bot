@@ -1,9 +1,11 @@
 #include "ws/ws_client.h"
+#include "logger.h"
 #include "ws/ws_parse_helpers.h"
 
 #include <simdjson.h>
 
 #include <algorithm>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <stdexcept>
@@ -14,6 +16,27 @@ namespace {
 
 std::string wsHost(bool testnet) {
     return testnet ? "fstream.binancefuture.com" : "fstream.binance.com";
+}
+
+enum class WsEndpointRoute {
+    Public,
+    Market,
+};
+
+WsEndpointRoute endpointRouteForStream(std::string_view stream) {
+    if (stream.find("@depth") != std::string_view::npos ||
+        stream.find("@bookticker") != std::string_view::npos) {
+        return WsEndpointRoute::Public;
+    }
+    return WsEndpointRoute::Market;
+}
+
+std::string_view routePathPrefix(WsEndpointRoute route) {
+    switch (route) {
+        case WsEndpointRoute::Public: return "/public";
+        case WsEndpointRoute::Market: return "/market";
+    }
+    return "/market";
 }
 
 std::string lower(std::string value) {
@@ -318,14 +341,37 @@ void WsClient::setOnReconnect(std::function<void()> cb) {
     m_onReconnect = std::move(cb);
 }
 
+std::string WsClient::streamPathForDiagnostics() const {
+    return buildStreamPath();
+}
+
 std::string WsClient::buildStreamPath() const {
     std::lock_guard lock(m_stateMutex);
     return buildStreamPathLocked();
 }
 
 std::string WsClient::buildStreamPathLocked() const {
+    if (m_subscriptions.empty()) {
+        return {};
+    }
+
+    std::optional<WsEndpointRoute> route;
+    for (const auto& [stream, _] : m_subscriptions) {
+        const auto streamRoute = endpointRouteForStream(stream);
+        if (!route) {
+            route = streamRoute;
+            continue;
+        }
+        if (*route != streamRoute) {
+            Logger::instance().log(
+                LogLevel::Error,
+                "WsClient cannot multiplex /public and /market streams on one Binance routed websocket");
+            return {};
+        }
+    }
+
     std::ostringstream out;
-    out << "/stream?streams=";
+    out << routePathPrefix(*route) << "/stream?streams=";
     bool first = true;
     for (const auto& [stream, _] : m_subscriptions) {
         if (!first) out << '/';
@@ -353,6 +399,10 @@ void WsClient::connect() {
         m_session = std::make_shared<WsSession>(m_ioc, m_ssl, wsHost(m_cfg.testnet), m_cfg.socks5Proxy);
     }
     path = buildStreamPath();
+    if (path.empty()) {
+        Logger::instance().log(LogLevel::Error, "WsClient connect skipped because no valid routed stream path was built");
+        return;
+    }
 
     if (oldSession) {
         oldSession->stop();

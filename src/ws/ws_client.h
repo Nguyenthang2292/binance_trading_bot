@@ -41,6 +41,9 @@ public:
     void connect();
     void disconnect();
 
+    /** Returns the routed combined-stream path used on the next connect; intended for diagnostics/tests. */
+    std::string streamPathForDiagnostics() const;
+
 private:
     std::string buildStreamPath() const;
     std::string buildStreamPathLocked() const;

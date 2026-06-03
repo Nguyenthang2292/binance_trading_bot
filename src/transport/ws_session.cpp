@@ -18,6 +18,7 @@
 #include <exception>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace asio = boost::asio;
@@ -25,6 +26,21 @@ namespace beast = boost::beast;
 namespace websocket = boost::beast::websocket;
 namespace ssl = boost::asio::ssl;
 using tcp = boost::asio::ip::tcp;
+
+namespace {
+
+std::string summarizeWsPath(std::string_view path) {
+    if (path.rfind("/private/", 0) == 0) {
+        return "/private/<redacted> length=" + std::to_string(path.size());
+    }
+    constexpr size_t kMaxPathChars = 160;
+    if (path.size() <= kMaxPathChars) {
+        return std::string(path);
+    }
+    return std::string(path.substr(0, kMaxPathChars)) + "... length=" + std::to_string(path.size());
+}
+
+} // namespace
 
 WsSession::WsSession(asio::io_context& ioc,
                      ssl::context& sslContext,
@@ -229,10 +245,20 @@ asio::awaitable<void> WsSession::connectLoop() {
 
             co_await readLoop();
         } catch (const boost::system::system_error& e) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "WsSession connect/read error host=" + m_host +
+                    " path=" + summarizeWsPath(m_path) +
+                    " ec=" + std::to_string(e.code().value()) +
+                    " message=" + e.code().message());
             if (m_onMessage) {
                 m_onMessage(e.code(), std::string{});
             }
         } catch (...) {
+            Logger::instance().log(
+                LogLevel::Warning,
+                "WsSession connect/read unknown error host=" + m_host +
+                    " path=" + summarizeWsPath(m_path));
             if (m_onMessage) {
                 m_onMessage(asio::error::connection_reset, std::string{});
             }

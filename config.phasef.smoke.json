@@ -11,7 +11,8 @@
     "warmup_concurrency": 6,
     "backfill_enabled": true,
     "backfill_concurrency": 1,
-    "backfill_request_delay_ms": 150
+    "backfill_request_delay_ms": 150,
+    "stream_ready_timeout_seconds": 30
   },
   "engine": {
     "min_notional": 1.0,

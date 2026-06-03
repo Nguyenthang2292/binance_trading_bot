@@ -12,6 +12,7 @@ venv/
 
 # Logs
 *.log
+logs/tunnel_supervisor.log*
 
 # OS
 .DS_Store
@@ -48,6 +49,7 @@ build_codex/
 
 # EC2 infrastructure state (contains instance IDs and IPs)
 infra/.ec2-state
+.tunnel_state.json
 infra/aws.env.local
 infra/prod.env
 

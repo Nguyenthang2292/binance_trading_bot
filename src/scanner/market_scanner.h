@@ -38,7 +38,7 @@ public:
         bool betaDailyKlinesEnabled{false};
         std::string betaDailyInterval{"1d"};
         int betaDailyLimit{31};
-        std::chrono::seconds streamReadyTimeout{10};
+        std::chrono::seconds streamReadyTimeout{30};
     };
 
     MarketScanner(RestClient& rest, BinanceContext& ctx, Config config);

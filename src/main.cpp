@@ -902,6 +902,7 @@ int main(int argc, char* argv[]) {
             .betaDailyKlinesEnabled = betaDailyEnabled,
             .betaDailyInterval = betaDailyInterval,
             .betaDailyLimit = betaDailyLimit,
+            .streamReadyTimeout = std::chrono::seconds(scannerJson.value("stream_ready_timeout_seconds", 30)),
         });
 
     auto scannerStart = syncAwait(ctx.ioc(), scanner.start());
