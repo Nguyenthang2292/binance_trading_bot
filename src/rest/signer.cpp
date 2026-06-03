@@ -13,6 +13,8 @@
 
 namespace {
 
+constexpr auto kSignedTimestampSafetySkew = std::chrono::milliseconds{1500};
+
 void cleanse(std::vector<unsigned char>& buffer) {
     if (!buffer.empty()) {
         OPENSSL_cleanse(buffer.data(), buffer.size());
@@ -166,7 +168,10 @@ std::string Signer::addSignature(std::string_view params) const {
 }
 
 int64_t Signer::nowMs() {
-    const auto now = std::chrono::system_clock::now();
+    // Binance rejects signed requests whose timestamp is more than 1000ms ahead
+    // of server time. Bias generated timestamps slightly backward to tolerate
+    // small local clock drift and network jitter while staying inside recvWindow.
+    const auto now = std::chrono::system_clock::now() - kSignedTimestampSafetySkew;
     return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 }
 

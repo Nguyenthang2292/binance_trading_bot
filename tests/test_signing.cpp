@@ -2,6 +2,9 @@
 
 #include "rest/signer.h"
 
+#include <chrono>
+#include <cstdint>
+#include <string>
 #include <type_traits>
 
 static_assert(!std::is_copy_constructible_v<Signer>);
@@ -23,6 +26,24 @@ TEST(SignerTest, AddSignatureAppendsTimestampAndSignatureLast) {
     ASSERT_NE(sigPos, std::string::npos);
     EXPECT_EQ(signedParams.rfind("&signature="), sigPos);
     EXPECT_GT(signedParams.size(), sigPos + std::string("&signature=").size());
+}
+
+TEST(SignerTest, AddSignatureBiasesGeneratedTimestampBackward) {
+    Signer signer("secret");
+    const auto before = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+
+    const auto signedParams = signer.addSignature("symbol=BTCUSDT");
+
+    const auto timestampPos = signedParams.find("timestamp=");
+    ASSERT_NE(timestampPos, std::string::npos);
+    const auto valueStart = timestampPos + std::string("timestamp=").size();
+    const auto valueEnd = signedParams.find('&', valueStart);
+    ASSERT_NE(valueEnd, std::string::npos);
+    const auto timestamp = std::stoll(signedParams.substr(valueStart, valueEnd - valueStart));
+    EXPECT_LT(timestamp, before);
+    EXPECT_GT(timestamp, before - 5000);
 }
 
 TEST(SignerTest, AddSignatureUsesProvidedTimestampWithoutAddingDuplicate) {
