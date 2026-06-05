@@ -167,11 +167,21 @@ std::string Signer::addSignature(std::string_view params) const {
     return signedParams;
 }
 
-int64_t Signer::nowMs() {
+void Signer::setTimeOffsetMs(int64_t offsetMs) {
+    m_timeOffsetMs.store(offsetMs);
+}
+
+int64_t Signer::timeOffsetMs() const {
+    return m_timeOffsetMs.load();
+}
+
+int64_t Signer::nowMs() const {
     // Binance rejects signed requests whose timestamp is more than 1000ms ahead
     // of server time. Bias generated timestamps slightly backward to tolerate
     // small local clock drift and network jitter while staying inside recvWindow.
-    const auto now = std::chrono::system_clock::now() - kSignedTimestampSafetySkew;
+    const auto now = std::chrono::system_clock::now() +
+        std::chrono::milliseconds(m_timeOffsetMs.load()) -
+        kSignedTimestampSafetySkew;
     return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 }
 

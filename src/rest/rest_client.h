@@ -151,6 +151,7 @@ private:
         std::string_view path,
         std::string params,
         RateLimiter::Cost cost = {});
+    boost::asio::awaitable<bool> synchronizeSignedTimestamp();
     boost::asio::awaitable<HttpSession::Result> apiKeyPost(
         std::string_view path,
         std::string params,

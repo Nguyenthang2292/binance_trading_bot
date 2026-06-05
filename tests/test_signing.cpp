@@ -46,6 +46,25 @@ TEST(SignerTest, AddSignatureBiasesGeneratedTimestampBackward) {
     EXPECT_GT(timestamp, before - 5000);
 }
 
+TEST(SignerTest, AddSignatureAppliesServerTimeOffset) {
+    Signer signer("secret");
+    signer.setTimeOffsetMs(-10'000);
+    const auto before = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+
+    const auto signedParams = signer.addSignature("symbol=BTCUSDT");
+
+    const auto timestampPos = signedParams.find("timestamp=");
+    ASSERT_NE(timestampPos, std::string::npos);
+    const auto valueStart = timestampPos + std::string("timestamp=").size();
+    const auto valueEnd = signedParams.find('&', valueStart);
+    ASSERT_NE(valueEnd, std::string::npos);
+    const auto timestamp = std::stoll(signedParams.substr(valueStart, valueEnd - valueStart));
+    EXPECT_LT(timestamp, before - 9'000);
+    EXPECT_GT(timestamp, before - 15'000);
+}
+
 TEST(SignerTest, AddSignatureUsesProvidedTimestampWithoutAddingDuplicate) {
     Signer signer("secret");
     const auto signedParams = signer.addSignature("symbol=BTCUSDT&timestamp=1700000000000");

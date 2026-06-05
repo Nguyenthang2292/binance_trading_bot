@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -21,14 +22,17 @@ public:
     std::string sign(std::string_view payload) const;
     /** Ensures timestamp presence and appends a recomputed signature parameter. */
     std::string addSignature(std::string_view params) const;
+    void setTimeOffsetMs(int64_t offsetMs);
+    int64_t timeOffsetMs() const;
 
     SigningMethod method() const { return m_method; }
 
 private:
     std::vector<unsigned char> m_secretKey;
     SigningMethod m_method;
+    std::atomic<int64_t> m_timeOffsetMs{0};
 
-    static int64_t nowMs();
+    int64_t nowMs() const;
     std::string_view secretKeyView() const;
     std::string signHmacSha256(std::string_view payload) const;
     std::string signEd25519(std::string_view payload) const;

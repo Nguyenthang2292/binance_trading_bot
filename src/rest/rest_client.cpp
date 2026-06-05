@@ -20,6 +20,8 @@ namespace asio = boost::asio;
 
 namespace {
 
+constexpr int kTimestampOutsideRecvWindowCode = -1021;
+
 std::string restHost(bool testnet) {
     return testnet ? "demo-fapi.binance.com" : "fapi.binance.com";
 }
@@ -156,6 +158,15 @@ bool shouldRetryPublicGet(const BinanceError& err) {
         return true;
     }
     return err.category == ErrorCategory::RateLimit && err.code == 429;
+}
+
+bool isTimestampOutsideRecvWindow(const BinanceError& err) {
+    return err.category == ErrorCategory::Api && err.code == kTimestampOutsideRecvWindowCode;
+}
+
+int64_t systemNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 std::chrono::milliseconds retryDelay(const BinanceError& err, int attempt) {
@@ -604,6 +615,15 @@ asio::awaitable<HttpSession::Result> RestClient::signedGet(
         (result.error().code == 429 || result.error().code == 418)) {
         m_rateLimiter->penalize(std::chrono::seconds(1));
     }
+    if (!result && isTimestampOutsideRecvWindow(result.error()) && co_await synchronizeSignedTimestamp()) {
+        co_await m_rateLimiter->acquire(cost);
+        result = co_await m_session->get(path, m_signer.addSignature(params), m_cfg.apiKey);
+        m_rateLimiter->updateFromHeaders(
+            m_session->lastUsedWeight(),
+            m_session->lastUsedOrders(),
+            m_session->lastUsedOrders10s());
+        m_rateLimiter->release(cost);
+    }
     co_return result;
 }
 
@@ -622,6 +642,15 @@ asio::awaitable<HttpSession::Result> RestClient::signedPost(
         result.error().category == ErrorCategory::RateLimit &&
         (result.error().code == 429 || result.error().code == 418)) {
         m_rateLimiter->penalize(std::chrono::seconds(1));
+    }
+    if (!result && isTimestampOutsideRecvWindow(result.error()) && co_await synchronizeSignedTimestamp()) {
+        co_await m_rateLimiter->acquire(cost);
+        result = co_await m_session->post(path, m_signer.addSignature(params), m_cfg.apiKey);
+        m_rateLimiter->updateFromHeaders(
+            m_session->lastUsedWeight(),
+            m_session->lastUsedOrders(),
+            m_session->lastUsedOrders10s());
+        m_rateLimiter->release(cost);
     }
     co_return result;
 }
@@ -642,6 +671,15 @@ asio::awaitable<HttpSession::Result> RestClient::signedPut(
         (result.error().code == 429 || result.error().code == 418)) {
         m_rateLimiter->penalize(std::chrono::seconds(1));
     }
+    if (!result && isTimestampOutsideRecvWindow(result.error()) && co_await synchronizeSignedTimestamp()) {
+        co_await m_rateLimiter->acquire(cost);
+        result = co_await m_session->put(path, m_signer.addSignature(params), m_cfg.apiKey);
+        m_rateLimiter->updateFromHeaders(
+            m_session->lastUsedWeight(),
+            m_session->lastUsedOrders(),
+            m_session->lastUsedOrders10s());
+        m_rateLimiter->release(cost);
+    }
     co_return result;
 }
 
@@ -661,7 +699,29 @@ asio::awaitable<HttpSession::Result> RestClient::signedDelete(
         (result.error().code == 429 || result.error().code == 418)) {
         m_rateLimiter->penalize(std::chrono::seconds(1));
     }
+    if (!result && isTimestampOutsideRecvWindow(result.error()) && co_await synchronizeSignedTimestamp()) {
+        co_await m_rateLimiter->acquire(cost);
+        result = co_await m_session->del(path, m_signer.addSignature(params), m_cfg.apiKey);
+        m_rateLimiter->updateFromHeaders(
+            m_session->lastUsedWeight(),
+            m_session->lastUsedOrders(),
+            m_session->lastUsedOrders10s());
+        m_rateLimiter->release(cost);
+    }
     co_return result;
+}
+
+asio::awaitable<bool> RestClient::synchronizeSignedTimestamp() {
+    const auto before = systemNowMs();
+    auto server = co_await serverTime();
+    const auto after = systemNowMs();
+    if (!server) {
+        co_return false;
+    }
+
+    const int64_t localMidpoint = before + ((after - before) / 2);
+    m_signer.setTimeOffsetMs(*server - localMidpoint);
+    co_return true;
 }
 
 asio::awaitable<HttpSession::Result> RestClient::apiKeyPost(
