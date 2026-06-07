@@ -292,7 +292,9 @@ bool CandleSchedulerThread::refreshLatestCandle(int64_t asofMs) {
     Logger::instance().log(
         refresh.succeeded ? LogLevel::Info : LogLevel::Warning,
         "[CANDLE][PHASE3][REFRESH][" + std::string(refresh.succeeded ? "OK" : "FAILED") + "] asof=" +
-            std::to_string(asofMs) + " exit=" + std::to_string(refresh.exitCode));
+            std::to_string(asofMs) +
+            " exit=" + std::to_string(refresh.exitCode) +
+            " log=" + refresh.logPath);
     return refresh.succeeded;
 }
 
@@ -453,7 +455,8 @@ bool CandleSchedulerThread::processCandle(int64_t candleOpenTimeMs) {
             phase3.succeeded ? LogLevel::Info : LogLevel::Warning,
             "[CANDLE][PHASE3][" + std::string(phase3.succeeded ? "SUCCESS" : "FAILED") + "] asof=" +
                 std::to_string(candleOpenTimeMs) +
-                " exit=" + std::to_string(phase3.exitCode));
+                " exit=" + std::to_string(phase3.exitCode) +
+                " log=" + phase3.logPath);
         if (!phase3.succeeded) {
             return false;
         }

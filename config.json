@@ -259,7 +259,7 @@
   },
   "qlib_orchestration": {
     "enabled": true,
-    "python_exe": "python",
+    "python_exe": ".venv-qlib/Scripts/python.exe",
     "scripts_dir": "tools/qlib_bridge",
     "data_dir": "data/qlib_smoke",
     "model_dir": "data/qlib_smoke/models",
