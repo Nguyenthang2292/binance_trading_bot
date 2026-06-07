@@ -1,0 +1,17 @@
+{
+  "feature_columns": [
+    "ret_1",
+    "ret_4",
+    "ret_12",
+    "ma_dist_8",
+    "ma_dist_24",
+    "vol_24",
+    "breakout_high_24",
+    "breakout_low_24",
+    "volume_z_24",
+    "atr_14"
+  ],
+  "interval": "30m",
+  "horizon_bars": 1,
+  "generated_at_ms": 1780817947654
+}

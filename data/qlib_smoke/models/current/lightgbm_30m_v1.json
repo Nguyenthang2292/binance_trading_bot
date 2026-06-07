@@ -1,11 +1,11 @@
 {
-  "dataset_fingerprint": "afe2ec57a0d35af6b62c6f84ea338fb9b7a96d9f8861fd88e285af83c4e3c5c5",
-  "feature_schema_hash": "14a7369433fd1e43faec400485316f97cb121f8b3c5cfb8ec1c4f54d7e176c89",
-  "horizon_bars": 1,
-  "interval": "30m",
   "model_id": "lightgbm_30m_v1",
-  "model_path": "data/qlib_smoke/models\\model_artifacts\\lightgbm_30m_v1\\lightgbm_30m_v1_20260530T150000\\model.txt",
-  "published_at_ms": 1780128030500,
-  "report_path": "data/qlib_smoke/models\\model_artifacts\\lightgbm_30m_v1\\lightgbm_30m_v1_20260530T150000\\report.json",
-  "run_id": "lightgbm_30m_v1_20260530T150000"
+  "run_id": "lightgbm_30m_v1_20260607T143859",
+  "interval": "30m",
+  "horizon_bars": 1,
+  "model_path": "data\\qlib_smoke\\models\\model_artifacts\\lightgbm_30m_v1\\lightgbm_30m_v1_20260607T143859\\model.txt",
+  "report_path": "data\\qlib_smoke\\models\\model_artifacts\\lightgbm_30m_v1\\lightgbm_30m_v1_20260607T143859\\report.json",
+  "feature_schema_hash": "14a7369433fd1e43faec400485316f97cb121f8b3c5cfb8ec1c4f54d7e176c89",
+  "dataset_fingerprint": "b88281e608f11dbd732a83af7367d5c867d0b75bc6815b5903d7039cf240362b",
+  "published_at_ms": 1780817993183
 }

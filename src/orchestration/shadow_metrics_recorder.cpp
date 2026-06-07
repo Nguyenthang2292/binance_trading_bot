@@ -36,6 +36,12 @@ std::string makeShadowId(
     return out.str();
 }
 
+std::string sqliteStepError(sqlite3* db, int rc) {
+    std::ostringstream out;
+    out << "sqlite_rc=" << rc << " msg=" << (db ? sqlite3_errmsg(db) : "no database");
+    return out.str();
+}
+
 } // namespace
 
 ShadowMetricsRecorder::ShadowMetricsRecorder(ShadowMetricsConfig config)
@@ -466,8 +472,12 @@ void ShadowMetricsRecorder::upsertActualReturnsLocked(std::string_view interval)
     const int64_t horizon = std::max(1, m_config.horizonBars);
     const int64_t horizonMs = horizon * stepMs;
 
-    const char* selectSql =
-        "SELECT e.symbol, e.open_time_ms, e.close, x.open_time_ms, x.close "
+    const char* insertSql =
+        "INSERT OR IGNORE INTO qlib_actual_returns("
+        "symbol, interval, asof_open_time_ms, horizon_bars, exit_open_time_ms, entry_close, exit_close, raw_return, computed_at_ms"
+        ") "
+        "SELECT e.symbol, e.interval, e.open_time_ms, ?, x.open_time_ms, e.close, x.close, "
+        "       (x.close / e.close) - 1.0, ? "
         "FROM qlib_candles e "
         "JOIN qlib_candles x "
         "  ON x.symbol = e.symbol "
@@ -478,51 +488,24 @@ void ShadowMetricsRecorder::upsertActualReturnsLocked(std::string_view interval)
         " AND ar.interval = e.interval "
         " AND ar.asof_open_time_ms = e.open_time_ms "
         " AND ar.horizon_bars = ? "
-        "WHERE e.interval = ? AND ar.symbol IS NULL;";
-    sqlite3_stmt* selectRaw = nullptr;
-    if (sqlite3_prepare_v2(m_db, selectSql, -1, &selectRaw, nullptr) != SQLITE_OK || selectRaw == nullptr) {
-        throw std::runtime_error("ShadowMetricsRecorder prepare select actual returns failed");
-    }
-    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> selectStmt(selectRaw, sqlite3_finalize);
-    sqlite3_bind_int64(selectStmt.get(), 1, horizonMs);
-    sqlite3_bind_int(selectStmt.get(), 2, static_cast<int>(horizon));
-    bindText(selectStmt.get(), 3, interval);
-
-    const char* insertSql =
-        "INSERT OR IGNORE INTO qlib_actual_returns("
-        "symbol, interval, asof_open_time_ms, horizon_bars, exit_open_time_ms, entry_close, exit_close, raw_return, computed_at_ms"
-        ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);";
+        "WHERE e.interval = ? "
+        "  AND ar.symbol IS NULL "
+        "  AND e.close > 0.0 "
+        "  AND x.close > 0.0;";
     sqlite3_stmt* insertRaw = nullptr;
     if (sqlite3_prepare_v2(m_db, insertSql, -1, &insertRaw, nullptr) != SQLITE_OK || insertRaw == nullptr) {
         throw std::runtime_error("ShadowMetricsRecorder prepare insert actual returns failed");
     }
     std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> insertStmt(insertRaw, sqlite3_finalize);
 
-    while (sqlite3_step(selectStmt.get()) == SQLITE_ROW) {
-        const std::string symbol = columnText(selectStmt.get(), 0);
-        const int64_t asofOpen = sqlite3_column_int64(selectStmt.get(), 1);
-        const double entryClose = sqlite3_column_double(selectStmt.get(), 2);
-        const int64_t exitOpen = sqlite3_column_int64(selectStmt.get(), 3);
-        const double exitClose = sqlite3_column_double(selectStmt.get(), 4);
-        if (entryClose <= 0.0) {
-            continue;
-        }
-        const double rawReturn = (exitClose / entryClose) - 1.0;
-
-        sqlite3_reset(insertStmt.get());
-        sqlite3_clear_bindings(insertStmt.get());
-        bindText(insertStmt.get(), 1, symbol);
-        bindText(insertStmt.get(), 2, interval);
-        sqlite3_bind_int64(insertStmt.get(), 3, asofOpen);
-        sqlite3_bind_int(insertStmt.get(), 4, static_cast<int>(horizon));
-        sqlite3_bind_int64(insertStmt.get(), 5, exitOpen);
-        sqlite3_bind_double(insertStmt.get(), 6, entryClose);
-        sqlite3_bind_double(insertStmt.get(), 7, exitClose);
-        sqlite3_bind_double(insertStmt.get(), 8, rawReturn);
-        sqlite3_bind_int64(insertStmt.get(), 9, nowMs());
-        if (sqlite3_step(insertStmt.get()) != SQLITE_DONE) {
-            throw std::runtime_error("ShadowMetricsRecorder insert actual return failed");
-        }
+    sqlite3_bind_int(insertStmt.get(), 1, static_cast<int>(horizon));
+    sqlite3_bind_int64(insertStmt.get(), 2, nowMs());
+    sqlite3_bind_int64(insertStmt.get(), 3, horizonMs);
+    sqlite3_bind_int(insertStmt.get(), 4, static_cast<int>(horizon));
+    bindText(insertStmt.get(), 5, interval);
+    const int rc = sqlite3_step(insertStmt.get());
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error("ShadowMetricsRecorder insert actual return failed: " + sqliteStepError(m_db, rc));
     }
 }
 
